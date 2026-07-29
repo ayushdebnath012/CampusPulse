@@ -4,13 +4,18 @@
   "private": true,
   "description": "A lightweight attendance, quiz, course enrollment, and ERP sync prototype for classrooms.",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "vinext dev",
+    "build": "vinext build && node scripts/package-sites.mjs",
     "start": "node server.js"
   },
   "dependencies": {
-    "next": "^15.4.5",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "@mdx-js/rollup": "^3.1.1",
+    "@vitejs/plugin-react": "^5.1.4",
+    "@vitejs/plugin-rsc": "^0.5.26",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-server-dom-webpack": "^19.2.6",
+    "vinext": "1.0.0-beta.4",
+    "vite": "^8.0.0"
   }
 }
