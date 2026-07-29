@@ -1,0 +1,16 @@
+{
+  "name": "campuspulse",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A lightweight attendance, quiz, course enrollment, and ERP sync prototype for classrooms.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "next": "^15.4.5",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}

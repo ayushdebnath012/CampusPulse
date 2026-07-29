@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#5b5bd6" />
+    <meta
+      name="description"
+      content="CampusPulse helps faculty take proximity-verified attendance, run quick quizzes, and sync records to ERP."
+    />
+    <title>CampusPulse — Classroom operations, simplified</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <svg class="svg-defs" aria-hidden="true">
+      <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24"><path d="M7 3v3m10-3v3M4 9h16M5 5h14a1 1 0 0 1 1 1v14H4V6a1 1 0 0 1 1-1Z"/></symbol>
+      <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a5 5 0 0 1 5-5h2a5 5 0 0 1 5 5v2M16 5a3 3 0 0 1 0 6m2 2a4 4 0 0 1 3 4v3"/></symbol>
+      <symbol id="i-quiz" viewBox="0 0 24 24"><path d="M5 3h14v18H5zM8 8h8M8 12h5M8 16h7"/></symbol>
+      <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18H6a4 4 0 1 1 1-7.9A6 6 0 0 1 18.7 12H19a3 3 0 0 1 0 6h-3M12 13v8m-3-3 3 3 3-3"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-wifi" viewBox="0 0 24 24"><path d="M3 9a15 15 0 0 1 18 0M6 13a10 10 0 0 1 12 0M9.5 17a4.3 4.3 0 0 1 5 0"/><circle cx="12" cy="20" r="1"/></symbol>
+      <symbol id="i-bluetooth" viewBox="0 0 24 24"><path d="m8 7 8 10-4 4V3l4 4L8 17"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 4 18 8-18 8 4-8zM7 12h14"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M5 19h14"/></symbol>
+    </svg>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <button class="brand" data-route="dashboard" aria-label="Go to dashboard">
+          <span class="brand-mark">C</span>
+          <span class="brand-name">Campus<span>Pulse</span></span>
+        </button>
+
+        <nav class="primary-nav" aria-label="Main navigation">
+          <button class="nav-item active" data-route="dashboard"><svg><use href="#i-grid"/></svg><span>Overview</span></button>
+          <button class="nav-item" data-route="classes"><svg><use href="#i-calendar"/></svg><span>Classes</span></button>
+          <button class="nav-item" data-route="attendance"><svg><use href="#i-users"/></svg><span>Attendance</span></button>
+          <button class="nav-item" data-route="quizzes"><svg><use href="#i-quiz"/></svg><span>Quizzes</span></button>
+          <button class="nav-item" data-route="erp"><svg><use href="#i-cloud"/></svg><span>ERP Sync</span><span class="nav-dot" id="syncDot"></span></button>
+        </nav>
+
+        <div class="side-bottom">
+          <div class="mini-tip">
+            <span class="tip-icon">✦</span>
+            <strong>Pro tip</strong>
+            <p>Start check-in 5 minutes before class.</p>
+          </div>
+          <button class="nav-item" data-route="settings"><svg><use href="#i-settings"/></svg><span>Settings</span></button>
+          <div class="user-card">
+            <div class="avatar">AK</div>
+            <div><strong>Dr. Ananya Kumar</strong><span>Faculty · CSE</span></div>
+            <button class="icon-btn" aria-label="Account menu"><svg><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="pageEyebrow">THURSDAY, 30 JULY</p>
+            <h1 id="pageTitle">Good morning, Ananya</h1>
+          </div>
+          <div class="top-actions">
+            <button class="role-switch" id="roleSwitch" aria-label="Switch user role"><span id="roleLabel">Faculty view</span><span class="role-swap">⇄</span></button>
+            <button class="icon-btn notification-btn" aria-label="Notifications"><svg><use href="#i-bell"/></svg><span></span></button>
+            <button class="btn btn-primary" id="quickAction"><svg><use href="#i-play"/></svg>Start attendance</button>
+          </div>
+        </header>
+
+        <section id="view" class="view" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <div id="toastRegion" class="toast-region" aria-live="assertive"></div>
+    <div id="modalRoot"></div>
+    <script src="app.js"></script>
+  </body>
+</html>
