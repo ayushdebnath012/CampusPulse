@@ -278,6 +278,14 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .modal-head { display:flex; justify-content:space-between; align-items:start; margin-bottom:20px; }
 .modal-head h2 { margin:0 0 5px; font-size:18px; }
 .modal-head p { margin:0; color:var(--muted); font-size:9px; }
+.role-options { display:flex; flex-direction:column; gap:10px; }
+.role-option { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:13px; width:100%; padding:13px; border:1px solid var(--line); border-radius:13px; background:white; text-align:left; cursor:pointer; }
+.role-option:hover { border-color:#c9c9ed; background:#fafaff; }
+.role-option .avatar { width:38px; height:38px; }
+.role-option strong, .role-option span { display:block; }
+.role-option strong { font-size:11px; }
+.role-option span { margin-top:3px; color:var(--muted); font-size:9px; }
+.role-option > svg { width:16px; height:16px; color:var(--primary); }
 .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .field { display:flex; flex-direction:column; gap:7px; margin-bottom:13px; }
 .field.full { grid-column:1/-1; }

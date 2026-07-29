@@ -40,6 +40,8 @@ The ERP sync in this prototype is intentionally local; no student information le
 ## Demo the enrollment flow
 
 1. Open **Classes** in Faculty view and add a course, or use the existing Discrete Mathematics code `DM202A`.
-2. Use the role switch in the top-right to change to Student view.
+2. Use the login switch in the top-right to choose Faculty, Teaching Assistant, or Student.
 3. Open **Classes**, enter the code, and join.
 4. Attendance and course activities are now unlocked for that student.
+
+Teaching Assistants can update quizzes and start attendance for assigned courses, but only faculty can create courses and issue new join codes.

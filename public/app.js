@@ -1,8 +1,8 @@
 const roster = [
-  ["Aarav Mehta", "CSE24001"], ["Aditi Rao", "CSE24002"], ["Arjun Nair", "CSE24003"],
-  ["Diya Sharma", "CSE24004"], ["Ishaan Verma", "CSE24005"], ["Kavya Iyer", "CSE24006"],
-  ["Neha Singh", "CSE24007"], ["Rohan Das", "CSE24008"], ["Sara Khan", "CSE24009"],
-  ["Vihaan Joshi", "CSE24010"], ["Zoya Ali", "CSE24011"], ["Advik Patel", "CSE24012"]
+  ["Student 01", "DEMO001"], ["Student 02", "DEMO002"], ["Student 03", "DEMO003"],
+  ["Student 04", "DEMO004"], ["Student 05", "DEMO005"], ["Student 06", "DEMO006"],
+  ["Student 07", "DEMO007"], ["Student 08", "DEMO008"], ["Student 09", "DEMO009"],
+  ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
 ];
 
 const defaultState = {
@@ -32,6 +32,9 @@ const pageTitle = document.querySelector("#pageTitle");
 const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
 const roleLabel = document.querySelector("#roleLabel");
+const profileAvatar = document.querySelector("#profileAvatar");
+const profileName = document.querySelector("#profileName");
+const profileMeta = document.querySelector("#profileMeta");
 
 function icon(id) {
   return `<svg aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -54,7 +57,16 @@ function setHeader(title, eyebrow, showQuick = true) {
   pageTitle.textContent = title;
   pageEyebrow.textContent = eyebrow;
   quickAction.style.display = showQuick ? "" : "none";
-  roleLabel.textContent = state.userRole === "faculty" ? "Faculty view" : "Student view";
+  const profiles = {
+    faculty: { label: "Faculty view", initials: "FD", name: "Faculty Demo", meta: "Instructor · CSE" },
+    ta: { label: "TA view", initials: "TA", name: "Teaching Assistant", meta: "Course team · CSE" },
+    student: { label: "Student view", initials: "SD", name: "Student Demo", meta: "Student · CSE" }
+  };
+  const profile = profiles[state.userRole] || profiles.faculty;
+  roleLabel.textContent = profile.label;
+  profileAvatar.textContent = profile.initials;
+  profileName.textContent = profile.name;
+  profileMeta.textContent = profile.meta;
 }
 
 function navigate(route) {
@@ -77,7 +89,7 @@ function render() {
 
 function renderDashboard() {
   if (state.userRole === "student") return renderStudentDashboard();
-  setHeader("Good morning, Ananya", "THURSDAY, 30 JULY");
+  setHeader(state.userRole === "ta" ? "Good morning, Teaching Assistant" : "Good morning, Faculty", "THURSDAY, 30 JULY");
   const attendanceLabel = state.attendanceStatus === "complete" ? "Attendance recorded" : state.attendanceStatus === "scanning" ? "Check-in is live" : "Ready to begin";
   const statusClass = state.attendanceStatus === "complete" ? "green" : "amber";
   view.innerHTML = `
@@ -142,7 +154,7 @@ function renderDashboard() {
 }
 
 function renderStudentDashboard() {
-  setHeader("Welcome back, Aarav", "STUDENT DASHBOARD", false);
+  setHeader("Welcome back, Student", "STUDENT DASHBOARD", false);
   const enrolled = state.courses.filter(course => state.enrolledCourses.includes(course.id));
   view.innerHTML = `
     <div class="left-stack">
@@ -413,10 +425,11 @@ function renderERP() {
 
 function renderClasses() {
   if (state.userRole === "student") return renderStudentClasses();
-  setHeader("My courses", "FACULTY WORKSPACE", false);
+  const isTA = state.userRole === "ta";
+  setHeader(isTA ? "Courses you assist" : "My courses", isTA ? "TEACHING ASSISTANT WORKSPACE" : "FACULTY WORKSPACE", false);
   view.innerHTML = `
     <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you teach</h2><p class="stat-label">Create a course and share its private code with enrolled students.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Add course</button></div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">${isTA ? "Assigned courses" : "Courses you teach"}</h2><p class="stat-label">${isTA ? "You can run attendance and update live quizzes for these courses." : "Create a course and share its private code with enrolled students."}</p></div>${isTA ? '<span class="badge purple">TA access</span>' : `<button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Add course</button>`}</div>
       <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
     </article>`;
 }
@@ -457,6 +470,24 @@ function openCourseModal() {
       </form>
     </div>`;
   setTimeout(() => document.querySelector("#courseName")?.focus(), 0);
+}
+
+function openRoleModal() {
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="roleModalTitle">
+        <div class="modal-head"><div><h2 id="roleModalTitle">Choose a demo login</h2><p>Permissions and course access change with each role.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+        <div class="role-options">
+          ${roleOption("faculty", "FD", "Professor / Faculty", "Create courses, quizzes, and attendance")}
+          ${roleOption("ta", "TA", "Teaching Assistant", "Update quizzes and start attendance")}
+          ${roleOption("student", "SD", "Student", "Join courses and participate in activities")}
+        </div>
+      </div>
+    </div>`;
+}
+
+function roleOption(role, initials, title, description) {
+  return `<button class="role-option" data-login-role="${role}"><span class="avatar">${initials}</span><span><strong>${title}</strong><span>${description}</span></span>${state.userRole === role ? icon("i-check") : icon("i-arrow")}</button>`;
 }
 
 function renderPlaceholder(route) {
@@ -500,6 +531,16 @@ function downloadCSV() {
 }
 
 document.addEventListener("click", event => {
+  const loginButton = event.target.closest("[data-login-role]");
+  if (loginButton) {
+    state.userRole = loginButton.dataset.loginRole;
+    state.route = "dashboard";
+    persist();
+    document.querySelector("#modalRoot").innerHTML = "";
+    document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
+    render();
+    return toast(`Signed in as ${state.userRole === "ta" ? "Teaching Assistant" : state.userRole}`);
+  }
   const copyButton = event.target.closest("[data-copy]");
   if (copyButton) {
     navigator.clipboard?.writeText(copyButton.dataset.copy);
@@ -557,14 +598,7 @@ document.addEventListener("click", event => {
 });
 
 quickAction.addEventListener("click", () => navigate("attendance"));
-document.querySelector("#roleSwitch").addEventListener("click", () => {
-  state.userRole = state.userRole === "faculty" ? "student" : "faculty";
-  state.route = "dashboard";
-  persist();
-  document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
-  render();
-  toast(`Switched to ${state.userRole} view`);
-});
+document.querySelector("#roleSwitch").addEventListener("click", openRoleModal);
 
 document.addEventListener("submit", event => {
   event.preventDefault();
