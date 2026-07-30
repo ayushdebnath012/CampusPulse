@@ -6,6 +6,7 @@ A responsive classroom operations prototype inspired by attendance platforms suc
 - Faculty course creation with generated student join codes
 - Student enrollment gates for attendance and quiz access
 - Shared weekly course schedule for faculty, teaching assistants, and enrolled students
+- Local CSV/ICS timetable import for students without sharing ERP credentials
 - Live, proximity-verified attendance simulation
 - Student roster and attendance export
 - Short live quiz creation and response tracking
@@ -36,7 +37,7 @@ The browser UI uses `navigator.onLine` and Web Bluetooth where supported. A prod
 3. An ERP adapter that maps the normalized attendance and quiz payloads to the institution's API.
 4. Role-based access, audit trails, consent/retention controls, and encryption in transit and at rest.
 
-The ERP sync in this prototype is intentionally local; no student information leaves the device.
+The ERP workflow is intentionally credential-free: student timetable files are parsed locally, and professors receive an ERP-ready attendance CSV for manual upload through the official portal.
 
 ## Demo the enrollment flow
 

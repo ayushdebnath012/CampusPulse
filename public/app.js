@@ -17,12 +17,14 @@ const defaultState = {
   courses: [
     { id: "soft401", code: "SC401A", name: "Soft Computing", courseCode: "CSE 401", section: "Section A", room: "Room 304", students: 42 }
   ],
-  enrolledCourses: []
+  enrolledCourses: [],
+  importedSchedule: []
 };
 
 let state = { ...defaultState, ...JSON.parse(localStorage.getItem("campusPulseState") || "{}") };
 state.courses = defaultState.courses;
 state.enrolledCourses = Array.isArray(state.enrolledCourses) && state.enrolledCourses.includes("soft401") ? ["soft401"] : [];
+state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
 let scanTimer;
 let quizTimer;
 const view = document.querySelector("#view");
@@ -172,23 +174,34 @@ function renderStudentDashboard() {
 function renderSchedule() {
   const isStudent = state.userRole === "student";
   const enrolled = state.enrolledCourses.includes("soft401");
+  const imported = isStudent && state.importedSchedule.length > 0;
   setHeader("Weekly schedule", isStudent ? "STUDENT TIMETABLE" : state.userRole === "ta" ? "TEACHING ASSISTANT TIMETABLE" : "FACULTY TIMETABLE", false);
   view.innerHTML = `
     <article class="card page-card">
       <div class="section-head">
-        <div><h2 style="margin:0 0 5px">28 July – 1 August</h2><p class="stat-label">Soft Computing · CSE 401 · Section A</p></div>
-        <span class="badge purple">${isStudent ? "Student schedule" : state.userRole === "ta" ? "TA schedule" : "Faculty schedule"}</span>
+        <div><h2 style="margin:0 0 5px">${imported ? "My ERP timetable" : "28 July – 1 August"}</h2><p class="stat-label">${imported ? "Imported locally from your timetable file" : "Soft Computing · CSE 401 · Section A"}</p></div>
+        <span class="badge ${imported ? "green" : "purple"}">${imported ? "ERP file imported" : isStudent ? "Student schedule" : state.userRole === "ta" ? "TA schedule" : "Faculty schedule"}</span>
       </div>
       <div class="schedule-week">
-        ${scheduleDay("Tuesday", "28 Jul", "10:00 AM", "11:00 AM", "Foundations of Soft Computing", "Completed", "green", isStudent, enrolled, false)}
-        ${scheduleDay("Thursday", "30 Jul", "10:00 AM", "10:50 AM", "Fuzzy Sets & Membership", "Today", "purple", isStudent, enrolled, true)}
-        ${scheduleDay("Saturday", "1 Aug", "09:00 AM", "10:00 AM", "Neural Network Models", "Upcoming", "gray", isStudent, enrolled, false)}
+        ${imported
+          ? state.importedSchedule.map((item, index) => scheduleDay(item.day, item.date, item.start, item.end, item.topic, index === 0 ? "Next" : "Upcoming", index === 0 ? "purple" : "gray", isStudent, enrolled, index === 0, item.room)).join("")
+          : `${scheduleDay("Tuesday", "28 Jul", "10:00 AM", "11:00 AM", "Foundations of Soft Computing", "Completed", "green", isStudent, enrolled, false)}
+             ${scheduleDay("Thursday", "30 Jul", "10:00 AM", "10:50 AM", "Fuzzy Sets & Membership", "Today", "purple", isStudent, enrolled, true)}
+             ${scheduleDay("Saturday", "1 Aug", "09:00 AM", "10:00 AM", "Neural Network Models", "Upcoming", "gray", isStudent, enrolled, false)}`}
       </div>
+      ${isStudent ? `
+        <div class="setup-actions">
+          ${imported ? `<button class="btn btn-danger" data-action="clear-imported-schedule">Clear imported schedule</button>` : ""}
+          <a class="btn" href="https://erp.iitkgp.ac.in/IIT_ERP3/home.htm" target="_blank" rel="noopener noreferrer">${icon("i-cloud")} Open IIT KGP ERP</a>
+          <button class="btn btn-primary" data-action="import-schedule">${icon("i-download")} Import CSV / ICS</button>
+          <input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />
+        </div>
+        <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser. CampusPulse never receives your ERP password or session cookie.</span></div>` : ""}
       ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Join Soft Computing with code <strong>SC401A</strong> to unlock attendance and quiz activities. The timetable remains visible to everyone.</span></div>` : ""}
     </article>`;
 }
 
-function scheduleDay(day, date, start, end, topic, status, color, isStudent, enrolled, isToday) {
+function scheduleDay(day, date, start, end, topic, status, color, isStudent, enrolled, isToday, room = "Room 304") {
   const action = isToday
     ? isStudent
       ? `<button class="btn ${enrolled ? "btn-soft" : ""}" data-route-link="${enrolled ? "attendance" : "classes"}">${icon(enrolled ? "i-wifi" : "i-plus")} ${enrolled ? "View check-in" : "Join course"}</button>`
@@ -197,7 +210,7 @@ function scheduleDay(day, date, start, end, topic, status, color, isStudent, enr
   return `<div class="schedule-day ${isToday ? "today" : ""}">
     <div class="schedule-date"><strong>${day}</strong><span>${date}</span></div>
     <div class="schedule-time"><strong>${start}</strong><span>${end}</span></div>
-    <div class="schedule-info"><strong>${topic}</strong><span>Soft Computing · CSE 401 · Room 304</span></div>
+    <div class="schedule-info"><strong>${topic}</strong><span>Soft Computing · CSE 401 · ${room}</span></div>
     <div class="schedule-action">${action}</div>
   </div>`;
 }
@@ -434,24 +447,24 @@ function renderERP() {
   view.innerHTML = `
     <div class="page-grid">
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Sync queue</h2><p class="stat-label">Review classroom records before sending them to your institution ERP.</p></div><span class="badge ${hasSession && state.erpStatus === "pending" ? "amber" : "green"}">${hasSession && state.erpStatus === "pending" ? "1 pending" : "All synced"}</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Attendance upload</h2><p class="stat-label">Prepare the attendance file, then upload it through the official IIT KGP ERP.</p></div><span class="badge ${hasSession ? "amber" : "green"}">${hasSession ? "Ready to export" : "No pending class"}</span></div>
         ${hasSession ? `
           <div class="sync-record">
-            <span class="sync-symbol ${state.erpStatus === "synced" ? "done" : ""}">${icon(state.erpStatus === "synced" ? "i-check" : "i-cloud")}</span>
+            <span class="sync-symbol">${icon("i-cloud")}</span>
             <div><strong>Soft Computing · 30 Jul 2026</strong><p>${state.present.length} present · ${42 - state.present.length} absent · Quiz ${state.quizPublished ? "included" : "not included"}</p></div>
-            ${state.erpStatus === "pending" ? `<button class="btn btn-primary" data-action="sync-erp">Sync now</button>` : `<span class="badge green">Synced</span>`}
+            <button class="btn btn-primary" data-action="prepare-erp-upload">${icon("i-download")} Download CSV</button>
           </div>` : `
           <div class="empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h2>No records waiting</h2><p>Complete an attendance session and it will appear here for review and upload.</p><button class="btn btn-primary" data-route-link="attendance">Start attendance</button></div></div>`}
       </article>
       <aside class="card page-card">
-        <div class="section-head"><h3>ERP connection</h3><span class="badge green">Connected</span></div>
+        <div class="section-head"><h3>IIT KGP ERP</h3><span class="badge amber">Manual upload</span></div>
         <div class="summary-list">
-          <div class="summary-item"><span>Provider</span><strong>Campus ERP</strong></div>
-          <div class="summary-item"><span>Institution ID</span><strong>INST-2026-04</strong></div>
-          <div class="summary-item"><span>Last successful sync</span><strong>Today, 9:14 AM</strong></div>
-          <div class="summary-item"><span>Mode</span><strong>Review before sync</strong></div>
+          <div class="summary-item"><span>Provider</span><strong>IIT Kharagpur ERP</strong></div>
+          <div class="summary-item"><span>Access</span><strong>Professor only</strong></div>
+          <div class="summary-item"><span>Mode</span><strong>CSV export + manual upload</strong></div>
         </div>
-        <div class="security-note"><span class="lock">⌾</span><span>This prototype uses a local ERP adapter. Replace it with your institution’s authenticated REST API endpoint for production.</span></div>
+        <a class="btn btn-soft" style="width:100%;margin-top:18px" href="https://erp.iitkgp.ac.in/IIT_ERP3/home.htm" target="_blank" rel="noopener noreferrer">${icon("i-cloud")} Open official ERP</a>
+        <div class="security-note"><span class="lock">⌾</span><span>CampusPulse does not store professor ERP credentials. Direct upload can be enabled later with an institute-approved API.</span></div>
       </aside>
     </div>`;
 }
@@ -591,6 +604,59 @@ function downloadCSV() {
   URL.revokeObjectURL(a.href);
 }
 
+function downloadERPAttendance() {
+  const rows = [
+    ["COURSE_CODE", "COURSE_NAME", "LECTURE_DATE", "ROLL_NUMBER", "STUDENT_NAME", "STATUS"],
+    ...roster.map((student, index) => ["CSE401", "Soft Computing", "2026-07-30", student[1], student[0], state.present.includes(index) ? "P" : "A"])
+  ];
+  const csv = rows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = "IITKGP-CSE401-attendance-2026-07-30.csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+function parseScheduleCSV(text) {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2) throw new Error("CSV must include a header and at least one class");
+  const headers = lines[0].split(",").map(header => header.trim().replace(/^"|"$/g, "").toLowerCase());
+  const get = (values, ...names) => {
+    const index = headers.findIndex(header => names.includes(header));
+    return index >= 0 ? values[index]?.trim().replace(/^"|"$/g, "") : "";
+  };
+  return lines.slice(1).map(line => {
+    const values = line.split(",");
+    return {
+      day: get(values, "day", "weekday") || "Class",
+      date: get(values, "date") || "ERP",
+      start: get(values, "start", "start_time", "time") || "—",
+      end: get(values, "end", "end_time") || "—",
+      topic: get(values, "course", "subject", "topic", "summary") || "Scheduled class",
+      room: get(values, "room", "location", "venue") || "Room TBA"
+    };
+  }).filter(item => item.topic);
+}
+
+function parseScheduleICS(text) {
+  const formatDate = value => {
+    const raw = value.replace(/Z$/, "");
+    const date = new Date(Number(raw.slice(0, 4)), Number(raw.slice(4, 6)) - 1, Number(raw.slice(6, 8)), Number(raw.slice(9, 11) || 0), Number(raw.slice(11, 13) || 0));
+    return {
+      day: date.toLocaleDateString("en-US", { weekday: "long" }),
+      date: date.toLocaleDateString("en-US", { day: "numeric", month: "short" }),
+      time: date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })
+    };
+  };
+  return text.split("BEGIN:VEVENT").slice(1).map(block => {
+    const field = name => block.match(new RegExp(`^${name}(?:;[^:]*)?:(.+)$`, "mi"))?.[1]?.trim() || "";
+    const start = formatDate(field("DTSTART"));
+    const end = formatDate(field("DTEND"));
+    return { day: start.day, date: start.date, start: start.time, end: end.time, topic: field("SUMMARY") || "Scheduled class", room: field("LOCATION") || "Room TBA" };
+  });
+}
+
 document.addEventListener("click", event => {
   const loginButton = event.target.closest("[data-login-role]");
   if (loginButton) {
@@ -633,6 +699,18 @@ document.addEventListener("click", event => {
     persist(); renderLiveAttendance(); toast(`Attendance saved for ${state.present.length} students`);
   }
   if (action === "download") downloadCSV();
+  if (action === "prepare-erp-upload") {
+    if (state.userRole !== "faculty") return toast("Only the professor can prepare an ERP upload");
+    downloadERPAttendance();
+    toast("ERP attendance CSV prepared");
+  }
+  if (action === "import-schedule") document.querySelector("#scheduleFile")?.click();
+  if (action === "clear-imported-schedule") {
+    state.importedSchedule = [];
+    persist();
+    renderSchedule();
+    toast("Imported timetable cleared");
+  }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1, "Type your question here", ["Option A", "Option B", "Option C", "Option D"], 0));
@@ -647,15 +725,21 @@ document.addEventListener("click", event => {
     toast(`Quiz ended with ${state.quizResponses} responses`);
     navigate("dashboard");
   }
-  if (action === "sync-erp") {
-    if (state.userRole !== "faculty") return toast("Only the professor can sync records to ERP");
-    const btn = event.target.closest("button");
-    btn.disabled = true;
-    btn.textContent = "Syncing…";
-    setTimeout(() => {
-      state.erpStatus = "synced";
-      persist(); renderERP(); toast("Attendance and quiz data synced to ERP");
-    }, 1000);
+});
+
+document.addEventListener("change", async event => {
+  if (event.target.id !== "scheduleFile" || !event.target.files?.[0]) return;
+  const file = event.target.files[0];
+  try {
+    const text = await file.text();
+    const parsed = file.name.toLowerCase().endsWith(".ics") ? parseScheduleICS(text) : parseScheduleCSV(text);
+    if (!parsed.length) throw new Error("No timetable entries found");
+    state.importedSchedule = parsed.slice(0, 30);
+    persist();
+    renderSchedule();
+    toast(`${state.importedSchedule.length} timetable entries imported`);
+  } catch (error) {
+    toast(error.message || "Could not read that timetable file");
   }
 });
 
