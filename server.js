@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const port = Number(process.env.PORT || 4173);
+const host = process.env.HOST || "0.0.0.0";
 const root = path.join(__dirname, "public");
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -29,6 +30,6 @@ http
     });
     fs.createReadStream(filePath).pipe(res);
   })
-  .listen(port, "127.0.0.1", () => {
-    console.log(`CampusPulse is running at http://127.0.0.1:${port}`);
+  .listen(port, host, () => {
+    console.log(`CampusPulse is running at http://${host}:${port}`);
   });
