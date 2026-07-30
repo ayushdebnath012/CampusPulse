@@ -5,7 +5,40 @@ const roster = [
   ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
 ];
 
-const APP_VERSION = "7";
+const APP_VERSION = "8";
+const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
+let apiToken = localStorage.getItem("campusPulseApiToken") || "";
+
+async function apiRequest(path, options = {}) {
+  if (!API_BASE) {
+    const error = new Error("Backend API is not configured");
+    error.code = "API_NOT_CONFIGURED";
+    throw error;
+  }
+  const headers = { ...(options.headers || {}) };
+  if (options.body !== undefined) headers["Content-Type"] = "application/json";
+  if (options.auth !== false && apiToken) headers.Authorization = `Bearer ${apiToken}`;
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: options.method || "GET",
+    headers,
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+  });
+  if (response.status === 204) return null;
+  const contentType = response.headers.get("content-type") || "";
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+  if (!response.ok) {
+    const error = new Error(payload?.error || `Backend request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+function backendConfigured() {
+  return Boolean(API_BASE);
+}
 
 const defaultState = {
   route: "dashboard",
@@ -14,6 +47,12 @@ const defaultState = {
   accountName: "",
   authEmail: "",
   accounts: [],
+  backendSchedule: [],
+  backendAttendanceId: "",
+  attendanceCheckedIn: false,
+  backendQuizId: "",
+  backendQuizQuestions: [],
+  quizResponded: false,
   attendanceStatus: "not_started",
   checks: { wifi: false, bluetooth: false },
   present: [],
@@ -32,6 +71,10 @@ const storedAppVersion = state.appVersion;
 state.courses = defaultState.courses;
 state.enrolledCourses = Array.isArray(state.enrolledCourses) && state.enrolledCourses.includes("soft401") ? ["soft401"] : [];
 state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
+state.backendSchedule = Array.isArray(state.backendSchedule) ? state.backendSchedule : [];
+state.backendQuizQuestions = Array.isArray(state.backendQuizQuestions) ? state.backendQuizQuestions : [];
+state.attendanceCheckedIn = Boolean(state.attendanceCheckedIn);
+state.quizResponded = Boolean(state.quizResponded);
 state.accounts = Array.isArray(state.accounts) ? state.accounts.filter(account => account?.email && account?.passwordHash && account?.role) : [];
 state.authenticated = storedAppVersion === APP_VERSION && Boolean(state.authenticated);
 if (!state.authenticated) {
@@ -141,8 +184,8 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <label for="signupEmail">IIT KGP email</label>
             <input id="signupEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="email" required />
             <div class="auth-field-pair">
-              <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 6 characters" autocomplete="new-password" minlength="6" required /></div>
-              <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="6" required /></div>
+              <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
+              <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="8" required /></div>
             </div>
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-send")} Check email & continue</button>
           </form>
@@ -152,7 +195,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <label for="loginEmail">${profile.idLabel}</label>
             <input id="loginEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="username" required />
             <label for="loginPassword">Password</label>
-            <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="6" required />
+            <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="8" required />
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
           </form>
           <div class="auth-demo-note"><span>Verified accounts only</span><p>${state.accounts.length ? "Use the email and password from your completed sign-up." : "No account exists yet. Create and verify an account before signing in."}</p></div>`}
@@ -184,7 +227,7 @@ function renderEmailVerification() {
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-check")} Verify email</button>
           </form>
           <div class="verification-actions"><button type="button" class="text-btn" data-action="back-to-signup">Change details</button><button type="button" class="text-btn" data-action="resend-code">Resend code</button></div>
-          <div class="auth-demo-note code-note"><span>Prototype email delivery</span><p>Your verification code is <strong>${pendingSignup.code}</strong>. A production backend would deliver this code by email.</p></div>
+          <div class="auth-demo-note code-note"><span>${pendingSignup.remote ? "Email verification" : "Prototype email delivery"}</span><p>${pendingSignup.code ? `Your verification code is <strong>${pendingSignup.code}</strong>.` : "The backend sent a verification code to your institutional email."}</p></div>
         </div>
       </section>
     </div>`;
@@ -220,6 +263,66 @@ function showApp() {
   authRoot.innerHTML = "";
   appShell.hidden = false;
   render();
+}
+
+async function syncBackendState() {
+  if (!backendConfigured() || !apiToken) return;
+  const payload = await apiRequest("/api/bootstrap");
+  state.userRole = payload.user.role;
+  state.accountName = payload.user.name;
+  state.authEmail = payload.user.email;
+  state.courses = Array.isArray(payload.courses) && payload.courses.length
+    ? payload.courses.map((course) => ({ ...course, code: course.code || "" }))
+    : defaultState.courses;
+  state.enrolledCourses = payload.enrolledCourseIds || [];
+  state.backendSchedule = payload.schedule || [];
+  if (payload.attendance) {
+    state.backendAttendanceId = payload.attendance.id;
+    state.attendanceStatus = payload.attendance.status === "open" ? "scanning" : state.attendanceStatus;
+    state.attendanceCheckedIn = Boolean(payload.attendance.checkedIn);
+    if (Array.isArray(payload.attendance.present)) {
+      state.present = Array.from(
+        { length: Math.min(roster.length, payload.attendance.present.length) },
+        (_, index) => index
+      );
+    }
+  } else {
+    state.backendAttendanceId = "";
+    state.attendanceCheckedIn = false;
+    if (state.attendanceStatus === "scanning") state.attendanceStatus = "not_started";
+  }
+  if (payload.quiz) {
+    state.backendQuizId = payload.quiz.id;
+    state.quizPublished = payload.quiz.status === "open";
+    if (Array.isArray(payload.quiz.responses)) state.quizResponses = payload.quiz.responses.length;
+    state.backendQuizQuestions = payload.quiz.questions || [];
+    state.quizResponded = Boolean(payload.quiz.responded);
+  } else {
+    state.backendQuizId = "";
+    state.backendQuizQuestions = [];
+    state.quizPublished = false;
+    state.quizResponded = false;
+  }
+  persist();
+}
+
+async function restoreBackendSession() {
+  if (!backendConfigured() || !apiToken) return false;
+  try {
+    const payload = await apiRequest("/api/me");
+    state.userRole = payload.user.role;
+    state.accountName = payload.user.name;
+    state.authEmail = payload.user.email;
+    state.authenticated = true;
+    await syncBackendState();
+    showApp();
+    return true;
+  } catch {
+    apiToken = "";
+    localStorage.removeItem("campusPulseApiToken");
+    state.authenticated = false;
+    return false;
+  }
 }
 
 function toast(message, type = "success") {
@@ -366,14 +469,35 @@ function renderSchedule() {
     status: index === 0 ? "Next" : "Upcoming",
     today: index === 0
   })).filter(item => item.dayIndex >= 0);
-  const events = imported && importedEvents.length ? importedEvents : defaultEvents;
+  const backendEvents = state.backendSchedule.map((item, index) => ({
+    ...item,
+    dayIndex: dayIndexFromName(item.day),
+    status: item.today ? "Today" : index === 0 ? "Completed" : "Upcoming",
+    today: Boolean(item.today)
+  })).filter(item => item.dayIndex >= 0);
+  const hasBackendSchedule = backendEvents.length > 0;
+  const events = imported && importedEvents.length
+    ? importedEvents
+    : hasBackendSchedule
+      ? backendEvents
+      : defaultEvents;
+  const scheduleLabel = imported
+    ? "My ERP timetable"
+    : hasBackendSchedule
+      ? "Campus schedule"
+      : "27 July – 2 August 2026";
+  const scheduleBadge = imported
+    ? "ERP file imported"
+    : hasBackendSchedule
+      ? "Synced from CampusPulse"
+      : `${state.userRole === "faculty" ? "Professor" : state.userRole === "ta" ? "Teaching Assistant" : "Student"} view`;
   const roleName = state.userRole === "faculty" ? "Professor" : state.userRole === "ta" ? "Teaching Assistant" : "Student";
   setHeader("Schedule calendar", `${roleName.toUpperCase()} TIMETABLE`, false);
   view.innerHTML = `
     <article class="card page-card calendar-page">
       <div class="calendar-titlebar">
-        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${imported ? "My ERP timetable" : "27 July – 2 August 2026"}</h2><p>${imported ? "Imported locally from your timetable file" : "Soft Computing · CSE 401 · Section A"}</p></div>
-        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "ERP file imported" : `${roleName} view`}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
+        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${scheduleLabel}</h2><p>${imported ? "Imported locally from your timetable file" : "Soft Computing · CSE 401 · Section A"}</p></div>
+        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${scheduleBadge}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
       </div>
       <div class="calendar-scroll" aria-label="Weekly class calendar">
         <div class="calendar-board">
@@ -475,7 +599,7 @@ function renderStudentAttendanceAccess() {
       <div class="setup-radar">${icon("i-bluetooth")}</div><span class="badge green">Course access verified</span>
       <h2 style="margin:15px 0 7px">Soft Computing check-in</h2>
       <p class="stat-label">When your faculty opens attendance, keep Bluetooth and internet on. CampusPulse will verify that your device is inside the classroom.</p>
-      <button class="btn btn-primary" style="margin-top:20px" ${state.attendanceStatus === "scanning" ? "" : "disabled"}>${icon("i-wifi")} ${state.attendanceStatus === "scanning" ? "Verify my presence" : "Waiting for faculty"}</button>
+      <button class="btn btn-primary" style="margin-top:20px" data-action="student-check-in" ${state.attendanceStatus === "scanning" && !state.attendanceCheckedIn ? "" : "disabled"}>${icon(state.attendanceCheckedIn ? "i-check" : "i-wifi")} ${state.attendanceCheckedIn ? "Presence recorded" : state.attendanceStatus === "scanning" ? "Verify my presence" : "Waiting for faculty"}</button>
     </article>` : `
     <article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Join the course first</h2><p>Attendance check-in is available only to students enrolled in Soft Computing.</p><button class="btn btn-primary" data-route-link="classes">Join with course code</button></div></article>`;
 }
@@ -557,7 +681,23 @@ function renderLiveAttendance() {
       ${attendanceSidePanel(count)}
     </div>`;
 
-  if (!complete && count < roster.length) {
+  if (!complete && backendConfigured() && state.backendAttendanceId) {
+    scanTimer = setInterval(async () => {
+      if (state.route !== "attendance" || state.attendanceStatus !== "scanning") return;
+      try {
+        const result = await apiRequest("/api/attendance/current");
+        const backendCount = result.attendance?.present?.length || 0;
+        if (backendCount !== state.present.length) {
+          state.present = Array.from(
+            { length: Math.min(roster.length, backendCount) },
+            (_, index) => index
+          );
+          persist();
+          renderLiveAttendance();
+        }
+      } catch {}
+    }, 3000);
+  } else if (!complete && count < roster.length) {
     scanTimer = setInterval(() => {
       const remaining = roster.filter((_, i) => !state.present.includes(i));
       if (!remaining.length) return clearInterval(scanTimer);
@@ -614,8 +754,14 @@ function renderStudentQuizAccess() {
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>Soft Computing</h2><p>CSE 401 · Section A</p></div><span class="badge green">Enrolled</span></div>
-        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>Concept check · Relations & Trees</h3><p class="stat-label" style="margin-top:5px">2 questions · 3 minutes</p></div><span class="badge ${state.quizPublished ? "purple" : "gray"}">${state.quizPublished ? "Available now" : "Not started"}</span></div>
-        <button class="btn btn-primary" ${state.quizPublished ? "" : "disabled"}>${icon("i-play")} Start quiz</button></div>
+        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>Concept check · Relations & Trees</h3><p class="stat-label" style="margin-top:5px">${state.backendQuizQuestions.length || 2} questions · 3 minutes</p></div><span class="badge ${state.quizPublished ? "purple" : "gray"}">${state.quizResponded ? "Submitted" : state.quizPublished ? "Available now" : "Not started"}</span></div>
+        ${state.quizPublished && !state.quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
+          ${(state.backendQuizQuestions.length ? state.backendQuizQuestions : [
+            { text: "Which property is central to fuzzy membership?", options: ["Binary membership only", "Degrees of membership", "No membership", "Random membership"] },
+            { text: "A neural network learns primarily by adjusting what?", options: ["Room numbers", "Weights", "Course codes", "Calendar dates"] }
+          ]).map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${question.text || question.question}</strong></legend>${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${option}</span></label>`).join("")}</fieldset>`).join("")}
+          <button class="btn btn-primary" type="submit">${icon("i-send")} Submit quiz</button>
+        </form>` : `<button class="btn btn-primary" disabled>${icon(state.quizResponded ? "i-check" : "i-play")} ${state.quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
       </article>
       <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>CSE 401</strong></div><div class="summary-item"><span>Attendance eligibility</span><strong>Enabled</strong></div></div><div class="security-note"><span class="lock">⌾</span><span>You can access these activities because you joined this course with its private code.</span></div></aside>
     </div>` : `
@@ -658,7 +804,20 @@ function renderLiveQuiz() {
         <div class="summary-list"><div class="summary-item"><span>Average response time</span><strong>18 sec</strong></div><div class="summary-item"><span>Questions</span><strong>2</strong></div><div class="summary-item"><span>Time remaining</span><strong>01:42</strong></div></div>
       </aside>
     </div>`;
-  if (responses < 38) {
+  if (backendConfigured() && state.backendQuizId) {
+    quizTimer = setTimeout(async () => {
+      if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
+      try {
+        const result = await apiRequest("/api/quizzes/current");
+        const responseCount = result.quiz?.responses?.length || 0;
+        if (responseCount !== state.quizResponses) {
+          state.quizResponses = responseCount;
+          persist();
+          renderLiveQuiz();
+        }
+      } catch {}
+    }, 3000);
+  } else if (responses < 38) {
     quizTimer = setTimeout(() => {
       if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
       state.quizResponses = Math.min(38, state.quizResponses + Math.ceil(Math.random() * 3));
@@ -797,12 +956,33 @@ function roleOption(role, initials, title, description) {
 
 function renderPlaceholder(route) {
   if (route === "classes") return renderClasses();
+  if (route === "settings") return renderSettings();
   const config = {
     classes: ["Classes", "Manage your timetable", "i-calendar"],
     settings: ["Settings", "Configure campus network, Bluetooth beacons, and ERP access.", "i-settings"]
   }[route] || ["Coming soon", "This workspace is ready for its next module.", "i-grid"];
   setHeader(config[0], "CAMPUSPULSE");
   view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon(config[2])}</span><h2>${config[0]}</h2><p>${config[1]}</p><button class="btn btn-primary" data-route-link="dashboard">Back to overview</button></div></article>`;
+}
+
+function renderSettings() {
+  setHeader("Settings", "CAMPUSPULSE", false);
+  view.innerHTML = `
+    <div class="page-grid">
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Backend connection</h2><p class="stat-label">Connect this device to the deployed CampusPulse API.</p></div><span class="badge ${backendConfigured() ? "green" : "amber"}">${backendConfigured() ? "Configured" : "Offline demo"}</span></div>
+        <form id="apiSettingsForm" class="login-form" style="margin-top:22px">
+          <label for="apiBaseUrl">API base URL</label>
+          <input id="apiBaseUrl" name="apiBaseUrl" type="url" placeholder="https://your-api.example.com" value="${API_BASE}" />
+          <div class="setup-actions"><button type="button" class="btn" data-action="clear-api-url">Use offline demo</button><button class="btn btn-primary" type="submit">${icon("i-cloud")} Save and reconnect</button></div>
+        </form>
+        <div class="security-note"><span class="lock">⌾</span><span>The Android app and web app use this HTTPS endpoint for accounts, course enrollment, attendance, quizzes, and ERP exports.</span></div>
+      </article>
+      <aside class="card page-card">
+        <div class="section-head"><h3>Connection details</h3></div>
+        <div class="summary-list"><div class="summary-item"><span>Mode</span><strong>${backendConfigured() ? "Persistent API" : "This-device prototype"}</strong></div><div class="summary-item"><span>Account session</span><strong>${apiToken ? "Signed in" : "Not connected"}</strong></div><div class="summary-item"><span>App version</span><strong>${APP_VERSION}</strong></div></div>
+      </aside>
+    </div>`;
 }
 
 async function verifyDevice(type) {
@@ -849,6 +1029,24 @@ function downloadERPAttendance() {
   URL.revokeObjectURL(link.href);
 }
 
+async function downloadBackendERP() {
+  const response = await fetch(`${API_BASE}/api/erp/attendance.csv`, {
+    headers: { Authorization: `Bearer ${apiToken}` }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `ERP export failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const filename = disposition.match(/filename="?([^"]+)"?/i)?.[1] || "CampusPulse-attendance.csv";
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
 function parseScheduleCSV(text) {
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (lines.length < 2) throw new Error("CSV must include a header and at least one class");
@@ -888,7 +1086,7 @@ function parseScheduleICS(text) {
   });
 }
 
-document.addEventListener("click", event => {
+document.addEventListener("click", async event => {
   const authRole = event.target.closest("[data-auth-role]");
   if (authRole) return renderLogin(authRole.dataset.authRole, authMode);
   const authModeButton = event.target.closest("[data-auth-mode]");
@@ -899,6 +1097,11 @@ document.addEventListener("click", event => {
   const switchButton = event.target.closest("[data-switch-role]");
   if (switchButton) {
     clearTimeout(quizTimer);
+    if (backendConfigured() && apiToken) {
+      try { await apiRequest("/api/auth/logout", { method: "POST" }); } catch {}
+      apiToken = "";
+      localStorage.removeItem("campusPulseApiToken");
+    }
     state.authenticated = false;
     state.userRole = switchButton.dataset.switchRole;
     state.accountName = "";
@@ -930,21 +1133,72 @@ document.addEventListener("click", event => {
   }
   if (action === "attendance") navigate("attendance");
   if (action === "start-scan") {
+    if (backendConfigured()) {
+      try {
+        const result = await apiRequest("/api/attendance/sessions", {
+          method: "POST",
+          body: { courseId: "soft401", scheduleId: "schedule-2" }
+        });
+        state.backendAttendanceId = result.attendance.id;
+      } catch (error) {
+        return toast(error.message || "Could not open attendance", "error");
+      }
+    }
     state.attendanceStatus = "scanning";
     state.present = [];
     persist(); renderLiveAttendance(); toast("Check-in is now open");
   }
   if (action === "end-session") {
+    if (backendConfigured() && state.backendAttendanceId) {
+      try {
+        await apiRequest(`/api/attendance/${state.backendAttendanceId}/close`, {
+          method: "POST",
+          body: {}
+        });
+      } catch (error) {
+        return toast(error.message || "Could not close attendance", "error");
+      }
+    }
     clearInterval(scanTimer);
     state.attendanceStatus = "complete";
     state.erpStatus = "pending";
     persist(); renderLiveAttendance(); toast(`Attendance saved for ${state.present.length} students`);
   }
+  if (action === "student-check-in") {
+    if (!backendConfigured() || !state.backendAttendanceId) {
+      state.present = state.present.length ? state.present : [0];
+      persist();
+      renderStudentAttendanceAccess();
+      return toast("Your prototype check-in was recorded on this device");
+    }
+    try {
+      await apiRequest(`/api/attendance/${state.backendAttendanceId}/check-in`, {
+        method: "POST",
+        body: { wifi: navigator.onLine, bluetooth: true }
+      });
+      state.attendanceCheckedIn = true;
+      persist();
+      renderStudentAttendanceAccess();
+      return toast("Your presence was verified and recorded");
+    } catch (error) {
+      return toast(error.message || "Could not record your presence", "error");
+    }
+  }
   if (action === "download") downloadCSV();
   if (action === "prepare-erp-upload") {
     if (state.userRole !== "faculty") return toast("Only the professor can prepare an ERP upload");
-    downloadERPAttendance();
-    toast("ERP attendance CSV prepared");
+    try {
+      if (backendConfigured()) await downloadBackendERP();
+      else downloadERPAttendance();
+      toast("ERP attendance CSV prepared");
+    } catch (error) {
+      return toast(error.message || "Could not prepare ERP attendance", "error");
+    }
+  }
+  if (action === "clear-api-url") {
+    localStorage.removeItem("campusPulseApiBase");
+    localStorage.removeItem("campusPulseApiToken");
+    location.reload();
   }
   if (action === "import-schedule") document.querySelector("#scheduleFile")?.click();
   if (action === "clear-imported-schedule") {
@@ -959,6 +1213,11 @@ document.addEventListener("click", event => {
   }
   if (action === "logout") {
     clearTimeout(quizTimer);
+    if (backendConfigured() && apiToken) {
+      try { await apiRequest("/api/auth/logout", { method: "POST" }); } catch {}
+      apiToken = "";
+      localStorage.removeItem("campusPulseApiToken");
+    }
     state.authenticated = false;
     state.accountName = "";
     state.authEmail = "";
@@ -975,21 +1234,71 @@ document.addEventListener("click", event => {
     renderLogin(role, "signup");
   }
   if (action === "resend-code" && pendingSignup) {
-    pendingSignup.code = String(Math.floor(100000 + Math.random() * 900000));
+    if (pendingSignup.remote) {
+      try {
+        const result = await apiRequest("/api/auth/signup/resend", {
+          method: "POST",
+          auth: false,
+          body: { email: pendingSignup.email }
+        });
+        pendingSignup.code = result.devCode || "";
+      } catch (error) {
+        return toast(error.message || "Could not resend the code", "error");
+      }
+    } else {
+      pendingSignup.code = String(Math.floor(100000 + Math.random() * 900000));
+    }
     renderEmailVerification();
-    toast("A new verification code was generated");
+    toast(pendingSignup.remote ? "A new verification email was requested" : "A new verification code was generated");
   }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1, "Type your question here", ["Option A", "Option B", "Option C", "Option D"], 0));
   }
   if (action === "publish-quiz") {
+    if (backendConfigured()) {
+      const questions = [...document.querySelectorAll("#quizBuilder .question-card")].map((card) => {
+        const options = [...card.querySelectorAll(".option-input input[type='text']")].map((input) => input.value.trim());
+        const selected = [...card.querySelectorAll(".option-input input[type='radio']")].findIndex((input) => input.checked);
+        return {
+          text: card.querySelector(".question-top > input")?.value.trim() || "Question",
+          options,
+          answer: Math.max(0, selected)
+        };
+      });
+      try {
+        const result = await apiRequest("/api/quizzes", {
+          method: "POST",
+          body: {
+            courseId: "soft401",
+            title: document.querySelector("#quizTitle")?.value || "Quick quiz",
+            questions
+          }
+        });
+        state.backendQuizId = result.quiz.id;
+        state.backendQuizQuestions = result.quiz.questions;
+      } catch (error) {
+        return toast(error.message || "Could not publish the quiz", "error");
+      }
+    }
     state.quizPublished = true;
-    state.quizResponses = 3;
-    persist(); renderLiveQuiz(); toast("Quiz published to 42 students");
+    state.quizResponses = backendConfigured() ? 0 : 3;
+    persist(); renderLiveQuiz(); toast("Quiz published to Soft Computing");
   }
   if (action === "end-quiz") {
+    if (backendConfigured() && state.backendQuizId) {
+      try {
+        await apiRequest(`/api/quizzes/${state.backendQuizId}/close`, {
+          method: "POST",
+          body: {}
+        });
+      } catch (error) {
+        return toast(error.message || "Could not close the quiz", "error");
+      }
+    }
     clearTimeout(quizTimer);
+    state.quizPublished = false;
+    persist();
     toast(`Quiz ended with ${state.quizResponses} responses`);
     navigate("dashboard");
   }
@@ -1016,29 +1325,76 @@ document.querySelector("#roleSwitch").addEventListener("click", openRoleModal);
 
 document.addEventListener("submit", async event => {
   event.preventDefault();
+  if (event.target.id === "apiSettingsForm") {
+    const value = String(new FormData(event.target).get("apiBaseUrl") || "").trim().replace(/\/+$/, "");
+    if (value && !/^https:\/\//i.test(value) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(value)) {
+      return toast("Use an HTTPS API URL", "error");
+    }
+    if (value) localStorage.setItem("campusPulseApiBase", value);
+    else localStorage.removeItem("campusPulseApiBase");
+    localStorage.removeItem("campusPulseApiToken");
+    location.reload();
+    return;
+  }
   if (event.target.id === "signupForm") {
     const data = Object.fromEntries(new FormData(event.target));
     const email = String(data.email || "").trim().toLowerCase();
     const name = String(data.name || "").trim().replace(/\s+/g, " ");
     if (name.length < 2) return toast("Enter your full name", "error");
     if (!isCampusEmail(email)) return toast("Use a valid IIT KGP institutional email", "error");
-    if (String(data.password).length < 6) return toast("Password must contain at least 6 characters", "error");
+    if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
-    if (state.accounts.some(account => account.email === email)) return toast("An account already exists for this email", "error");
-    pendingSignup = {
-      role: data.role,
-      name,
-      email,
-      passwordHash: await credentialHash(email, data.password),
-      code: String(Math.floor(100000 + Math.random() * 900000))
-    };
+    if (!backendConfigured() && state.accounts.some(account => account.email === email)) return toast("An account already exists for this email", "error");
+    try {
+      if (backendConfigured()) {
+        const result = await apiRequest("/api/auth/signup/request", {
+          method: "POST",
+          auth: false,
+          body: { role: data.role, name, email, password: data.password }
+        });
+        pendingSignup = {
+          remote: true,
+          role: data.role,
+          name,
+          email,
+          code: result.devCode || ""
+        };
+      } else {
+        pendingSignup = {
+          remote: false,
+          role: data.role,
+          name,
+          email,
+          passwordHash: await credentialHash(email, data.password),
+          code: String(Math.floor(100000 + Math.random() * 900000))
+        };
+      }
+    } catch (error) {
+      return toast(error.message || "Could not start sign-up", "error");
+    }
     selectedLoginRole = data.role;
     renderEmailVerification();
-    return toast("Verification code created for your email check");
+    return toast(backendConfigured() ? "Verification email requested" : "Verification code created for your email check");
   }
   if (event.target.id === "verificationForm") {
     if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
     const code = String(new FormData(event.target).get("code") || "").trim();
+    if (pendingSignup.remote) {
+      try {
+        await apiRequest("/api/auth/signup/verify", {
+          method: "POST",
+          auth: false,
+          body: { email: pendingSignup.email, code }
+        });
+        const role = pendingSignup.role;
+        pendingSignup = null;
+        authMode = "login";
+        renderLogin(role, "login");
+        return toast("Email verified. Sign in with your new credentials");
+      } catch (error) {
+        return toast(error.message || "Could not verify that email", "error");
+      }
+    }
     if (code !== pendingSignup.code) return toast("That verification code is incorrect", "error");
     const account = {
       id: `account-${Date.now()}`,
@@ -1065,6 +1421,28 @@ document.addEventListener("submit", async event => {
     const email = String(data.email || "").trim().toLowerCase();
     const profile = loginProfiles[data.role];
     if (!profile) return toast("Choose a valid account type", "error");
+    if (backendConfigured()) {
+      try {
+        const loggedIn = await apiRequest("/api/auth/login", {
+          method: "POST",
+          auth: false,
+          body: { email, password: data.password, role: data.role }
+        });
+        apiToken = loggedIn.token;
+        localStorage.setItem("campusPulseApiToken", apiToken);
+        state.userRole = loggedIn.user.role;
+        state.authenticated = true;
+        state.accountName = loggedIn.user.name;
+        state.authEmail = loggedIn.user.email;
+        state.route = "dashboard";
+        await syncBackendState();
+        document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
+        showApp();
+        return toast(`Signed in to the ${profile.shortTitle} workspace`);
+      } catch (error) {
+        return toast(error.message || "Could not sign in", "error");
+      }
+    }
     const account = state.accounts.find(item => item.email === email && item.role === data.role);
     if (!account) return toast(`No verified ${profile.shortTitle} account matches that email`, "error");
     const passwordHash = await credentialHash(email, data.password);
@@ -1080,6 +1458,10 @@ document.addEventListener("submit", async event => {
     return toast(`Signed in to the ${profile.shortTitle} workspace`);
   }
   if (event.target.id === "courseForm") {
+    if (backendConfigured()) {
+      document.querySelector("#modalRoot").innerHTML = "";
+      return toast("This rollout is currently limited to Soft Computing");
+    }
     const data = Object.fromEntries(new FormData(event.target));
     const token = data.courseCode.replace(/[^a-z0-9]/gi, "").slice(0, 3).toUpperCase();
     const code = `${token}${Math.random().toString(36).slice(2, 5)}`.toUpperCase();
@@ -1099,6 +1481,19 @@ document.addEventListener("submit", async event => {
   }
   if (event.target.id === "joinForm") {
     const code = new FormData(event.target).get("joinCode").trim().toUpperCase();
+    if (backendConfigured()) {
+      try {
+        const result = await apiRequest("/api/courses/join", {
+          method: "POST",
+          body: { code }
+        });
+        await syncBackendState();
+        renderStudentClasses();
+        return toast(`You joined ${result.course.name}`);
+      } catch (error) {
+        return toast(error.message || "Could not join that course", "error");
+      }
+    }
     const course = state.courses.find(item => item.code === code);
     if (!course) return toast("That course code was not found");
     if (state.enrolledCourses.includes(course.id)) return toast("You already joined this course");
@@ -1107,6 +1502,37 @@ document.addEventListener("submit", async event => {
     renderStudentClasses();
     toast(`You joined ${course.name}`);
   }
+  if (event.target.id === "studentQuizForm") {
+    const questions = state.backendQuizQuestions.length
+      ? state.backendQuizQuestions
+      : [{}, {}];
+    const data = new FormData(event.target);
+    const answers = questions.map((_, index) => Number(data.get(`student-q-${index}`)));
+    if (backendConfigured() && state.backendQuizId) {
+      try {
+        const result = await apiRequest(`/api/quizzes/${state.backendQuizId}/respond`, {
+          method: "POST",
+          body: { answers }
+        });
+        state.quizResponded = true;
+        persist();
+        renderStudentQuizAccess();
+        return toast(`Quiz submitted · Score ${result.score}/${result.total}`);
+      } catch (error) {
+        return toast(error.message || "Could not submit the quiz", "error");
+      }
+    }
+    state.quizResponded = true;
+    persist();
+    renderStudentQuizAccess();
+    toast("Quiz response saved on this device");
+  }
 });
 persist();
-render();
+if (backendConfigured() && apiToken) {
+  restoreBackendSession().then((restored) => {
+    if (!restored) render();
+  });
+} else {
+  render();
+}

@@ -1,0 +1,11 @@
+{
+  "appId": "in.campuspulse.app",
+  "appName": "CampusPulse",
+  "webDir": "public",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

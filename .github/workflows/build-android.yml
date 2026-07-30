@@ -1,0 +1,59 @@
+name: Build CampusPulse Android APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-apk
+  cancel-in-progress: true
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Sync web assets into Android
+        run: npx cap sync android
+
+      - name: Build debug APK
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Name APK
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk CampusPulse.apk
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CampusPulse-Android
+          path: CampusPulse.apk
+          if-no-files-found: error
+          retention-days: 90
