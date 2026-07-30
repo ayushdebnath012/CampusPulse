@@ -5,13 +5,15 @@ const roster = [
   ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
 ];
 
-const APP_VERSION = "6";
+const APP_VERSION = "7";
 
 const defaultState = {
   route: "dashboard",
   userRole: "faculty",
   authenticated: false,
   accountName: "",
+  authEmail: "",
+  accounts: [],
   attendanceStatus: "not_started",
   checks: { wifi: false, bluetooth: false },
   present: [],
@@ -26,13 +28,21 @@ const defaultState = {
 };
 
 let state = { ...defaultState, ...JSON.parse(localStorage.getItem("campusPulseState") || "{}") };
+const storedAppVersion = state.appVersion;
 state.courses = defaultState.courses;
 state.enrolledCourses = Array.isArray(state.enrolledCourses) && state.enrolledCourses.includes("soft401") ? ["soft401"] : [];
 state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
-state.authenticated = Boolean(state.authenticated);
+state.accounts = Array.isArray(state.accounts) ? state.accounts.filter(account => account?.email && account?.passwordHash && account?.role) : [];
+state.authenticated = storedAppVersion === APP_VERSION && Boolean(state.authenticated);
+if (!state.authenticated) {
+  state.accountName = "";
+  state.authEmail = "";
+}
 let scanTimer;
 let quizTimer;
 let selectedLoginRole = state.userRole || "faculty";
+let authMode = state.accounts.length ? "login" : "signup";
+let pendingSignup = null;
 const view = document.querySelector("#view");
 const authRoot = document.querySelector("#authRoot");
 const appShell = document.querySelector("#appShell");
@@ -60,7 +70,7 @@ const loginProfiles = {
     title: "Professor login",
     shortTitle: "Professor",
     description: "Manage Soft Computing, attendance, quizzes, and ERP uploads.",
-    idLabel: "Faculty email or employee ID",
+    idLabel: "Verified faculty email",
     placeholder: "professor@iitkgp.ac.in",
     initials: "PF",
     name: "Professor Demo"
@@ -69,7 +79,7 @@ const loginProfiles = {
     title: "Teaching Assistant login",
     shortTitle: "TA",
     description: "Start attendance and update quizzes for assigned courses.",
-    idLabel: "TA email or employee ID",
+    idLabel: "Verified TA email",
     placeholder: "ta@iitkgp.ac.in",
     initials: "TA",
     name: "Teaching Assistant"
@@ -78,15 +88,16 @@ const loginProfiles = {
     title: "Student login",
     shortTitle: "Student",
     description: "Join Soft Computing, check in, take quizzes, and view your calendar.",
-    idLabel: "Institute email or roll number",
-    placeholder: "22XX00000",
+    idLabel: "Verified institute email",
+    placeholder: "student@kgpian.iitkgp.ac.in",
     initials: "ST",
     name: "Student Demo"
   }
 };
 
-function renderLogin(role = selectedLoginRole) {
+function renderLogin(role = selectedLoginRole, mode = authMode) {
   selectedLoginRole = loginProfiles[role] ? role : "faculty";
+  authMode = mode === "login" ? "login" : "signup";
   const profile = loginProfiles[selectedLoginRole];
   appShell.hidden = true;
   authRoot.hidden = false;
@@ -109,7 +120,7 @@ function renderLogin(role = selectedLoginRole) {
         <div class="auth-card">
           <div class="auth-heading">
             <span class="auth-icon">${profile.initials}</span>
-            <div><p>Welcome to CampusPulse</p><h2>${profile.title}</h2></div>
+            <div><p>Welcome to CampusPulse</p><h2>${authMode === "signup" ? `${profile.shortTitle} sign-up` : profile.title}</h2></div>
           </div>
           <div class="auth-role-grid" role="tablist" aria-label="Choose login type">
             ${Object.entries(loginProfiles).map(([key, item]) => `
@@ -117,20 +128,91 @@ function renderLogin(role = selectedLoginRole) {
                 <span>${item.initials}</span><strong>${item.shortTitle}</strong>
               </button>`).join("")}
           </div>
+          <div class="auth-mode-switch" role="tablist" aria-label="Account action">
+            <button type="button" class="${authMode === "signup" ? "active" : ""}" data-auth-mode="signup">Create account</button>
+            <button type="button" class="${authMode === "login" ? "active" : ""}" data-auth-mode="login">Sign in</button>
+          </div>
           <p class="auth-description">${profile.description}</p>
+          ${authMode === "signup" ? `
+          <form id="signupForm" class="login-form">
+            <input type="hidden" name="role" value="${selectedLoginRole}" />
+            <label for="signupName">Full name</label>
+            <input id="signupName" name="name" type="text" placeholder="Enter your full name" autocomplete="name" minlength="2" required />
+            <label for="signupEmail">IIT KGP email</label>
+            <input id="signupEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="email" required />
+            <div class="auth-field-pair">
+              <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 6 characters" autocomplete="new-password" minlength="6" required /></div>
+              <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="6" required /></div>
+            </div>
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-send")} Check email & continue</button>
+          </form>
+          <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. You will verify it before the account is created.</p></div>` : `
           <form id="loginForm" class="login-form">
             <input type="hidden" name="role" value="${selectedLoginRole}" />
-            <label for="loginId">${profile.idLabel}</label>
-            <input id="loginId" name="loginId" type="text" placeholder="${profile.placeholder}" autocomplete="username" required />
+            <label for="loginEmail">${profile.idLabel}</label>
+            <input id="loginEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="username" required />
             <label for="loginPassword">Password</label>
-            <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="4" required />
+            <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="6" required />
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
           </form>
-          <div class="auth-demo-note"><span>Prototype access</span><p>Use any ID and a password of 4+ characters. Passwords are never saved.</p></div>
+          <div class="auth-demo-note"><span>Verified accounts only</span><p>${state.accounts.length ? "Use the email and password from your completed sign-up." : "No account exists yet. Create and verify an account before signing in."}</p></div>`}
         </div>
       </section>
     </div>`;
-  setTimeout(() => document.querySelector("#loginId")?.focus(), 0);
+  setTimeout(() => document.querySelector(authMode === "signup" ? "#signupName" : "#loginEmail")?.focus(), 0);
+}
+
+function renderEmailVerification() {
+  if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
+  const profile = loginProfiles[pendingSignup.role];
+  appShell.hidden = true;
+  authRoot.hidden = false;
+  authRoot.innerHTML = `
+    <div class="auth-layout">
+      <section class="auth-story">
+        <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
+        <div class="auth-story-copy"><span class="auth-kicker">EMAIL CHECK</span><h1>Verify your campus identity.</h1><p>One final step keeps each classroom workspace tied to a verified institute account.</p></div>
+        <div class="auth-feature-row"><span>${icon("i-check")} Email verification</span><span>${icon("i-users")} ${profile.shortTitle} workspace</span></div>
+      </section>
+      <section class="auth-panel">
+        <div class="auth-card verification-card">
+          <div class="auth-heading"><span class="auth-icon">${icon("i-send")}</span><div><p>Verification sent</p><h2>Check your email</h2></div></div>
+          <p class="verification-copy">Enter the six-digit code sent to <strong>${maskEmail(pendingSignup.email)}</strong>.</p>
+          <form id="verificationForm" class="login-form verification-form">
+            <label for="verificationCode">Verification code</label>
+            <input id="verificationCode" name="code" class="verification-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-check")} Verify email</button>
+          </form>
+          <div class="verification-actions"><button type="button" class="text-btn" data-action="back-to-signup">Change details</button><button type="button" class="text-btn" data-action="resend-code">Resend code</button></div>
+          <div class="auth-demo-note code-note"><span>Prototype email delivery</span><p>Your verification code is <strong>${pendingSignup.code}</strong>. A production backend would deliver this code by email.</p></div>
+        </div>
+      </section>
+    </div>`;
+  setTimeout(() => document.querySelector("#verificationCode")?.focus(), 0);
+}
+
+function isCampusEmail(email = "") {
+  const domain = email.trim().toLowerCase().split("@")[1] || "";
+  return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
+}
+
+function maskEmail(email) {
+  const [local, domain] = email.split("@");
+  const visible = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2);
+  return `${visible}${"•".repeat(Math.max(3, local.length - visible.length))}@${domain}`;
+}
+
+async function credentialHash(email, password) {
+  const input = new TextEncoder().encode(`${email.trim().toLowerCase()}:${password}`);
+  const digest = await crypto.subtle.digest("SHA-256", input);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function roleDisplayName(role = state.userRole, name = state.accountName) {
+  const cleanName = name?.trim() || loginProfiles[role]?.name || "User";
+  if (role === "faculty") return `Prof. ${cleanName}`;
+  if (role === "ta") return `Mr. ${cleanName}`;
+  return cleanName;
 }
 
 function showApp() {
@@ -140,9 +222,9 @@ function showApp() {
   render();
 }
 
-function toast(message) {
+function toast(message, type = "success") {
   const el = document.createElement("div");
-  el.className = "toast success";
+  el.className = `toast ${type}`;
   el.textContent = message;
   document.querySelector("#toastRegion").append(el);
   setTimeout(() => el.remove(), 3200);
@@ -160,14 +242,14 @@ function setHeader(title, eyebrow, showQuick = true) {
   const profile = profiles[state.userRole] || profiles.faculty;
   roleLabel.textContent = profile.label;
   profileAvatar.textContent = profile.initials;
-  profileName.textContent = state.accountName || profile.name;
+  profileName.textContent = roleDisplayName(state.userRole, state.accountName || profile.name);
   profileMeta.textContent = profile.meta;
   erpNav.style.display = state.userRole === "faculty" ? "" : "none";
 }
 
 function navigate(route) {
   clearInterval(scanTimer);
-  clearInterval(quizTimer);
+  clearTimeout(quizTimer);
   state.route = route;
   document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === route));
   render();
@@ -187,7 +269,7 @@ function render() {
 
 function renderDashboard() {
   if (state.userRole === "student") return renderStudentDashboard();
-  setHeader(state.userRole === "ta" ? "Good morning, Teaching Assistant" : "Good morning, Faculty", "THURSDAY, 30 JULY");
+  setHeader(`Good morning, ${roleDisplayName()}`, "THURSDAY, 30 JULY");
   const attendanceLabel = state.attendanceStatus === "complete" ? "Attendance recorded" : state.attendanceStatus === "scanning" ? "Check-in is live" : "Ready to begin";
   const statusClass = state.attendanceStatus === "complete" ? "green" : "amber";
   view.innerHTML = `
@@ -241,7 +323,7 @@ function renderDashboard() {
           <div class="section-head"><h3>Recent activity</h3><button class="icon-btn">${icon("i-more")}</button></div>
           <div class="activity-list">
             <div class="activity"><span class="activity-icon">${icon("i-check")}</span><div><strong>Attendance synced to ERP</strong><p>Soft Computing · Section A</p></div><time>9:14</time></div>
-            <div class="activity"><span class="activity-icon purple">${icon("i-quiz")}</span><div><strong>Quiz results published</strong><p>Algorithms · Quiz 04</p></div><time>Wed</time></div>
+            <div class="activity"><span class="activity-icon purple">${icon("i-quiz")}</span><div><strong>Quiz results published</strong><p>Soft Computing · Quiz 04</p></div><time>Wed</time></div>
             <div class="activity"><span class="activity-icon">${icon("i-users")}</span><div><strong>38 of 42 students present</strong><p>Soft Computing</p></div><time>Tue</time></div>
           </div>
         </article>
@@ -250,7 +332,7 @@ function renderDashboard() {
 }
 
 function renderStudentDashboard() {
-  setHeader("Welcome back, Student", "STUDENT DASHBOARD", false);
+  setHeader(`Good morning, ${roleDisplayName()}`, "STUDENT DASHBOARD", false);
   const enrolled = state.courses.filter(course => state.enrolledCourses.includes(course.id));
   view.innerHTML = `
     <div class="left-stack">
@@ -452,6 +534,7 @@ function attendanceSidePanel(count) {
 }
 
 function renderLiveAttendance() {
+  clearInterval(scanTimer);
   const complete = state.attendanceStatus === "complete";
   const count = state.present.length;
   view.innerHTML = `
@@ -547,6 +630,8 @@ function questionBlock(number, question, options, answer) {
 }
 
 function renderLiveQuiz() {
+  clearTimeout(quizTimer);
+  if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
   const responses = state.quizResponses;
   const percentage = Math.round((responses / 42) * 100);
   view.innerHTML = `
@@ -574,7 +659,8 @@ function renderLiveQuiz() {
       </aside>
     </div>`;
   if (responses < 38) {
-    quizTimer = setInterval(() => {
+    quizTimer = setTimeout(() => {
+      if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
       state.quizResponses = Math.min(38, state.quizResponses + Math.ceil(Math.random() * 3));
       persist(); renderLiveQuiz();
     }, 1800);
@@ -804,13 +890,22 @@ function parseScheduleICS(text) {
 
 document.addEventListener("click", event => {
   const authRole = event.target.closest("[data-auth-role]");
-  if (authRole) return renderLogin(authRole.dataset.authRole);
+  if (authRole) return renderLogin(authRole.dataset.authRole, authMode);
+  const authModeButton = event.target.closest("[data-auth-mode]");
+  if (authModeButton) {
+    pendingSignup = null;
+    return renderLogin(selectedLoginRole, authModeButton.dataset.authMode);
+  }
   const switchButton = event.target.closest("[data-switch-role]");
   if (switchButton) {
+    clearTimeout(quizTimer);
     state.authenticated = false;
     state.userRole = switchButton.dataset.switchRole;
     state.accountName = "";
+    state.authEmail = "";
     state.route = "dashboard";
+    authMode = "login";
+    pendingSignup = null;
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
     return renderLogin(state.userRole);
@@ -863,12 +958,26 @@ document.addEventListener("click", event => {
     toast("Showing the current teaching week");
   }
   if (action === "logout") {
+    clearTimeout(quizTimer);
     state.authenticated = false;
     state.accountName = "";
+    state.authEmail = "";
     state.route = "dashboard";
+    authMode = "login";
+    pendingSignup = null;
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
     renderLogin(state.userRole);
+  }
+  if (action === "back-to-signup") {
+    const role = pendingSignup?.role || selectedLoginRole;
+    pendingSignup = null;
+    renderLogin(role, "signup");
+  }
+  if (action === "resend-code" && pendingSignup) {
+    pendingSignup.code = String(Math.floor(100000 + Math.random() * 900000));
+    renderEmailVerification();
+    toast("A new verification code was generated");
   }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
@@ -880,7 +989,7 @@ document.addEventListener("click", event => {
     persist(); renderLiveQuiz(); toast("Quiz published to 42 students");
   }
   if (action === "end-quiz") {
-    clearInterval(quizTimer);
+    clearTimeout(quizTimer);
     toast(`Quiz ended with ${state.quizResponses} responses`);
     navigate("dashboard");
   }
@@ -905,15 +1014,65 @@ document.addEventListener("change", async event => {
 quickAction.addEventListener("click", () => navigate("attendance"));
 document.querySelector("#roleSwitch").addEventListener("click", openRoleModal);
 
-document.addEventListener("submit", event => {
+document.addEventListener("submit", async event => {
   event.preventDefault();
+  if (event.target.id === "signupForm") {
+    const data = Object.fromEntries(new FormData(event.target));
+    const email = String(data.email || "").trim().toLowerCase();
+    const name = String(data.name || "").trim().replace(/\s+/g, " ");
+    if (name.length < 2) return toast("Enter your full name", "error");
+    if (!isCampusEmail(email)) return toast("Use a valid IIT KGP institutional email", "error");
+    if (String(data.password).length < 6) return toast("Password must contain at least 6 characters", "error");
+    if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
+    if (state.accounts.some(account => account.email === email)) return toast("An account already exists for this email", "error");
+    pendingSignup = {
+      role: data.role,
+      name,
+      email,
+      passwordHash: await credentialHash(email, data.password),
+      code: String(Math.floor(100000 + Math.random() * 900000))
+    };
+    selectedLoginRole = data.role;
+    renderEmailVerification();
+    return toast("Verification code created for your email check");
+  }
+  if (event.target.id === "verificationForm") {
+    if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
+    const code = String(new FormData(event.target).get("code") || "").trim();
+    if (code !== pendingSignup.code) return toast("That verification code is incorrect", "error");
+    const account = {
+      id: `account-${Date.now()}`,
+      role: pendingSignup.role,
+      name: pendingSignup.name,
+      email: pendingSignup.email,
+      passwordHash: pendingSignup.passwordHash,
+      verifiedAt: new Date().toISOString()
+    };
+    state.accounts.push(account);
+    state.userRole = account.role;
+    state.authenticated = false;
+    state.accountName = "";
+    state.authEmail = "";
+    selectedLoginRole = account.role;
+    pendingSignup = null;
+    authMode = "login";
+    persist();
+    renderLogin(account.role, "login");
+    return toast("Email verified. Sign in with your new credentials");
+  }
   if (event.target.id === "loginForm") {
     const data = Object.fromEntries(new FormData(event.target));
+    const email = String(data.email || "").trim().toLowerCase();
     const profile = loginProfiles[data.role];
-    if (!profile || String(data.password).length < 4) return;
-    state.userRole = data.role;
+    if (!profile) return toast("Choose a valid account type", "error");
+    const account = state.accounts.find(item => item.email === email && item.role === data.role);
+    if (!account) return toast(`No verified ${profile.shortTitle} account matches that email`, "error");
+    const passwordHash = await credentialHash(email, data.password);
+    if (passwordHash !== account.passwordHash) return toast("Incorrect email or password", "error");
+    state.userRole = account.role;
     state.authenticated = true;
-    state.accountName = profile.name;
+    state.accountName = account.name;
+    state.authEmail = account.email;
     state.route = "dashboard";
     persist();
     document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));

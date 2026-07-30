@@ -7,6 +7,7 @@ A responsive classroom operations prototype inspired by attendance platforms suc
 - Student enrollment gates for attendance and quiz access
 - Shared weekly course schedule for faculty, teaching assistants, and enrolled students
 - Separate Professor, Teaching Assistant, and Student login workspaces
+- Sign-up-first credentials with IIT KGP email verification
 - Calendar-style weekly timetable shared across all three roles
 - Local CSV/ICS timetable import for students without sharing ERP credentials
 - Live, proximity-verified attendance simulation
