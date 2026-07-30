@@ -3,6 +3,7 @@ services:
     name: campuspulse-api-ayush
     runtime: node
     plan: free
+    region: singapore
     rootDir: backend
     buildCommand: npm ci --omit=dev
     startCommand: npm start
