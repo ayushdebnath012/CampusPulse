@@ -492,15 +492,15 @@ function renderStudentClasses() {
       <form class="join-code" id="joinForm"><input name="joinCode" maxlength="8" placeholder="e.g. SC401A" autocomplete="off" required/><button class="btn btn-primary">Join course</button></form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
     </article>
-    ${enrolled.length ? weeklySchedule() : scheduleLocked()}
+    ${weeklySchedule()}
     </div>`;
 }
 
 function weeklySchedule() {
   const sessions = [
-    ["MON", "10:00", "10:50 AM", "Lecture", "Room 304"],
-    ["WED", "10:00", "10:50 AM", "Lecture", "Room 304"],
-    ["FRI", "11:00", "11:50 AM", "Tutorial", "Lab 1"]
+    ["TUE", "10:00", "11:00 AM", "Foundations of Soft Computing", "Room 304"],
+    ["THU", "10:00", "10:50 AM", "Fuzzy Sets & Membership", "Room 304"],
+    ["SAT", "09:00", "10:00 AM", "Neural Network Models", "Room 304"]
   ];
   return `<article class="card page-card">
     <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly schedule</h2><p class="stat-label">Soft Computing · CSE 401 · Section A</p></div><span class="badge purple">${icon("i-calendar")} 3 sessions</span></div>
@@ -513,10 +513,6 @@ function weeklySchedule() {
       </div>`).join("")}
     </div>
   </article>`;
-}
-
-function scheduleLocked() {
-  return `<article class="card empty-state" style="min-height:240px"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>Schedule unlocks after joining</h2><p>Join Soft Computing with code SC401A to see the weekly lecture and tutorial timetable.</p></div></article>`;
 }
 
 function openCourseModal() {
