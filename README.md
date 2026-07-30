@@ -5,6 +5,7 @@ A responsive classroom operations prototype inspired by attendance platforms suc
 - Bluetooth + Wi-Fi classroom readiness checks
 - Faculty course creation with generated student join codes
 - Student enrollment gates for attendance and quiz access
+- Shared weekly course schedule for faculty, teaching assistants, and enrolled students
 - Live, proximity-verified attendance simulation
 - Student roster and attendance export
 - Short live quiz creation and response tracking
@@ -39,9 +40,9 @@ The ERP sync in this prototype is intentionally local; no student information le
 
 ## Demo the enrollment flow
 
-1. Open **Classes** in Faculty view and add a course, or use the existing Discrete Mathematics code `DM202A`.
+1. Open **Classes** in Faculty view, or use the Soft Computing join code `SC401A`.
 2. Use the login switch in the top-right to choose Faculty, Teaching Assistant, or Student.
 3. Open **Classes**, enter the code, and join.
 4. Attendance and course activities are now unlocked for that student.
 
-Teaching Assistants can update quizzes and start attendance for assigned courses, but only faculty can create courses and issue new join codes.
+Teaching Assistants can update quizzes and start attendance for Soft Computing. Only faculty can sync records to ERP.

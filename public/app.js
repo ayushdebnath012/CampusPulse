@@ -15,16 +15,14 @@ const defaultState = {
   quizResponses: 0,
   erpStatus: "pending",
   courses: [
-    { id: "cse202", code: "DM202A", name: "Discrete Mathematics", courseCode: "CSE 202", section: "Section A", room: "Room 304", students: 42 },
-    { id: "cse204", code: "DS204B", name: "Data Structures", courseCode: "CSE 204", section: "Section B", room: "Lab 2", students: 38 },
-    { id: "cse306", code: "OS306A", name: "Operating Systems", courseCode: "CSE 306", section: "Section A", room: "Room 211", students: 40 }
+    { id: "soft401", code: "SC401A", name: "Soft Computing", courseCode: "CSE 401", section: "Section A", room: "Room 304", students: 42 }
   ],
   enrolledCourses: []
 };
 
 let state = { ...defaultState, ...JSON.parse(localStorage.getItem("campusPulseState") || "{}") };
-state.courses = Array.isArray(state.courses) ? state.courses : defaultState.courses;
-state.enrolledCourses = Array.isArray(state.enrolledCourses) ? state.enrolledCourses : [];
+state.courses = defaultState.courses;
+state.enrolledCourses = Array.isArray(state.enrolledCourses) && state.enrolledCourses.includes("soft401") ? ["soft401"] : [];
 let scanTimer;
 let quizTimer;
 const view = document.querySelector("#view");
@@ -32,6 +30,7 @@ const pageTitle = document.querySelector("#pageTitle");
 const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
 const roleLabel = document.querySelector("#roleLabel");
+const erpNav = document.querySelector("#erpNav");
 const profileAvatar = document.querySelector("#profileAvatar");
 const profileName = document.querySelector("#profileName");
 const profileMeta = document.querySelector("#profileMeta");
@@ -42,7 +41,7 @@ function icon(id) {
 
 function persist() {
   localStorage.setItem("campusPulseState", JSON.stringify(state));
-  document.querySelector("#syncDot").classList.toggle("visible", state.erpStatus === "pending" && state.attendanceStatus === "complete");
+  document.querySelector("#syncDot").classList.toggle("visible", state.userRole === "faculty" && state.erpStatus === "pending" && state.attendanceStatus === "complete");
 }
 
 function toast(message) {
@@ -67,6 +66,7 @@ function setHeader(title, eyebrow, showQuick = true) {
   profileAvatar.textContent = profile.initials;
   profileName.textContent = profile.name;
   profileMeta.textContent = profile.meta;
+  erpNav.style.display = state.userRole === "faculty" ? "" : "none";
 }
 
 function navigate(route) {
@@ -81,9 +81,10 @@ function navigate(route) {
 
 function render() {
   if (state.route === "dashboard") return renderDashboard();
+  if (state.route === "schedule") return renderSchedule();
   if (state.route === "attendance") return renderAttendance();
   if (state.route === "quizzes") return renderQuiz();
-  if (state.route === "erp") return renderERP();
+  if (state.route === "erp") return state.userRole === "faculty" ? renderERP() : renderRestrictedERP();
   return renderPlaceholder(state.route);
 }
 
@@ -98,8 +99,8 @@ function renderDashboard() {
         <article class="hero-session">
           <div class="hero-copy">
             <span class="live-tag">NEXT CLASS · 10:00 AM</span>
-            <h2>Discrete Mathematics</h2>
-            <p>CSE 202 · Section A</p>
+            <h2>Soft Computing</h2>
+            <p>CSE 401 · Section A</p>
             <div class="hero-meta">
               <span>${icon("i-clock")} 10:00 – 10:50 AM</span>
               <span>${icon("i-users")} 42 students</span>
@@ -127,9 +128,7 @@ function renderDashboard() {
         <article class="card card-pad">
           <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="classes">View schedule</button></div>
           <div class="class-list">
-            ${classRow("10:00", "10:50 AM", "Discrete Mathematics", "CSE 202 · Section A · Room 304", attendanceLabel, statusClass, "attendance")}
-            ${classRow("12:00", "12:50 PM", "Data Structures", "CSE 204 · Section B · Lab 2", "Upcoming", "gray", "attendance")}
-            ${classRow("02:00", "02:50 PM", "Operating Systems", "CSE 306 · Section A · Room 211", "Upcoming", "gray", "attendance")}
+            ${classRow("10:00", "10:50 AM", "Soft Computing", "CSE 401 · Section A · Room 304", attendanceLabel, statusClass, "attendance")}
           </div>
         </article>
       </div>
@@ -144,9 +143,9 @@ function renderDashboard() {
         <article class="card card-pad">
           <div class="section-head"><h3>Recent activity</h3><button class="icon-btn">${icon("i-more")}</button></div>
           <div class="activity-list">
-            <div class="activity"><span class="activity-icon">${icon("i-check")}</span><div><strong>Attendance synced to ERP</strong><p>Data Structures · Section A</p></div><time>9:14</time></div>
+            <div class="activity"><span class="activity-icon">${icon("i-check")}</span><div><strong>Attendance synced to ERP</strong><p>Soft Computing · Section A</p></div><time>9:14</time></div>
             <div class="activity"><span class="activity-icon purple">${icon("i-quiz")}</span><div><strong>Quiz results published</strong><p>Algorithms · Quiz 04</p></div><time>Wed</time></div>
-            <div class="activity"><span class="activity-icon">${icon("i-users")}</span><div><strong>38 of 42 students present</strong><p>Operating Systems</p></div><time>Tue</time></div>
+            <div class="activity"><span class="activity-icon">${icon("i-users")}</span><div><strong>38 of 42 students present</strong><p>Soft Computing</p></div><time>Tue</time></div>
           </div>
         </article>
       </div>
@@ -161,13 +160,46 @@ function renderStudentDashboard() {
       <section class="student-welcome">
         <h2>${enrolled.length ? "Your classroom is ready" : "Join your first course"}</h2>
         <p>${enrolled.length ? "Access attendance check-ins, quick quizzes, and class updates from every course you have joined." : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
-        <button class="btn" data-route-link="classes">${icon(enrolled.length ? "i-arrow" : "i-plus")} ${enrolled.length ? "View my courses" : "Join a course"}</button>
+        <button class="btn" data-route-link="${enrolled.length ? "schedule" : "classes"}">${icon(enrolled.length ? "i-calendar" : "i-plus")} ${enrolled.length ? "View my schedule" : "Join a course"}</button>
       </section>
       <div class="course-grid">
         ${enrolled.length ? enrolled.map(course => studentCourseCard(course)).join("") : `
           <article class="card empty-state" style="min-height:260px;grid-column:1/-1"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>No courses yet</h2><p>Ask your faculty for a six-character join code, then enter it on the Courses page.</p><button class="btn btn-primary" data-route-link="classes">Enter join code</button></div></article>`}
       </div>
     </div>`;
+}
+
+function renderSchedule() {
+  const isStudent = state.userRole === "student";
+  const enrolled = state.enrolledCourses.includes("soft401");
+  setHeader("Weekly schedule", isStudent ? "STUDENT TIMETABLE" : state.userRole === "ta" ? "TEACHING ASSISTANT TIMETABLE" : "FACULTY TIMETABLE", false);
+  view.innerHTML = `
+    <article class="card page-card">
+      <div class="section-head">
+        <div><h2 style="margin:0 0 5px">28 July – 1 August</h2><p class="stat-label">Soft Computing · CSE 401 · Section A</p></div>
+        <span class="badge purple">${isStudent ? "Student schedule" : state.userRole === "ta" ? "TA schedule" : "Faculty schedule"}</span>
+      </div>
+      <div class="schedule-week">
+        ${scheduleDay("Tuesday", "28 Jul", "10:00 AM", "11:00 AM", "Foundations of Soft Computing", "Completed", "green", isStudent, enrolled, false)}
+        ${scheduleDay("Thursday", "30 Jul", "10:00 AM", "10:50 AM", "Fuzzy Sets & Membership", "Today", "purple", isStudent, enrolled, true)}
+        ${scheduleDay("Saturday", "1 Aug", "09:00 AM", "10:00 AM", "Neural Network Models", "Upcoming", "gray", isStudent, enrolled, false)}
+      </div>
+      ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Join Soft Computing with code <strong>SC401A</strong> to unlock attendance and quiz activities. The timetable remains visible to everyone.</span></div>` : ""}
+    </article>`;
+}
+
+function scheduleDay(day, date, start, end, topic, status, color, isStudent, enrolled, isToday) {
+  const action = isToday
+    ? isStudent
+      ? `<button class="btn ${enrolled ? "btn-soft" : ""}" data-route-link="${enrolled ? "attendance" : "classes"}">${icon(enrolled ? "i-wifi" : "i-plus")} ${enrolled ? "View check-in" : "Join course"}</button>`
+      : `<button class="btn btn-primary" data-route-link="attendance">${icon("i-play")} Start attendance</button>`
+    : `<span class="badge ${color}">${status}</span>`;
+  return `<div class="schedule-day ${isToday ? "today" : ""}">
+    <div class="schedule-date"><strong>${day}</strong><span>${date}</span></div>
+    <div class="schedule-time"><strong>${start}</strong><span>${end}</span></div>
+    <div class="schedule-info"><strong>${topic}</strong><span>Soft Computing · CSE 401 · Room 304</span></div>
+    <div class="schedule-action">${action}</div>
+  </div>`;
 }
 
 function studentCourseCard(course) {
@@ -189,23 +221,23 @@ function classRow(time, suffix, title, meta, badge, color, route) {
 
 function renderAttendance() {
   if (state.userRole === "student") return renderStudentAttendanceAccess();
-  setHeader("Attendance session", "DISCRETE MATHEMATICS · CSE 202", false);
+  setHeader("Attendance session", "SOFT COMPUTING · CSE 401", false);
   if (state.attendanceStatus === "not_started") return renderAttendanceSetup();
   return renderLiveAttendance();
 }
 
 function renderStudentAttendanceAccess() {
   setHeader("Class check-in", "STUDENT ACCESS", false);
-  const hasAccess = state.enrolledCourses.includes("cse202");
+  const hasAccess = state.enrolledCourses.includes("soft401");
   view.innerHTML = hasAccess ? `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
     <article class="card join-panel">
       <div class="setup-radar">${icon("i-bluetooth")}</div><span class="badge green">Course access verified</span>
-      <h2 style="margin:15px 0 7px">Discrete Mathematics check-in</h2>
+      <h2 style="margin:15px 0 7px">Soft Computing check-in</h2>
       <p class="stat-label">When your faculty opens attendance, keep Bluetooth and internet on. CampusPulse will verify that your device is inside the classroom.</p>
       <button class="btn btn-primary" style="margin-top:20px" ${state.attendanceStatus === "scanning" ? "" : "disabled"}>${icon("i-wifi")} ${state.attendanceStatus === "scanning" ? "Verify my presence" : "Waiting for faculty"}</button>
     </article>` : `
-    <article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Join the course first</h2><p>Attendance check-in is available only to students enrolled in Discrete Mathematics.</p><button class="btn btn-primary" data-route-link="classes">Join with course code</button></div></article>`;
+    <article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Join the course first</h2><p>Attendance check-in is available only to students enrolled in Soft Computing.</p><button class="btn btn-primary" data-route-link="classes">Join with course code</button></div></article>`;
 }
 
 function renderAttendanceSetup() {
@@ -249,7 +281,7 @@ function stepper(current) {
 function attendanceSidePanel(count) {
   const percent = Math.round((count / 42) * 100);
   return `<aside class="card page-card">
-    <div class="section-head"><h3>Session summary</h3><span class="badge purple">CSE 202</span></div>
+    <div class="section-head"><h3>Session summary</h3><span class="badge purple">CSE 401</span></div>
     <div class="summary-ring" style="--progress:${percent}%"><div><strong>${count}</strong><span>of 42 checked in</span></div></div>
     <div class="summary-list">
       <div class="summary-item"><span>Present</span><strong>${count}</strong></div>
@@ -278,7 +310,7 @@ function renderLiveAttendance() {
           ${roster.map((student, i) => studentRow(student, i, i < count)).join("")}
         </div>
         <div class="setup-actions">
-          ${complete ? `<button class="btn" data-action="download">${icon("i-download")} Export CSV</button><button class="btn btn-primary" data-route-link="erp">${icon("i-cloud")} Review ERP sync</button>` : `<button class="btn btn-danger" data-action="end-session">End check-in</button>`}
+          ${complete ? `<button class="btn" data-action="download">${icon("i-download")} Export CSV</button>${state.userRole === "faculty" ? `<button class="btn btn-primary" data-route-link="erp">${icon("i-cloud")} Review ERP sync</button>` : ""}` : `<button class="btn btn-danger" data-action="end-session">End check-in</button>`}
         </div>
       </article>
       ${attendanceSidePanel(count)}
@@ -309,7 +341,7 @@ function studentRow(student, index, present) {
 
 function renderQuiz() {
   if (state.userRole === "student") return renderStudentQuizAccess();
-  setHeader("Quick quiz", "DISCRETE MATHEMATICS · CSE 202", false);
+  setHeader("Quick quiz", "SOFT COMPUTING · CSE 401", false);
   if (state.quizPublished) return renderLiveQuiz();
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
@@ -335,18 +367,18 @@ function renderQuiz() {
 
 function renderStudentQuizAccess() {
   setHeader("Course activities", "STUDENT ACCESS", false);
-  const hasAccess = state.enrolledCourses.includes("cse202");
+  const hasAccess = state.enrolledCourses.includes("soft401");
   view.innerHTML = hasAccess ? `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>Discrete Mathematics</h2><p>CSE 202 · Section A</p></div><span class="badge green">Enrolled</span></div>
+        <div class="session-title"><div><h2>Soft Computing</h2><p>CSE 401 · Section A</p></div><span class="badge green">Enrolled</span></div>
         <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>Concept check · Relations & Trees</h3><p class="stat-label" style="margin-top:5px">2 questions · 3 minutes</p></div><span class="badge ${state.quizPublished ? "purple" : "gray"}">${state.quizPublished ? "Available now" : "Not started"}</span></div>
         <button class="btn btn-primary" ${state.quizPublished ? "" : "disabled"}>${icon("i-play")} Start quiz</button></div>
       </article>
-      <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>CSE 202</strong></div><div class="summary-item"><span>Attendance eligibility</span><strong>Enabled</strong></div></div><div class="security-note"><span class="lock">⌾</span><span>You can access these activities because you joined this course with its private code.</span></div></aside>
+      <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>CSE 401</strong></div><div class="summary-item"><span>Attendance eligibility</span><strong>Enabled</strong></div></div><div class="security-note"><span class="lock">⌾</span><span>You can access these activities because you joined this course with its private code.</span></div></aside>
     </div>` : `
-    <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join Discrete Mathematics before opening its quizzes or attendance check-ins.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
+    <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join Soft Computing before opening its quizzes or attendance check-ins.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
 }
 
 function questionBlock(number, question, options, answer) {
@@ -396,6 +428,7 @@ function resultBar(label, value, color) {
 }
 
 function renderERP() {
+  if (state.userRole !== "faculty") return renderRestrictedERP();
   setHeader("ERP sync center", "CAMPUS RECORDS");
   const hasSession = state.attendanceStatus === "complete";
   view.innerHTML = `
@@ -405,7 +438,7 @@ function renderERP() {
         ${hasSession ? `
           <div class="sync-record">
             <span class="sync-symbol ${state.erpStatus === "synced" ? "done" : ""}">${icon(state.erpStatus === "synced" ? "i-check" : "i-cloud")}</span>
-            <div><strong>Discrete Mathematics · 30 Jul 2026</strong><p>${state.present.length} present · ${42 - state.present.length} absent · Quiz ${state.quizPublished ? "included" : "not included"}</p></div>
+            <div><strong>Soft Computing · 30 Jul 2026</strong><p>${state.present.length} present · ${42 - state.present.length} absent · Quiz ${state.quizPublished ? "included" : "not included"}</p></div>
             ${state.erpStatus === "pending" ? `<button class="btn btn-primary" data-action="sync-erp">Sync now</button>` : `<span class="badge green">Synced</span>`}
           </div>` : `
           <div class="empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h2>No records waiting</h2><p>Complete an attendance session and it will appear here for review and upload.</p><button class="btn btn-primary" data-route-link="attendance">Start attendance</button></div></div>`}
@@ -423,15 +456,21 @@ function renderERP() {
     </div>`;
 }
 
+function renderRestrictedERP() {
+  setHeader("ERP access restricted", "FACULTY ONLY", false);
+  view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h2>Professor access required</h2><p>Only the course professor can review or sync attendance and quiz records with the ERP.</p><button class="btn btn-primary" data-route-link="dashboard">Back to dashboard</button></div></article>`;
+}
+
 function renderClasses() {
   if (state.userRole === "student") return renderStudentClasses();
   const isTA = state.userRole === "ta";
   setHeader(isTA ? "Courses you assist" : "My courses", isTA ? "TEACHING ASSISTANT WORKSPACE" : "FACULTY WORKSPACE", false);
   view.innerHTML = `
     <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">${isTA ? "Assigned courses" : "Courses you teach"}</h2><p class="stat-label">${isTA ? "You can run attendance and update live quizzes for these courses." : "Create a course and share its private code with enrolled students."}</p></div>${isTA ? '<span class="badge purple">TA access</span>' : `<button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Add course</button>`}</div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">${isTA ? "Assigned course" : "Course you teach"}</h2><p class="stat-label">${isTA ? "You can run attendance and update live quizzes for this course." : "Soft Computing is the only active course in this prototype."}</p></div><span class="badge ${isTA ? "purple" : "green"}">${isTA ? "TA access" : "1 active course"}</span></div>
       <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
-    </article>`;
+    </article>
+    ${weeklySchedule()}`;
 }
 
 function facultyCourseCard(course) {
@@ -446,12 +485,38 @@ function renderStudentClasses() {
   setHeader("Join a course", "STUDENT WORKSPACE", false);
   const enrolled = state.courses.filter(course => state.enrolledCourses.includes(course.id));
   view.innerHTML = `
+    <div class="left-stack">
     <article class="card join-panel">
       <span class="empty-icon">${icon("i-plus")}</span><h2>Enter your course code</h2>
       <p class="stat-label">Your faculty will share a six-character code. You only need to join once.</p>
-      <form class="join-code" id="joinForm"><input name="joinCode" maxlength="8" placeholder="e.g. DM202A" autocomplete="off" required/><button class="btn btn-primary">Join course</button></form>
+      <form class="join-code" id="joinForm"><input name="joinCode" maxlength="8" placeholder="e.g. SC401A" autocomplete="off" required/><button class="btn btn-primary">Join course</button></form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
-    </article>`;
+    </article>
+    ${enrolled.length ? weeklySchedule() : scheduleLocked()}
+    </div>`;
+}
+
+function weeklySchedule() {
+  const sessions = [
+    ["MON", "10:00", "10:50 AM", "Lecture", "Room 304"],
+    ["WED", "10:00", "10:50 AM", "Lecture", "Room 304"],
+    ["FRI", "11:00", "11:50 AM", "Tutorial", "Lab 1"]
+  ];
+  return `<article class="card page-card">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly schedule</h2><p class="stat-label">Soft Computing · CSE 401 · Section A</p></div><span class="badge purple">${icon("i-calendar")} 3 sessions</span></div>
+    <div class="class-list">
+      ${sessions.map(([day, time, end, type, room]) => `<div class="class-row">
+        <div class="time">${day}<small>${time}</small></div>
+        <div class="course"><strong>${type}</strong><span>Soft Computing · ${room}</span></div>
+        <span class="badge gray">${time} – ${end}</span>
+        <button class="chevron" data-route-link="attendance" aria-label="Open ${day} session">${icon("i-arrow")}</button>
+      </div>`).join("")}
+    </div>
+  </article>`;
+}
+
+function scheduleLocked() {
+  return `<article class="card empty-state" style="min-height:240px"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>Schedule unlocks after joining</h2><p>Join Soft Computing with code SC401A to see the weekly lecture and tutorial timetable.</p></div></article>`;
 }
 
 function openCourseModal() {
@@ -525,7 +590,7 @@ function downloadCSV() {
   const blob = new Blob([rows.map(r => r.join(",")).join("\n")], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "CSE202-attendance-2026-07-30.csv";
+  a.download = "CSE401-soft-computing-attendance-2026-07-30.csv";
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -587,6 +652,7 @@ document.addEventListener("click", event => {
     navigate("dashboard");
   }
   if (action === "sync-erp") {
+    if (state.userRole !== "faculty") return toast("Only the professor can sync records to ERP");
     const btn = event.target.closest("button");
     btn.disabled = true;
     btn.textContent = "Syncing…";
