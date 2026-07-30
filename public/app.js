@@ -5,7 +5,7 @@ const roster = [
   ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
 ];
 
-const APP_VERSION = "8";
+const APP_VERSION = "9";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -1196,7 +1196,7 @@ document.addEventListener("click", async event => {
     }
   }
   if (action === "clear-api-url") {
-    localStorage.removeItem("campusPulseApiBase");
+    localStorage.setItem("campusPulseApiBase", "offline");
     localStorage.removeItem("campusPulseApiToken");
     location.reload();
   }
@@ -1331,7 +1331,7 @@ document.addEventListener("submit", async event => {
       return toast("Use an HTTPS API URL", "error");
     }
     if (value) localStorage.setItem("campusPulseApiBase", value);
-    else localStorage.removeItem("campusPulseApiBase");
+    else localStorage.setItem("campusPulseApiBase", "offline");
     localStorage.removeItem("campusPulseApiToken");
     location.reload();
     return;
