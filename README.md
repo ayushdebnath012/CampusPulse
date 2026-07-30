@@ -6,6 +6,8 @@ A responsive classroom operations prototype inspired by attendance platforms suc
 - Faculty course creation with generated student join codes
 - Student enrollment gates for attendance and quiz access
 - Shared weekly course schedule for faculty, teaching assistants, and enrolled students
+- Separate Professor, Teaching Assistant, and Student login workspaces
+- Calendar-style weekly timetable shared across all three roles
 - Local CSV/ICS timetable import for students without sharing ERP credentials
 - Live, proximity-verified attendance simulation
 - Student roster and attendance export

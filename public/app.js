@@ -5,11 +5,13 @@ const roster = [
   ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
 ];
 
-const APP_VERSION = "5";
+const APP_VERSION = "6";
 
 const defaultState = {
   route: "dashboard",
   userRole: "faculty",
+  authenticated: false,
+  accountName: "",
   attendanceStatus: "not_started",
   checks: { wifi: false, bluetooth: false },
   present: [],
@@ -27,9 +29,13 @@ let state = { ...defaultState, ...JSON.parse(localStorage.getItem("campusPulseSt
 state.courses = defaultState.courses;
 state.enrolledCourses = Array.isArray(state.enrolledCourses) && state.enrolledCourses.includes("soft401") ? ["soft401"] : [];
 state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
+state.authenticated = Boolean(state.authenticated);
 let scanTimer;
 let quizTimer;
+let selectedLoginRole = state.userRole || "faculty";
 const view = document.querySelector("#view");
+const authRoot = document.querySelector("#authRoot");
+const appShell = document.querySelector("#appShell");
 const pageTitle = document.querySelector("#pageTitle");
 const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
@@ -49,6 +55,91 @@ function persist() {
   document.querySelector("#syncDot").classList.toggle("visible", state.userRole === "faculty" && state.erpStatus === "pending" && state.attendanceStatus === "complete");
 }
 
+const loginProfiles = {
+  faculty: {
+    title: "Professor login",
+    shortTitle: "Professor",
+    description: "Manage Soft Computing, attendance, quizzes, and ERP uploads.",
+    idLabel: "Faculty email or employee ID",
+    placeholder: "professor@iitkgp.ac.in",
+    initials: "PF",
+    name: "Professor Demo"
+  },
+  ta: {
+    title: "Teaching Assistant login",
+    shortTitle: "TA",
+    description: "Start attendance and update quizzes for assigned courses.",
+    idLabel: "TA email or employee ID",
+    placeholder: "ta@iitkgp.ac.in",
+    initials: "TA",
+    name: "Teaching Assistant"
+  },
+  student: {
+    title: "Student login",
+    shortTitle: "Student",
+    description: "Join Soft Computing, check in, take quizzes, and view your calendar.",
+    idLabel: "Institute email or roll number",
+    placeholder: "22XX00000",
+    initials: "ST",
+    name: "Student Demo"
+  }
+};
+
+function renderLogin(role = selectedLoginRole) {
+  selectedLoginRole = loginProfiles[role] ? role : "faculty";
+  const profile = loginProfiles[selectedLoginRole];
+  appShell.hidden = true;
+  authRoot.hidden = false;
+  authRoot.innerHTML = `
+    <div class="auth-layout">
+      <section class="auth-story">
+        <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
+        <div class="auth-story-copy">
+          <span class="auth-kicker">ONE CAMPUS · THREE WORKSPACES</span>
+          <h1>Your classroom, on schedule.</h1>
+          <p>Proximity attendance, short quizzes, and a shared Soft Computing calendar for every member of the course team.</p>
+        </div>
+        <div class="auth-feature-row">
+          <span>${icon("i-calendar")} Shared calendar</span>
+          <span>${icon("i-wifi")} Wi-Fi + Bluetooth</span>
+          <span>${icon("i-cloud")} Professor ERP export</span>
+        </div>
+      </section>
+      <section class="auth-panel">
+        <div class="auth-card">
+          <div class="auth-heading">
+            <span class="auth-icon">${profile.initials}</span>
+            <div><p>Welcome to CampusPulse</p><h2>${profile.title}</h2></div>
+          </div>
+          <div class="auth-role-grid" role="tablist" aria-label="Choose login type">
+            ${Object.entries(loginProfiles).map(([key, item]) => `
+              <button type="button" class="auth-role ${key === selectedLoginRole ? "active" : ""}" data-auth-role="${key}" role="tab" aria-selected="${key === selectedLoginRole}">
+                <span>${item.initials}</span><strong>${item.shortTitle}</strong>
+              </button>`).join("")}
+          </div>
+          <p class="auth-description">${profile.description}</p>
+          <form id="loginForm" class="login-form">
+            <input type="hidden" name="role" value="${selectedLoginRole}" />
+            <label for="loginId">${profile.idLabel}</label>
+            <input id="loginId" name="loginId" type="text" placeholder="${profile.placeholder}" autocomplete="username" required />
+            <label for="loginPassword">Password</label>
+            <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="4" required />
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
+          </form>
+          <div class="auth-demo-note"><span>Prototype access</span><p>Use any ID and a password of 4+ characters. Passwords are never saved.</p></div>
+        </div>
+      </section>
+    </div>`;
+  setTimeout(() => document.querySelector("#loginId")?.focus(), 0);
+}
+
+function showApp() {
+  authRoot.hidden = true;
+  authRoot.innerHTML = "";
+  appShell.hidden = false;
+  render();
+}
+
 function toast(message) {
   const el = document.createElement("div");
   el.className = "toast success";
@@ -62,14 +153,14 @@ function setHeader(title, eyebrow, showQuick = true) {
   pageEyebrow.textContent = eyebrow;
   quickAction.style.display = showQuick ? "" : "none";
   const profiles = {
-    faculty: { label: "Faculty view", initials: "FD", name: "Faculty Demo", meta: "Instructor · CSE" },
+    faculty: { label: "Professor view", initials: "PF", name: "Professor Demo", meta: "Instructor · CSE" },
     ta: { label: "TA view", initials: "TA", name: "Teaching Assistant", meta: "Course team · CSE" },
-    student: { label: "Student view", initials: "SD", name: "Student Demo", meta: "Student · CSE" }
+    student: { label: "Student view", initials: "ST", name: "Student Demo", meta: "Student · CSE" }
   };
   const profile = profiles[state.userRole] || profiles.faculty;
   roleLabel.textContent = profile.label;
   profileAvatar.textContent = profile.initials;
-  profileName.textContent = profile.name;
+  profileName.textContent = state.accountName || profile.name;
   profileMeta.textContent = profile.meta;
   erpNav.style.display = state.userRole === "faculty" ? "" : "none";
 }
@@ -85,6 +176,7 @@ function navigate(route) {
 }
 
 function render() {
+  if (!state.authenticated) return renderLogin(state.userRole);
   if (state.route === "dashboard") return renderDashboard();
   if (state.route === "schedule") return renderSchedule();
   if (state.route === "attendance") return renderAttendance();
@@ -178,19 +270,43 @@ function renderSchedule() {
   const isStudent = state.userRole === "student";
   const enrolled = state.enrolledCourses.includes("soft401");
   const imported = isStudent && state.importedSchedule.length > 0;
-  setHeader("Weekly schedule", isStudent ? "STUDENT TIMETABLE" : state.userRole === "ta" ? "TEACHING ASSISTANT TIMETABLE" : "FACULTY TIMETABLE", false);
+  const calendarDays = [
+    ["MON", "27"], ["TUE", "28"], ["WED", "29"], ["THU", "30"], ["FRI", "31"], ["SAT", "1"], ["SUN", "2"]
+  ];
+  const defaultEvents = [
+    { dayIndex: 1, day: "Tuesday", date: "28 Jul", start: "10:00 AM", end: "11:00 AM", topic: "Foundations of Soft Computing", room: "Room 304", status: "Completed" },
+    { dayIndex: 3, day: "Thursday", date: "30 Jul", start: "10:00 AM", end: "10:50 AM", topic: "Fuzzy Sets & Membership", room: "Room 304", status: "Today", today: true },
+    { dayIndex: 5, day: "Saturday", date: "1 Aug", start: "09:00 AM", end: "10:00 AM", topic: "Neural Network Models", room: "Room 304", status: "Upcoming" }
+  ];
+  const importedEvents = state.importedSchedule.map((item, index) => ({
+    ...item,
+    dayIndex: dayIndexFromName(item.day),
+    status: index === 0 ? "Next" : "Upcoming",
+    today: index === 0
+  })).filter(item => item.dayIndex >= 0);
+  const events = imported && importedEvents.length ? importedEvents : defaultEvents;
+  const roleName = state.userRole === "faculty" ? "Professor" : state.userRole === "ta" ? "Teaching Assistant" : "Student";
+  setHeader("Schedule calendar", `${roleName.toUpperCase()} TIMETABLE`, false);
   view.innerHTML = `
-    <article class="card page-card">
-      <div class="section-head">
-        <div><h2 style="margin:0 0 5px">${imported ? "My ERP timetable" : "28 July – 1 August"}</h2><p class="stat-label">${imported ? "Imported locally from your timetable file" : "Soft Computing · CSE 401 · Section A"}</p></div>
-        <span class="badge ${imported ? "green" : "purple"}">${imported ? "ERP file imported" : isStudent ? "Student schedule" : state.userRole === "ta" ? "TA schedule" : "Faculty schedule"}</span>
+    <article class="card page-card calendar-page">
+      <div class="calendar-titlebar">
+        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${imported ? "My ERP timetable" : "27 July – 2 August 2026"}</h2><p>${imported ? "Imported locally from your timetable file" : "Soft Computing · CSE 401 · Section A"}</p></div>
+        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "ERP file imported" : `${roleName} view`}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
       </div>
-      <div class="schedule-week">
-        ${imported
-          ? state.importedSchedule.map((item, index) => scheduleDay(item.day, item.date, item.start, item.end, item.topic, index === 0 ? "Next" : "Upcoming", index === 0 ? "purple" : "gray", isStudent, enrolled, index === 0, item.room)).join("")
-          : `${scheduleDay("Tuesday", "28 Jul", "10:00 AM", "11:00 AM", "Foundations of Soft Computing", "Completed", "green", isStudent, enrolled, false)}
-             ${scheduleDay("Thursday", "30 Jul", "10:00 AM", "10:50 AM", "Fuzzy Sets & Membership", "Today", "purple", isStudent, enrolled, true)}
-             ${scheduleDay("Saturday", "1 Aug", "09:00 AM", "10:00 AM", "Neural Network Models", "Upcoming", "gray", isStudent, enrolled, false)}`}
+      <div class="calendar-scroll" aria-label="Weekly class calendar">
+        <div class="calendar-board">
+          <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(([day, date], index) => `<span class="${index === 3 ? "is-today" : ""}"><small>${day}</small><strong>${date}</strong></span>`).join("")}</div>
+          <div class="calendar-body">
+            <div class="calendar-times">${["8 AM", "9 AM", "10 AM", "11 AM", "12 PM", "1 PM", "2 PM", "3 PM", "4 PM", "5 PM"].map(time => `<span>${time}</span>`).join("")}</div>
+            <div class="calendar-lanes">
+              ${calendarDays.map((_, index) => `<div class="calendar-lane ${index === 3 ? "is-today" : ""}">${events.filter(event => event.dayIndex === index).map(event => calendarEvent(event)).join("")}</div>`).join("")}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="calendar-agenda">
+        <div class="section-head"><div><h3>Class agenda</h3><p class="stat-label">All scheduled sessions for this week</p></div><span class="badge gray">${events.length} sessions</span></div>
+        <div class="schedule-week">${events.map(event => scheduleDay(event, isStudent, enrolled)).join("")}</div>
       </div>
       ${isStudent ? `
         <div class="setup-actions">
@@ -200,20 +316,46 @@ function renderSchedule() {
           <input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />
         </div>
         <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser. CampusPulse never receives your ERP password or session cookie.</span></div>` : ""}
-      ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Join Soft Computing with code <strong>SC401A</strong> to unlock attendance and quiz activities. The timetable remains visible to everyone.</span></div>` : ""}
+      ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Join Soft Computing with code <strong>SC401A</strong> to unlock attendance and quiz activities. The calendar remains visible to everyone.</span></div>` : ""}
     </article>`;
 }
 
-function scheduleDay(day, date, start, end, topic, status, color, isStudent, enrolled, isToday, room = "Room 304") {
-  const action = isToday
+function dayIndexFromName(day = "") {
+  const key = day.trim().slice(0, 3).toLowerCase();
+  return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].indexOf(key);
+}
+
+function timeToMinutes(value = "") {
+  const match = value.trim().match(/(\d{1,2}):?(\d{2})?\s*(AM|PM)?/i);
+  if (!match) return 8 * 60;
+  let hour = Number(match[1]);
+  const minute = Number(match[2] || 0);
+  const period = match[3]?.toUpperCase();
+  if (period === "PM" && hour !== 12) hour += 12;
+  if (period === "AM" && hour === 12) hour = 0;
+  return hour * 60 + minute;
+}
+
+function calendarEvent(event) {
+  const start = Math.max(8 * 60, Math.min(18 * 60, timeToMinutes(event.start)));
+  const end = Math.max(start + 35, Math.min(18 * 60, timeToMinutes(event.end)));
+  const top = ((start - 8 * 60) / (10 * 60)) * 100;
+  const height = Math.max(8, ((end - start) / (10 * 60)) * 100);
+  return `<article class="calendar-event ${event.today ? "current" : ""}" style="--event-top:${top}%;--event-height:${height}%">
+    <strong>${event.topic}</strong><span>${event.start} · ${event.room || "Room TBA"}</span>
+  </article>`;
+}
+
+function scheduleDay(event, isStudent, enrolled) {
+  const action = event.today
     ? isStudent
       ? `<button class="btn ${enrolled ? "btn-soft" : ""}" data-route-link="${enrolled ? "attendance" : "classes"}">${icon(enrolled ? "i-wifi" : "i-plus")} ${enrolled ? "View check-in" : "Join course"}</button>`
       : `<button class="btn btn-primary" data-route-link="attendance">${icon("i-play")} Start attendance</button>`
-    : `<span class="badge ${color}">${status}</span>`;
-  return `<div class="schedule-day ${isToday ? "today" : ""}">
-    <div class="schedule-date"><strong>${day}</strong><span>${date}</span></div>
-    <div class="schedule-time"><strong>${start}</strong><span>${end}</span></div>
-    <div class="schedule-info"><strong>${topic}</strong><span>Soft Computing · CSE 401 · ${room}</span></div>
+    : `<span class="badge ${event.status === "Completed" ? "green" : "gray"}">${event.status}</span>`;
+  return `<div class="schedule-day ${event.today ? "today" : ""}">
+    <div class="schedule-date"><strong>${event.day}</strong><span>${event.date}</span></div>
+    <div class="schedule-time"><strong>${event.start}</strong><span>${event.end}</span></div>
+    <div class="schedule-info"><strong>${event.topic}</strong><span>Soft Computing · CSE 401 · ${event.room || "Room TBA"}</span></div>
     <div class="schedule-action">${action}</div>
   </div>`;
 }
@@ -553,18 +695,18 @@ function openRoleModal() {
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="roleModalTitle">
-        <div class="modal-head"><div><h2 id="roleModalTitle">Choose a demo login</h2><p>Permissions and course access change with each role.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+        <div class="modal-head"><div><h2 id="roleModalTitle">Switch account</h2><p>You will return to the secure role-specific login.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
         <div class="role-options">
-          ${roleOption("faculty", "FD", "Professor / Faculty", "Create courses, quizzes, and attendance")}
+          ${roleOption("faculty", "PF", "Professor / Faculty", "Courses, quizzes, attendance, and ERP")}
           ${roleOption("ta", "TA", "Teaching Assistant", "Update quizzes and start attendance")}
-          ${roleOption("student", "SD", "Student", "Join courses and participate in activities")}
+          ${roleOption("student", "ST", "Student", "Join courses and participate in activities")}
         </div>
       </div>
     </div>`;
 }
 
 function roleOption(role, initials, title, description) {
-  return `<button class="role-option" data-login-role="${role}"><span class="avatar">${initials}</span><span><strong>${title}</strong><span>${description}</span></span>${state.userRole === role ? icon("i-check") : icon("i-arrow")}</button>`;
+  return `<button class="role-option" data-switch-role="${role}"><span class="avatar">${initials}</span><span><strong>${title}</strong><span>${description}</span></span>${state.userRole === role ? icon("i-check") : icon("i-arrow")}</button>`;
 }
 
 function renderPlaceholder(route) {
@@ -661,15 +803,17 @@ function parseScheduleICS(text) {
 }
 
 document.addEventListener("click", event => {
-  const loginButton = event.target.closest("[data-login-role]");
-  if (loginButton) {
-    state.userRole = loginButton.dataset.loginRole;
+  const authRole = event.target.closest("[data-auth-role]");
+  if (authRole) return renderLogin(authRole.dataset.authRole);
+  const switchButton = event.target.closest("[data-switch-role]");
+  if (switchButton) {
+    state.authenticated = false;
+    state.userRole = switchButton.dataset.switchRole;
+    state.accountName = "";
     state.route = "dashboard";
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
-    document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
-    render();
-    return toast(`Signed in as ${state.userRole === "ta" ? "Teaching Assistant" : state.userRole}`);
+    return renderLogin(state.userRole);
   }
   const copyButton = event.target.closest("[data-copy]");
   if (copyButton) {
@@ -714,6 +858,18 @@ document.addEventListener("click", event => {
     renderSchedule();
     toast("Imported timetable cleared");
   }
+  if (action === "calendar-today") {
+    document.querySelector(".calendar-scroll")?.scrollTo({ left: 220, behavior: "smooth" });
+    toast("Showing the current teaching week");
+  }
+  if (action === "logout") {
+    state.authenticated = false;
+    state.accountName = "";
+    state.route = "dashboard";
+    persist();
+    document.querySelector("#modalRoot").innerHTML = "";
+    renderLogin(state.userRole);
+  }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1, "Type your question here", ["Option A", "Option B", "Option C", "Option D"], 0));
@@ -751,6 +907,19 @@ document.querySelector("#roleSwitch").addEventListener("click", openRoleModal);
 
 document.addEventListener("submit", event => {
   event.preventDefault();
+  if (event.target.id === "loginForm") {
+    const data = Object.fromEntries(new FormData(event.target));
+    const profile = loginProfiles[data.role];
+    if (!profile || String(data.password).length < 4) return;
+    state.userRole = data.role;
+    state.authenticated = true;
+    state.accountName = profile.name;
+    state.route = "dashboard";
+    persist();
+    document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
+    showApp();
+    return toast(`Signed in to the ${profile.shortTitle} workspace`);
+  }
   if (event.target.id === "courseForm") {
     const data = Object.fromEntries(new FormData(event.target));
     const token = data.courseCode.replace(/[^a-z0-9]/gi, "").slice(0, 3).toUpperCase();
