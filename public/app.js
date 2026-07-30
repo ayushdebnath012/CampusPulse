@@ -5,6 +5,8 @@ const roster = [
   ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
 ];
 
+const APP_VERSION = "5";
+
 const defaultState = {
   route: "dashboard",
   userRole: "faculty",
@@ -42,6 +44,7 @@ function icon(id) {
 }
 
 function persist() {
+  state.appVersion = APP_VERSION;
   localStorage.setItem("campusPulseState", JSON.stringify(state));
   document.querySelector("#syncDot").classList.toggle("visible", state.userRole === "faculty" && state.erpStatus === "pending" && state.attendanceStatus === "complete");
 }
