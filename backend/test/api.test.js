@@ -1043,6 +1043,119 @@ test("students mark their own attendance only while the professor's session is o
   assert.deepEqual(noneOpen.body.sessions, []);
 });
 
+test("a professor adds and removes students and sets the weekly timetable", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Roster Professor",
+    email: "roster-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [
+      { rollNumber: "23ME10001", name: "First Student" },
+      { rollNumber: "23ME10002", name: "Second Student" },
+    ],
+  });
+
+  const added = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
+    method: "POST",
+    token: professor.token,
+    body: { rollNumber: "23me10003", name: "Third  Student" },
+  });
+  assert.equal(added.response.status, 201);
+  assert.deepEqual(
+    added.body.students.map((student) => [student.serial, student.rollNumber]),
+    [[1, "23ME10001"], [2, "23ME10002"], [3, "23ME10003"]],
+  );
+  assert.equal(added.body.students.at(-1).name, "Third Student");
+  assert.equal(added.body.course.students, 3);
+
+  const duplicate = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
+    method: "POST",
+    token: professor.token,
+    body: { rollNumber: "23ME10003", name: "Someone Else" },
+  });
+  assert.equal(duplicate.response.status, 409);
+
+  // The newly added student can join and is in a session opened afterwards.
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Third Student",
+    email: "third@kgpian.iitkgp.ac.in",
+    password: "student-password",
+  });
+  const joined = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code, rollNumber: "23ME10003" },
+  });
+  assert.equal(joined.response.status, 201);
+
+  const removed = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/roster/23ME10003`,
+    { method: "DELETE", token: professor.token },
+  );
+  assert.equal(removed.response.status, 200);
+  assert.deepEqual(
+    removed.body.students.map((item) => item.rollNumber),
+    ["23ME10001", "23ME10002"],
+  );
+  // Removal also withdraws the enrolment it granted.
+  const afterRemoval = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.deepEqual(afterRemoval.body.enrolledCourseIds, []);
+
+  const missing = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/roster/NOSUCHROLL`,
+    { method: "DELETE", token: professor.token },
+  );
+  assert.equal(missing.response.status, 404);
+
+  const timetable = await request(testServer.baseUrl, `/api/courses/${course.id}/schedule`, {
+    method: "PUT",
+    token: professor.token,
+    body: {
+      classes: [
+        { day: "Mon", start: "8:0:AM", end: "8:55:AM", topic: "ME60215", room: "NC241" },
+        { day: "Thur", start: "12:0:PM", end: "12:55:PM", topic: "ME60215" },
+      ],
+    },
+  });
+  assert.equal(timetable.response.status, 200);
+  assert.deepEqual(
+    timetable.body.schedule.map((item) => [item.day, item.start, item.room]),
+    [["Monday", "8:0:AM", "NC241"], ["Thursday", "12:0:PM", "Room TBA"]],
+  );
+
+  const bootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: professor.token,
+  });
+  assert.equal(bootstrap.body.schedule.length, 2);
+  assert.deepEqual(bootstrap.body.stats, {
+    courses: 1,
+    rosteredStudents: 2,
+    classesCompleted: 0,
+    averageAttendance: 0,
+    quizzes: 0,
+  });
+
+  const badDay = await request(testServer.baseUrl, `/api/courses/${course.id}/schedule`, {
+    method: "PUT",
+    token: professor.token,
+    body: { classes: [{ day: "Someday", start: "9:00 AM" }] },
+  });
+  assert.equal(badDay.response.status, 400);
+});
+
 test("professors sign up from department subdomains, students do not", async (t) => {
   const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
   t.after(async () => {

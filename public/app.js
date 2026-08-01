@@ -120,7 +120,6 @@ const appShell = document.querySelector("#appShell");
 const pageTitle = document.querySelector("#pageTitle");
 const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
-const roleLabel = document.querySelector("#roleLabel");
 const attendanceNav = document.querySelector("#attendanceNav");
 const profileAvatar = document.querySelector("#profileAvatar");
 const profileName = document.querySelector("#profileName");
@@ -583,7 +582,6 @@ function setHeader(title, eyebrow, showQuick = true) {
     student: { label: "Student view", initials: "ST", name: "Student Demo", meta: "Student · CSE" }
   };
   const profile = profiles[state.userRole] || profiles.faculty;
-  roleLabel.textContent = profile.label;
   profileAvatar.textContent = profile.initials;
   profileName.textContent = roleDisplayName(state.userRole, state.accountName || profile.name);
   profileMeta.textContent = profile.meta;
@@ -637,8 +635,10 @@ function renderDashboard() {
   const attendanceMatchesCourse = activeAttendance?.courseId === course.id;
   const courseAttendanceStatus = attendanceMatchesCourse ? state.attendanceStatus : "not_started";
   const coursePresentCount = attendanceMatchesCourse ? currentPresentCount() : 0;
-  setHeader(`Good morning, ${roleDisplayName()}`, "MONDAY, 3 AUGUST");
+  setHeader(`Good morning, ${roleDisplayName()}`, todayLabel());
   const attendanceLabel = courseAttendanceStatus === "complete" ? "Attendance recorded" : courseAttendanceStatus === "scanning" ? "Attendance in progress" : "Ready to begin";
+  const stats = workspaceStats();
+  const todaysClasses = scheduleForToday(course);
   const statusClass = courseAttendanceStatus === "complete" ? "green" : "amber";
   view.innerHTML = `
     <div class="dashboard-grid">
@@ -649,8 +649,8 @@ function renderDashboard() {
             <h2>${escapeHtml(course.name)}</h2>
             <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p>
             <div class="hero-meta">
-              <span>${icon("i-clock")} 3:00 – 5:00 PM</span>
-              <span>${icon("i-users")} ${course.students} students</span>
+              <span>${icon("i-clock")} ${escapeHtml(courseTimeLabel(course))}</span>
+              <span>${icon("i-users")} ${Number(course.students) || 0} students</span>
               <span>${icon("i-calendar")} ${escapeHtml(course.room || "Room TBA")}</span>
             </div>
           </div>
@@ -659,44 +659,110 @@ function renderDashboard() {
 
         <div class="stat-grid">
           <article class="card stat">
-            <div class="stat-top"><span class="stat-icon">${icon("i-users")}</span><span class="trend">↑ 2.4%</span></div>
-            <div class="stat-value">91.2%</div><div class="stat-label">Average attendance</div>
+            <div class="stat-top"><span class="stat-icon">${icon("i-users")}</span><span class="trend">${stats.classesCompleted ? "Recorded" : "No data yet"}</span></div>
+            <div class="stat-value">${stats.averageAttendance}%</div><div class="stat-label">Average attendance</div>
           </article>
           <article class="card stat">
-            <div class="stat-top"><span class="stat-icon green">${icon("i-check")}</span><span class="trend">This week</span></div>
-            <div class="stat-value">8</div><div class="stat-label">Classes completed</div>
+            <div class="stat-top"><span class="stat-icon green">${icon("i-check")}</span><span class="trend">All time</span></div>
+            <div class="stat-value">${stats.classesCompleted}</div><div class="stat-label">Classes completed</div>
           </article>
           <article class="card stat">
-            <div class="stat-top"><span class="stat-icon amber">${icon("i-quiz")}</span><span class="trend">76% avg.</span></div>
-            <div class="stat-value">${state.quizPublished ? "4" : "3"}</div><div class="stat-label">Quick quizzes</div>
+            <div class="stat-top"><span class="stat-icon amber">${icon("i-quiz")}</span><span class="trend">Published</span></div>
+            <div class="stat-value">${stats.quizzes}</div><div class="stat-label">Quick quizzes</div>
           </article>
         </div>
 
         <article class="card card-pad">
           <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="classes">View schedule</button></div>
           <div class="class-list">
-            ${classRow("3:00", "5:00 PM", course.name, `${course.courseCode} · ${course.section} · ${course.room}`, attendanceLabel, statusClass, canRunAttendance(course) ? "attendance" : "", course.id)}
+            ${todaysClasses.length
+              ? todaysClasses.map(item => classRow(item.start || "—", item.end || "", item.topic || course.name, `${course.courseCode} · ${course.section} · ${item.room || course.room}`, attendanceLabel, statusClass, canRunAttendance(course) ? "attendance" : "", course.id)).join("")
+              : `<p class="stat-label" style="padding:6px 2px">No classes scheduled yet. Import a timetable from the Schedule page.</p>`}
           </div>
         </article>
       </div>
 
       <div class="right-stack">
-        <article class="card date-card">
-          <div class="date-top"><div><div class="date-day">Monday</div><div class="date-number">3</div></div><div class="date-month">August 2026</div></div>
-          <div class="week-strip">
-            <span class="selected">M<b>3</b></span><span>T<b>4</b></span><span>W<b>5</b></span><span>T<b>6</b></span><span>F<b>7</b></span><span>S<b>8</b></span><span>S<b>9</b></span>
-          </div>
-        </article>
+        ${dateCard()}
         <article class="card card-pad">
           <div class="section-head"><h3>Recent activity</h3></div>
           <div class="activity-list">
-            <div class="activity"><span class="activity-icon">${icon("i-check")}</span><div><strong>Attendance workspace ready</strong><p>${escapeHtml(course.name)} · ${escapeHtml(course.section)}</p></div><time>Now</time></div>
-            <div class="activity"><span class="activity-icon purple">${icon("i-quiz")}</span><div><strong>Quiz publishing enabled</strong><p>${escapeHtml(course.name)}</p></div><time>Course team</time></div>
-            <div class="activity"><span class="activity-icon">${icon("i-users")}</span><div><strong>${attendanceMatchesCourse ? `${coursePresentCount} of ${course.students} students present` : `${course.students} rostered students`}</strong><p>${escapeHtml(course.name)}</p></div><time>Latest</time></div>
+            ${activityFeed(course, attendanceMatchesCourse, coursePresentCount, stats)}
           </div>
         </article>
       </div>
     </div>`;
+}
+
+// Counters come from the server; a workspace with no history reports zeros.
+function workspaceStats() {
+  return {
+    courses: 0,
+    rosteredStudents: 0,
+    classesCompleted: 0,
+    averageAttendance: 0,
+    quizzes: 0,
+    ...(state.stats || {})
+  };
+}
+
+function scheduleForToday(course) {
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long" });
+  return state.backendSchedule.filter(
+    item => item.courseId === course.id && String(item.day || "") === today
+  );
+}
+
+function courseTimeLabel(course) {
+  const next = state.backendSchedule.find(item => item.courseId === course.id);
+  return next?.start && next?.end ? `${next.start} – ${next.end}` : "Schedule not set";
+}
+
+function todayLabel() {
+  return new Date()
+    .toLocaleDateString("en-US", { weekday: "long", day: "numeric", month: "long" })
+    .toUpperCase();
+}
+
+function dateCard() {
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+  const week = Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(monday);
+    day.setDate(monday.getDate() + index);
+    return day;
+  });
+  return `<article class="card date-card">
+    <div class="date-top"><div><div class="date-day">${now.toLocaleDateString("en-US", { weekday: "long" })}</div><div class="date-number">${now.getDate()}</div></div><div class="date-month">${now.toLocaleDateString("en-US", { month: "long", year: "numeric" })}</div></div>
+    <div class="week-strip">
+      ${week.map(day => `<span class="${day.toDateString() === now.toDateString() ? "selected" : ""}">${day.toLocaleDateString("en-US", { weekday: "narrow" })}<b>${day.getDate()}</b></span>`).join("")}
+    </div>
+  </article>`;
+}
+
+function activityFeed(course, attendanceMatchesCourse, coursePresentCount, stats) {
+  const items = [];
+  if (attendanceMatchesCourse && state.attendanceStatus === "scanning") {
+    items.push([icon("i-check"), `${coursePresentCount} of ${Number(course.students) || 0} students present`, course.name, "Live"]);
+  }
+  if (stats.classesCompleted) {
+    items.push([icon("i-check"), `${stats.classesCompleted} class${stats.classesCompleted === 1 ? "" : "es"} recorded`, `${stats.averageAttendance}% average attendance`, "All time"]);
+  }
+  if (stats.quizzes) {
+    items.push([icon("i-quiz"), `${stats.quizzes} quiz${stats.quizzes === 1 ? "" : "zes"} published`, course.name, "All time"]);
+  }
+  if (Number(course.students) > 0) {
+    items.push([icon("i-users"), `${course.students} students on the roll list`, course.name, "Roster"]);
+  }
+  if (!items.length) {
+    return `<p class="stat-label" style="padding:6px 2px">Nothing yet. Upload a roll list, then take attendance.</p>`;
+  }
+  return items
+    .map(([glyph, title, meta, when]) =>
+      `<div class="activity"><span class="activity-icon">${glyph}</span><div><strong>${escapeHtml(title)}</strong><p>${escapeHtml(meta)}</p></div><time>${escapeHtml(when)}</time></div>`
+    )
+    .join("");
 }
 
 function attendanceCallCard(session) {
@@ -741,6 +807,71 @@ function renderStudentDashboard() {
           <article class="card empty-state" style="min-height:260px;grid-column:1/-1"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>No courses yet</h2><p>Ask your faculty for the course join code, then enter it on the Courses page.</p><button class="btn btn-primary" data-route-link="classes">Enter join code</button></div></article>`}
       </div>
     </div>`;
+}
+
+// A weekly grid: first row holds the time slots, first column the weekdays,
+// and any non-empty cell is a class in that slot.
+function parseTimetableGrid(rows) {
+  const cleaned = rows.filter(row => row.some(cell => String(cell || "").trim()));
+  if (cleaned.length < 2) throw new Error("That timetable has no rows");
+  const slots = cleaned[0].map(cell => String(cell || "").trim());
+  const classes = [];
+  for (const row of cleaned.slice(1)) {
+    const day = String(row[0] || "").trim();
+    if (!day) continue;
+    for (let column = 1; column < row.length; column += 1) {
+      const subject = String(row[column] || "").trim().replace(/\s+/g, " ");
+      if (!subject) continue;
+      const slot = slots[column] || "";
+      const [start, end] = slot.split(/\s*[-–—]\s*/);
+      classes.push({
+        day,
+        start: (start || slot).trim(),
+        end: (end || "").trim(),
+        topic: subject,
+        room: ""
+      });
+    }
+  }
+  if (!classes.length) throw new Error("No classes were found in that timetable");
+  return classes;
+}
+
+// A plain list works too: day, start, end, subject, room as columns.
+function parseTimetableList(rows) {
+  const headers = rows[0].map(cell => String(cell || "").toLowerCase().replace(/[^a-z]/g, ""));
+  const at = (...names) => headers.findIndex(header => names.includes(header));
+  const dayIndex = at("day", "weekday", "dayname");
+  if (dayIndex < 0) return null;
+  const startIndex = at("start", "starttime", "from", "time");
+  const endIndex = at("end", "endtime", "to");
+  const topicIndex = at("subject", "course", "topic", "class");
+  const roomIndex = at("room", "venue", "location");
+  return rows.slice(1)
+    .filter(row => String(row[dayIndex] || "").trim())
+    .map(row => ({
+      day: String(row[dayIndex] || "").trim(),
+      start: startIndex >= 0 ? String(row[startIndex] || "").trim() : "",
+      end: endIndex >= 0 ? String(row[endIndex] || "").trim() : "",
+      topic: topicIndex >= 0 ? String(row[topicIndex] || "").trim() : "",
+      room: roomIndex >= 0 ? String(row[roomIndex] || "").trim() : ""
+    }));
+}
+
+async function readTimetableFile(file) {
+  const name = (file.name || "").toLowerCase();
+  let rows;
+  if (name.endsWith(".xlsx")) {
+    rows = await xlsxRows(await file.arrayBuffer());
+  } else {
+    rows = (await file.text())
+      .split(/\r?\n/)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(parseCSVRow);
+  }
+  if (!rows.length) throw new Error("That file has no rows");
+  return parseTimetableList(rows) || parseTimetableGrid(rows);
 }
 
 function renderSchedule() {
@@ -823,7 +954,60 @@ function renderSchedule() {
         </div>
         <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser and is not uploaded to CampusPulse.</span></div>` : ""}
       ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Ask the course professor for the private join code to unlock activities. Attendance remains teaching-team managed.</span></div>` : ""}
-    </article>`;
+    </article>
+    ${canManageCourse(course) ? scheduleEditor(course, courseSchedule) : ""}`;
+}
+
+async function saveCourseSchedule(course, classes, message) {
+  try {
+    const result = await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/schedule`, {
+      method: "PUT",
+      body: { classes }
+    });
+    state.backendSchedule = [
+      ...state.backendSchedule.filter(item => item.courseId !== course.id),
+      ...(result.schedule || [])
+    ];
+    persist();
+    renderSchedule();
+    return toast(message);
+  } catch (error) {
+    return toast(error.message || "Could not save the timetable", "error");
+  }
+}
+
+function scheduleEditor(course, entries) {
+  return `<article class="card page-card" style="margin-top:22px">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly timetable</h2><p class="stat-label">${escapeHtml(course.courseCode)} · shown on everyone's calendar</p></div><span class="badge ${entries.length ? "green" : "amber"}">${entries.length} classes</span></div>
+    ${entries.length ? `<table class="roster-table" style="margin-bottom:14px">
+      <thead><tr><th>Day</th><th>Start</th><th>End</th><th>Class</th><th>Room</th><th></th></tr></thead>
+      <tbody>${entries.map((item, index) => `<tr>
+        <td>${escapeHtml(item.day || "")}</td>
+        <td>${escapeHtml(item.start || "")}</td>
+        <td>${escapeHtml(item.end || "")}</td>
+        <td>${escapeHtml(item.topic || course.name)}</td>
+        <td>${escapeHtml(item.room || "")}</td>
+        <td class="roster-actions"><button class="text-btn danger" type="button" data-action="remove-schedule-class" data-index="${index}">Remove</button></td>
+      </tr>`).join("")}</tbody>
+    </table>` : `<p class="stat-label" style="padding:6px 2px 14px">No classes yet. Add them by hand, or upload your timetable.</p>`}
+    <form id="addClassForm" class="field-grid">
+      <div class="field"><label for="classDay">Day</label>
+        <select class="select" id="classDay" name="day" required>
+          ${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map(day => `<option value="${day}">${day}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label for="classStart">Start</label><input class="text-input" id="classStart" name="start" placeholder="3:00 PM" required /></div>
+      <div class="field"><label for="classEnd">End</label><input class="text-input" id="classEnd" name="end" placeholder="5:00 PM" /></div>
+      <div class="field"><label for="classTopic">Class</label><input class="text-input" id="classTopic" name="topic" placeholder="${escapeHtml(course.courseCode)}" /></div>
+      <div class="field"><label for="classRoom">Room</label><input class="text-input" id="classRoom" name="room" placeholder="${escapeHtml(course.room || "NR221")}" /></div>
+      <div class="field" style="justify-content:flex-end"><button class="btn btn-primary" type="submit">${icon("i-plus")} Add class</button></div>
+    </form>
+    <div class="setup-actions" style="margin-top:16px">
+      <button class="btn" data-action="choose-timetable-upload">${icon("i-upload")} Upload timetable</button>
+      <input id="timetableFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
+    </div>
+    <div class="security-note" style="margin-top:14px"><span class="lock">⌾</span><span>Upload a weekly grid (days down the side, time slots across the top) or a list with day, start, end, subject and room columns. Uploading replaces this course's timetable.</span></div>
+  </article>`;
 }
 
 function dayIndexFromName(day = "") {
@@ -1194,6 +1378,15 @@ function facultyCourseCard(course) {
   </article>`;
 }
 
+function rosterTableRow(student, index) {
+  return `<tr>
+    <td class="roster-serial">${student.serial || index + 1}</td>
+    <td class="roster-roll">${escapeHtml(student.rollNumber)}</td>
+    <td>${escapeHtml(student.name)}</td>
+    <td class="roster-actions"><button class="text-btn danger" type="button" data-action="remove-roster-student" data-roll-number="${escapeHtml(student.rollNumber)}">Remove</button></td>
+  </tr>`;
+}
+
 function renderCourseRoster(courseId) {
   const course = state.courses.find(item => item.id === courseId);
   const roster = courseRosters.get(courseId) || [];
@@ -1204,17 +1397,35 @@ function renderCourseRoster(courseId) {
   setHeader(`${course.name} roster`, "PROFESSOR WORKSPACE", false);
   view.innerHTML = `
     <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to courses</button>
-    <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · active course roster</p></div><span class="badge green">${roster.length} students</span></div>
-      <div class="roster-toolbar roster-search-toolbar">
+    <div class="page-grid roster-grid">
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
-        <div class="setup-actions"><button class="btn" data-action="choose-roster-upload">${icon("i-upload")} Upload roll list</button><button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button><input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden /></div>
-      </div>
-      <div class="roster roster-scroll professor-roster" id="professorRoster">
-        ${roster.map((student, index) => studentRow({ ...student, present: false }, index, false, true)).join("")}
-      </div>
-      <div class="security-note"><span class="lock">⌾</span><span>Only you can replace this official roster. Enrolled TAs may see its snapshot only while running attendance; students never receive it.</span></div>
-    </article>`;
+        <div class="roster-scroll" id="professorRoster">
+          ${roster.length ? `<table class="roster-table">
+            <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th><th></th></tr></thead>
+            <tbody>${roster.map(rosterTableRow).join("")}</tbody>
+          </table>` : `<p class="stat-label" style="padding:14px 2px">No students yet. Upload the roll list, or add them one at a time.</p>`}
+        </div>
+      </article>
+
+      <aside class="card page-card">
+        <div class="section-head"><h3>Manage roll list</h3></div>
+        <form id="addStudentForm" class="login-form">
+          <label for="addRollNumber">Roll number</label>
+          <input id="addRollNumber" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" required />
+          <label for="addStudentName">Full name</label>
+          <input id="addStudentName" name="name" type="text" placeholder="Student name" autocomplete="off" maxlength="120" required />
+          <button class="btn btn-primary" type="submit">${icon("i-plus")} Add student</button>
+        </form>
+        <div class="setup-actions" style="margin-top:16px">
+          <button class="btn" data-action="choose-roster-upload">${icon("i-upload")} Upload roll list</button>
+          <button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button>
+          <input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden />
+        </div>
+        <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Uploading a file replaces the whole list. Removing a student also withdraws their enrolment from this course. Students never receive this list.</span></div>
+      </aside>
+    </div>`;
 }
 
 function renderTAClasses() {
@@ -1298,30 +1509,10 @@ function openCourseModal() {
   setTimeout(() => document.querySelector("#courseName")?.focus(), 0);
 }
 
-function openRoleModal() {
-  modalReturnFocus = document.activeElement;
-  document.querySelector("#modalRoot").innerHTML = `
-    <div class="modal-backdrop" data-action="close-modal">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="roleModalTitle">
-        <div class="modal-head"><div><h2 id="roleModalTitle">Switch account</h2><p>You will return to the secure role-specific login.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
-        <div class="role-options">
-          ${roleOption("faculty", "PF", "Professor / Faculty", "Courses, rosters, quizzes, and attendance")}
-          ${roleOption("ta", "TA", "Teaching Assistant", "Enroll, run attendance, and publish quizzes")}
-          ${roleOption("student", "ST", "Student", "Join courses and participate in activities")}
-        </div>
-      </div>
-    </div>`;
-  setTimeout(() => document.querySelector(".role-option")?.focus(), 0);
-}
-
 function closeModal() {
   document.querySelector("#modalRoot").innerHTML = "";
   modalReturnFocus?.focus?.();
   modalReturnFocus = null;
-}
-
-function roleOption(role, initials, title, description) {
-  return `<button class="role-option" data-switch-role="${role}"><span class="avatar">${initials}</span><span><strong>${title}</strong><span>${description}</span></span>${state.userRole === role ? icon("i-check") : icon("i-arrow")}</button>`;
 }
 
 function renderPlaceholder(route) {
@@ -1340,15 +1531,6 @@ function renderSettings() {
   const updateState = updateManager?.state || { status: "unavailable" };
   view.innerHTML = `
     <div class="page-grid">
-      <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Backend connection</h2><p class="stat-label">Connect this device to the deployed CampusPulse API.</p></div><span class="badge ${backendConfigured() ? "green" : "amber"}">${backendConfigured() ? "Configured" : "Offline demo"}</span></div>
-        <form id="apiSettingsForm" class="login-form" style="margin-top:22px">
-          <label for="apiBaseUrl">API base URL</label>
-          <input id="apiBaseUrl" name="apiBaseUrl" type="url" placeholder="https://your-api.example.com" value="${escapeHtml(API_BASE)}" />
-          <div class="setup-actions"><button type="button" class="btn" data-action="clear-api-url">Disconnect API</button><button class="btn btn-primary" type="submit">${icon("i-cloud")} Save and reconnect</button></div>
-        </form>
-        <div class="security-note"><span class="lock">⌾</span><span>The Android app and web app use this HTTPS endpoint for accounts, course enrollment, attendance, and quizzes.</span></div>
-      </article>
       <aside class="card page-card">
         <div class="section-head"><h3>Account & privacy</h3></div>
         <div class="summary-list"><div class="summary-item"><span>Mode</span><strong>${backendConfigured() ? "Persistent API" : "This-device prototype"}</strong></div><div class="summary-item"><span>Account session</span><strong>${apiToken ? "Signed in" : "Not connected"}</strong></div><div class="summary-item"><span>App version</span><strong>${APP_VERSION}</strong></div></div>
@@ -1555,7 +1737,7 @@ function columnIndex(reference = "") {
   return [...letters].reduce((total, letter) => total * 26 + (letter.charCodeAt(0) - 64), 0) - 1;
 }
 
-async function parseRosterXlsx(buffer) {
+async function xlsxRows(buffer) {
   const parts = await readXlsxParts(
     buffer,
     name => name === "xl/sharedStrings.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(name)
@@ -1593,7 +1775,11 @@ async function parseRosterXlsx(buffer) {
     }
     rows.push([...cells].map(cell => cell ?? ""));
   }
-  return rosterFromRows(rows, "sheet");
+  return rows;
+}
+
+async function parseRosterXlsx(buffer) {
+  return rosterFromRows(await xlsxRows(buffer), "sheet");
 }
 
 function decodePdfLiteral(raw) {
@@ -1834,26 +2020,6 @@ document.addEventListener("click", async event => {
   if (authModeButton) {
     return renderLogin(selectedLoginRole, authModeButton.dataset.authMode);
   }
-  const switchButton = event.target.closest("[data-switch-role]");
-  if (switchButton) {
-    clearTimeout(quizTimer);
-    if (backendConfigured() && apiToken) {
-      try { await apiRequest("/api/auth/logout", { method: "POST" }); } catch {}
-      apiToken = "";
-      localStorage.removeItem("campusPulseApiToken");
-    }
-    clearSensitiveClientState({ clearImportedSchedule: true });
-    state.authenticated = false;
-    state.userRole = switchButton.dataset.switchRole;
-    state.accountName = "";
-    state.authEmail = "";
-    state.route = "dashboard";
-    authMode = "login";
-    persist();
-    document.querySelector("#modalRoot").innerHTML = "";
-    modalReturnFocus = null;
-    return renderLogin(state.userRole);
-  }
   const copyButton = event.target.closest("[data-copy]");
   if (copyButton) {
     navigator.clipboard?.writeText(copyButton.dataset.copy);
@@ -2034,16 +2200,6 @@ document.addEventListener("click", async event => {
     state.attendanceStatus = "complete";
     persist(); renderLiveAttendance(); toast(`Attendance saved for ${currentPresentCount()} students`);
   }
-  if (action === "clear-api-url") {
-    localStorage.setItem("campusPulseApiBase", "offline");
-    localStorage.removeItem("campusPulseApiToken");
-    clearSensitiveClientState({ clearImportedSchedule: true });
-    state.authenticated = false;
-    state.accountName = "";
-    state.authEmail = "";
-    persist();
-    location.reload();
-  }
   if (action === "delete-account") {
     const confirmed = window.confirm(
       "Delete your CampusPulse account, enrollment, and quiz response data? Official rosters and teaching-team-recorded attendance remain course records. This cannot be undone."
@@ -2100,6 +2256,41 @@ document.addEventListener("click", async event => {
     document.querySelector("#modalRoot").innerHTML = "";
     modalReturnFocus = null;
     renderLogin(state.userRole);
+  }
+  if (action === "choose-timetable-upload") {
+    return document.querySelector("#timetableFile")?.click();
+  }
+  if (action === "remove-schedule-class") {
+    const course = selectedCourse();
+    if (!course || !canManageCourse(course)) {
+      return toast("Only the course owner can change this timetable", "error");
+    }
+    const index = Number(event.target.closest("[data-index]")?.dataset.index);
+    const remaining = state.backendSchedule
+      .filter(item => item.courseId === course.id)
+      .filter((_, position) => position !== index);
+    return saveCourseSchedule(course, remaining, "Class removed");
+  }
+  if (action === "remove-roster-student") {
+    const course = state.courses.find(item => item.id === managedCourseId);
+    const rollNumber = event.target.closest("[data-roll-number]")?.dataset.rollNumber || "";
+    if (!course || !canManageCourse(course)) {
+      return toast("Only the course owner can change this roll list", "error");
+    }
+    if (!window.confirm(`Remove ${rollNumber} from the ${course.courseCode} roll list? They lose access to this course.`)) return;
+    try {
+      const result = await apiRequest(
+        `/api/courses/${encodeURIComponent(course.id)}/roster/${encodeURIComponent(rollNumber)}`,
+        { method: "DELETE" }
+      );
+      courseRosters.set(course.id, result.students || []);
+      state.courses = state.courses.map(item => item.id === course.id ? { ...item, ...result.course } : item);
+      persist();
+      renderCourseRoster(course.id);
+      return toast(`${rollNumber} removed`);
+    } catch (error) {
+      return toast(error.message || "Could not remove that student", "error");
+    }
   }
   if (action === "student-check-in") {
     const button = event.target.closest("[data-action]");
@@ -2209,6 +2400,27 @@ document.addEventListener("change", async event => {
     persist();
     return renderAttendance();
   }
+  if (event.target.id === "timetableFile") {
+    const file = event.target.files?.[0];
+    const course = selectedCourse();
+    if (!file || !course || !canManageCourse(course)) return;
+    try {
+      const classes = await readTimetableFile(file);
+      const preview = classes
+        .slice(0, 3)
+        .map(item => `  ${item.day} ${item.start}${item.end ? `–${item.end}` : ""} ${item.topic}`)
+        .join("\n");
+      if (!window.confirm(`Replace the ${course.courseCode} timetable with ${classes.length} classes from ${file.name}?
+
+${preview}`)) return;
+      await saveCourseSchedule(course, classes, `${classes.length} classes imported`);
+    } catch (error) {
+      return toast(error.message || "Could not read that timetable", "error");
+    } finally {
+      event.target.value = "";
+    }
+    return;
+  }
   if (event.target.id === "rosterUploadFile") {
     const file = event.target.files?.[0];
     const course = state.courses.find(item => item.id === managedCourseId);
@@ -2277,26 +2489,9 @@ quickAction.addEventListener("click", async () => {
   }
   navigate("attendance");
 });
-document.querySelector("#roleSwitch").addEventListener("click", openRoleModal);
 
 document.addEventListener("submit", async event => {
   event.preventDefault();
-  if (event.target.id === "apiSettingsForm") {
-    const value = String(new FormData(event.target).get("apiBaseUrl") || "").trim().replace(/\/+$/, "");
-    if (value && !/^https:\/\//i.test(value) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(value)) {
-      return toast("Use an HTTPS API URL", "error");
-    }
-    if (value) localStorage.setItem("campusPulseApiBase", value);
-    else localStorage.setItem("campusPulseApiBase", "offline");
-    localStorage.removeItem("campusPulseApiToken");
-    clearSensitiveClientState({ clearImportedSchedule: true });
-    state.authenticated = false;
-    state.accountName = "";
-    state.authEmail = "";
-    persist();
-    location.reload();
-    return;
-  }
   if (event.target.id === "signupForm") {
     const data = Object.fromEntries(new FormData(event.target));
     const email = String(data.email || "").trim().toLowerCase();
@@ -2394,6 +2589,47 @@ document.addEventListener("submit", async event => {
     closeModal();
     renderClasses();
     toast(`${result.course.name} created · Code ${result.course.code}`);
+  }
+  if (event.target.id === "addClassForm") {
+    const course = selectedCourse();
+    if (!course || !canManageCourse(course)) {
+      return toast("Only the course owner can change this timetable", "error");
+    }
+    const data = new FormData(event.target);
+    const existing = state.backendSchedule
+      .filter(item => item.courseId === course.id)
+      .map(({ day, start, end, topic, room }) => ({ day, start, end, topic, room }));
+    existing.push({
+      day: String(data.get("day") || ""),
+      start: String(data.get("start") || "").trim(),
+      end: String(data.get("end") || "").trim(),
+      topic: String(data.get("topic") || "").trim() || course.courseCode,
+      room: String(data.get("room") || "").trim() || course.room || ""
+    });
+    return saveCourseSchedule(course, existing, "Class added to the timetable");
+  }
+  if (event.target.id === "addStudentForm") {
+    const course = state.courses.find(item => item.id === managedCourseId);
+    if (!course || !canManageCourse(course)) {
+      return toast("Only the course owner can change this roll list", "error");
+    }
+    const data = new FormData(event.target);
+    try {
+      const result = await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/roster`, {
+        method: "POST",
+        body: {
+          rollNumber: String(data.get("rollNumber") || "").trim().toUpperCase(),
+          name: String(data.get("name") || "").trim()
+        }
+      });
+      courseRosters.set(course.id, result.students || []);
+      state.courses = state.courses.map(item => item.id === course.id ? { ...item, ...result.course } : item);
+      persist();
+      renderCourseRoster(course.id);
+      return toast("Student added to the roll list");
+    } catch (error) {
+      return toast(error.message || "Could not add that student", "error");
+    }
   }
   if (event.target.id === "changePasswordForm") {
     const data = new FormData(event.target);

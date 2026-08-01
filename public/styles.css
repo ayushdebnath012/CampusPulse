@@ -520,3 +520,17 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   .toast-region { left:18px; right:18px; bottom:82px; }
   .toast { min-width:0; }
 }
+
+.roster-grid { grid-template-columns: minmax(0,1.6fr) minmax(260px,.9fr); align-items: start; }
+.roster-table { width:100%; border-collapse:collapse; font-size:11px; }
+.roster-table th {
+  position:sticky; top:0; z-index:1; padding:9px 10px; text-align:left; color:var(--muted);
+  background:var(--paper); border-bottom:1px solid var(--line); font-size:9px; letter-spacing:.08em; text-transform:uppercase;
+}
+.roster-table td { padding:9px 10px; border-bottom:1px solid #f1f1f6; }
+.roster-table tr:hover td { background:#fafaff; }
+.roster-serial { width:52px; color:var(--muted); }
+.roster-roll { width:120px; font-weight:750; letter-spacing:.02em; }
+.roster-actions { width:80px; text-align:right; }
+.text-btn.danger { color:var(--red); }
+@media (max-width: 1050px) { .roster-grid { grid-template-columns:1fr; } }

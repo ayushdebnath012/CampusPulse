@@ -65,6 +65,43 @@ function ownRecord(database, user, session) {
   return session.records.find((item) => item.markedBy === user.id) || null;
 }
 
+// Real counters for the dashboard. A workspace with no history reports zeros
+// rather than sample figures.
+function workspaceStats(database, user, courses) {
+  const courseIds = new Set(courses.map((course) => course.id));
+  const closed = database.attendanceSessions.filter(
+    (session) => courseIds.has(session.courseId) && session.status === "closed",
+  );
+  const student = user.role === "student";
+
+  let attended = 0;
+  let possible = 0;
+  for (const session of closed) {
+    const records = Array.isArray(session.records) ? session.records : [];
+    if (student) {
+      const rollNumber = boundRollNumber(database, user, session.courseId);
+      const own = records.find((record) => record.rollNumber === rollNumber);
+      if (own) {
+        possible += 1;
+        if (own.present) attended += 1;
+      }
+      continue;
+    }
+    attended += records.filter((record) => record.present).length;
+    possible += records.length;
+  }
+
+  return {
+    courses: courses.length,
+    rosteredStudents: database.courseStudents.filter((item) =>
+      courseIds.has(item.courseId),
+    ).length,
+    classesCompleted: closed.length,
+    averageAttendance: possible ? Math.round((attended / possible) * 1000) / 10 : 0,
+    quizzes: database.quizzes.filter((quiz) => courseIds.has(quiz.courseId)).length,
+  };
+}
+
 function attendanceRecord(student) {
   return {
     serial: student.serial,
@@ -216,6 +253,47 @@ function normalizeRosterUpload(students, courseId) {
       serial: index + 1,
       rollNumber,
       name,
+    };
+  });
+}
+
+const WEEKDAYS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday",
+];
+
+function normalizeSchedule(classes, courseId) {
+  if (!Array.isArray(classes) || classes.length > 60) {
+    const error = new Error("Add up to 60 weekly classes");
+    error.status = 400;
+    throw error;
+  }
+  return classes.map((entry, index) => {
+    const dayInput = String(entry?.day || "").trim().toLowerCase();
+    const day = WEEKDAYS.find((name) => name.toLowerCase().startsWith(dayInput.slice(0, 3)));
+    const start = String(entry?.start || "").trim().slice(0, 20);
+    const end = String(entry?.end || "").trim().slice(0, 20);
+    const topic = String(entry?.topic || "").trim().replace(/\s+/g, " ").slice(0, 120);
+    const room = String(entry?.room || "").trim().slice(0, 80) || "Room TBA";
+    if (!day || !start) {
+      const error = new Error(`Class ${index + 1} needs a weekday and a start time`);
+      error.status = 400;
+      throw error;
+    }
+    return {
+      id: `schedule-${courseId}-${index + 1}`,
+      courseId,
+      day,
+      date: "",
+      start,
+      end,
+      topic,
+      room,
     };
   });
 }
@@ -793,6 +871,7 @@ function createApp(options = {}) {
           request.user.role === "student"
             ? safeQuizForStudent(currentQuiz, request.user.id)
             : currentQuiz || null,
+        stats: workspaceStats(data, request.user, courses),
       });
     } catch (error) {
       next(error);
@@ -906,6 +985,149 @@ function createApp(options = {}) {
           ];
           course.students = students.length;
           course.rosterSource = "owner-upload";
+          course.rosterUpdatedAt = new Date().toISOString();
+          return {
+            course: publicCourse(database, request.user, course),
+            students,
+          };
+        });
+        response.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.put(
+    "/api/courses/:id/schedule",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const result = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const entries = normalizeSchedule(request.body.classes, course.id);
+          database.schedule = [
+            ...database.schedule.filter((item) => item.courseId !== course.id),
+            ...entries,
+          ];
+          return { schedule: entries };
+        });
+        response.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/courses/:id/roster",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const result = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const rollNumber = String(request.body.rollNumber || "")
+            .trim()
+            .toUpperCase();
+          const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
+          if (!rollNumber || rollNumber.length > 40 || name.length < 2 || name.length > 120) {
+            const error = new Error("Enter a valid roll number and name");
+            error.status = 400;
+            throw error;
+          }
+          const roster = courseRoster(database, course.id);
+          if (roster.some((student) => student.rollNumber === rollNumber)) {
+            const error = new Error("That roll number is already on this roll list");
+            error.status = 409;
+            throw error;
+          }
+          const added = {
+            courseId: course.id,
+            serial: roster.length + 1,
+            rollNumber,
+            name,
+          };
+          database.courseStudents.push(added);
+          // An open session was snapshotted before this student existed.
+          database.attendanceSessions.forEach((session) => {
+            if (session.courseId === course.id && session.status === "open") {
+              session.records.push(attendanceRecord(added));
+            }
+          });
+          course.students = roster.length + 1;
+          course.rosterUpdatedAt = new Date().toISOString();
+          return {
+            course: publicCourse(database, request.user, course),
+            students: courseRoster(database, course.id),
+          };
+        });
+        response.status(201).json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/courses/:id/roster/:rollNumber",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const result = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const rollNumber = String(request.params.rollNumber || "")
+            .trim()
+            .toUpperCase();
+          const present = database.courseStudents.some(
+            (student) =>
+              student.courseId === course.id && student.rollNumber === rollNumber,
+          );
+          if (!present) {
+            const error = new Error("That roll number is not on this roll list");
+            error.status = 404;
+            throw error;
+          }
+          database.courseStudents = database.courseStudents.filter(
+            (student) =>
+              !(student.courseId === course.id && student.rollNumber === rollNumber),
+          );
+          // Keep the printed order contiguous after the gap.
+          courseRoster(database, course.id).forEach((student, index) => {
+            student.serial = index + 1;
+          });
+          // Removing a student withdraws their admission to the course.
+          database.enrollments = database.enrollments.filter(
+            (item) =>
+              !(item.courseId === course.id && item.rollNumber === rollNumber),
+          );
+          // Closed sessions stay as they were recorded on the day.
+          database.attendanceSessions.forEach((session) => {
+            if (session.courseId === course.id && session.status === "open") {
+              session.records = session.records.filter(
+                (record) => record.rollNumber !== rollNumber,
+              );
+            }
+          });
+          const students = courseRoster(database, course.id);
+          course.students = students.length;
           course.rosterUpdatedAt = new Date().toISOString();
           return {
             course: publicCourse(database, request.user, course),
