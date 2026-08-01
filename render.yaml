@@ -26,8 +26,6 @@ services:
         sync: false
       - key: TA_SIGNUP_CODE
         sync: false
-      - key: COURSE_ROSTERS_JSON_BASE64
-        sync: false
 
 databases:
   - name: campuspulse-db

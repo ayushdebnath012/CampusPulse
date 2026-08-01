@@ -344,21 +344,18 @@ function createApp(options = {}) {
           ].filter((key) => !String(env[key] || "").trim())
         : [];
       const data = await store.read();
-      if (production && !data.courseStudents.length) {
-        warnings.push("COURSE_ROSTERS_JSON_BASE64");
-      }
-      const lockedCourses = data.courses
-        .filter((course) => String(course.code || "").startsWith("LOCKED-"))
-        .map((course) => course.id);
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.2.0",
+        version: "1.3.0",
         otpRequired: false,
         emailDelivery:
           mailer.provider || (mailer.configured ? "configured" : "disabled"),
+        courses: data.courses.length,
+        coursesAwaitingRollList: data.courses.filter(
+          (course) => !courseRoster(data, course.id).length,
+        ).length,
         ...(warnings.length ? { configurationWarnings: warnings } : {}),
-        ...(lockedCourses.length ? { lockedCourses } : {}),
       });
     } catch (error) {
       next(error);
