@@ -134,6 +134,8 @@ let enrolledStudents = [];
 let quizDrafts = [];
 let editingDraftId = "";
 let quizHistory = [];
+let proximityCode = null;
+let proximityTimer = null;
 let courseNotices = [];
 let quizResults = null;
 let passwordResetEmail = "";
@@ -388,6 +390,8 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
   clearInterval(openAttendanceTimer);
+  clearInterval(proximityTimer);
+  proximityCode = null;
   openAttendance = [];
   enrolledStudents = [];
   quizDrafts = [];
@@ -1117,6 +1121,34 @@ function activityFeed(course, attendanceMatchesCourse, coursePresentCount, stats
     .join("");
 }
 
+// The team's screen shows a code that changes every 30 seconds; students in the
+// room read it off that screen to prove they were there.
+async function refreshProximityCode(sessionId) {
+  if (!backendConfigured() || !apiToken || !sessionId) {
+    proximityCode = null;
+    return;
+  }
+  try {
+    proximityCode = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}/code`);
+  } catch {
+    proximityCode = null;
+  }
+}
+
+function startProximityCodeTicker(sessionId) {
+  clearInterval(proximityTimer);
+  if (!sessionId) return;
+  proximityTimer = setInterval(async () => {
+    if (state.route !== "attendance" || activeAttendance?.id !== sessionId) {
+      clearInterval(proximityTimer);
+      return;
+    }
+    const previous = proximityCode?.code;
+    await refreshProximityCode(sessionId);
+    if (proximityCode?.code !== previous) renderLiveAttendance();
+  }, 5000);
+}
+
 function attendanceCallCard(session) {
   const course = state.courses.find(item => item.id === session.courseId);
   const courseName = course ? course.name : "Your course";
@@ -1139,6 +1171,8 @@ function attendanceCallCard(session) {
       ? `<p class="attendance-call-roll">Roll number <strong>${escapeHtml(session.rollNumber)}</strong></p>`
       : `<label class="attendance-call-label" for="rollNumber-${escapeHtml(session.id)}">Your roll number</label>
          <input class="text-input" id="rollNumber-${escapeHtml(session.id)}" data-roll-for="${escapeHtml(session.id)}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
+    <label class="attendance-call-label" for="proximity-${escapeHtml(session.id)}">Code on the class screen</label>
+    <input class="text-input attendance-code" id="proximity-${escapeHtml(session.id)}" data-code-for="${escapeHtml(session.id)}" type="text" maxlength="6" placeholder="6 characters" autocomplete="off" inputmode="latin" />
     <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}">${icon("i-check")} Mark me present</button>
   </article>`;
 }
@@ -1691,6 +1725,10 @@ function renderLiveAttendance() {
     <div class="page-grid">
       <article class="card page-card">
         ${sessionHeading(complete ? "Review attendance" : "Mark attendance", complete ? "Session closed and saved" : "Select each student who is present", complete ? "green" : "purple")}
+        ${!complete && proximityCode?.supported ? `<div class="proximity-code">
+          <div><span>Show this to the class</span><strong>${escapeHtml(proximityCode.code || "······")}</strong></div>
+          <p>Changes every 30 seconds. Students type it in to mark themselves present, so only people who can see this screen can check in.</p>
+        </div>` : ""}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
           <div class="scan-status">${complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
@@ -1715,6 +1753,14 @@ function renderLiveAttendance() {
       ?.focus({ preventScroll: true });
   }
 
+  if (!complete && backendConfigured() && state.backendAttendanceId && !proximityCode) {
+    refreshProximityCode(state.backendAttendanceId).then(() => {
+      if (state.route === "attendance") renderLiveAttendance();
+    });
+  }
+  if (!complete && backendConfigured() && state.backendAttendanceId) {
+    startProximityCodeTicker(state.backendAttendanceId);
+  }
   if (!complete && backendConfigured() && state.backendAttendanceId) {
     scanTimer = setInterval(async () => {
       if (state.route !== "attendance" || state.attendanceStatus !== "scanning") return;
@@ -3828,6 +3874,8 @@ document.addEventListener("click", async event => {
     const rollInput = document.querySelector(`[data-roll-for="${sessionId}"]`);
     const rollNumber = session.rollNumber || rollInput?.value.trim().toUpperCase() || "";
     if (!rollNumber) return toast("Enter your roll number", "error");
+    const code = document.querySelector(`[data-code-for="${sessionId}"]`)?.value.trim().toUpperCase() || "";
+    if (!code) return toast("Enter the code shown on the class screen", "error");
 
     button.disabled = true;
     try {
@@ -3840,7 +3888,7 @@ document.addEventListener("click", async event => {
       }
       await apiRequest(`/api/attendance/${sessionId}/check-in`, {
         method: "POST",
-        body: { rollNumber, signals }
+        body: { rollNumber, signals, code }
       });
       state.checks = { wifi: true, bluetooth: true };
       persist();

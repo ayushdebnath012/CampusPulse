@@ -704,3 +704,14 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .app-menu-item.nav-item { min-height: 44px; font-size: 13px; }
 .app-menu-item.nav-item.active { color: var(--primary); background: var(--primary-soft); }
 .app-menu-nav .app-menu-item.danger { margin-top: 8px; border-top: 1px solid var(--line); border-radius: 0 0 12px 12px; }
+
+.proximity-code {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin: 16px 0 4px; padding: 16px 20px;
+  border: 1px solid #d5d5fa; border-radius: var(--radius); background: #f6f5ff;
+}
+.proximity-code > div { display: flex; flex-direction: column; }
+.proximity-code span { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.proximity-code strong { color: var(--primary); font-size: 34px; font-weight: 800; letter-spacing: .22em; line-height: 1.2; }
+.proximity-code p { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.attendance-code { text-transform: uppercase; letter-spacing: .18em; font-weight: 700; }

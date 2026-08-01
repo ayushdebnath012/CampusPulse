@@ -150,6 +150,15 @@ function addNotice(database, { courseId, kind, title, body = "", authorId, autho
   return notice;
 }
 
+const PROXIMITY_WINDOW_MS = 30000;
+
+// The code changes every 30 seconds and is derived from a secret held only by
+// the server, so a student has to read it from the room to submit it.
+function proximityCodeFor(secret, offset = 0) {
+  const window = Math.floor(Date.now() / PROXIMITY_WINDOW_MS) + offset;
+  return sha256(`${secret}:${window}`).slice(0, 6).toUpperCase();
+}
+
 function attendanceRecord(student) {
   return {
     serial: student.serial,
@@ -159,6 +168,12 @@ function attendanceRecord(student) {
     markedAt: null,
     markedBy: null,
   };
+}
+
+function publicAttendance(session) {
+  if (!session) return session;
+  const { proximitySecret: _secret, ...rest } = session;
+  return rest;
 }
 
 function safeQuizForStudent(quiz, userId) {
@@ -1859,6 +1874,7 @@ function createApp(options = {}) {
             startedBy: request.user.id,
             startedAt: new Date().toISOString(),
             status: "open",
+            proximitySecret: randomToken(),
             records: roster.map(attendanceRecord),
           };
           database.attendanceSessions.push(created);
@@ -1872,7 +1888,7 @@ function createApp(options = {}) {
           });
           return created;
         });
-        response.status(201).json({ attendance: session });
+        response.status(201).json({ attendance: publicAttendance(session) });
       } catch (error) {
         next(error);
       }
@@ -1899,7 +1915,7 @@ function createApp(options = {}) {
         const attendance =
           [...sessions].reverse().find((item) => item.status === "open") ||
           [...sessions].reverse().find(Boolean);
-        response.json({ attendance: attendance || null });
+        response.json({ attendance: publicAttendance(attendance) || null });
       } catch (error) {
         next(error);
       }
@@ -1907,6 +1923,35 @@ function createApp(options = {}) {
   );
 
   // Must stay ahead of "/api/attendance/:id" so "open" is not read as an id.
+  app.get(
+    "/api/attendance/:id/code",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const session = data.attendanceSessions.find(
+          (item) => item.id === request.params.id,
+        );
+        if (!session || session.status !== "open") {
+          return response.status(404).json({ error: "Attendance is not open" });
+        }
+        requireCourse(data, request.user, session.courseId, "run");
+        if (!session.proximitySecret) {
+          // Sessions opened before this existed cannot prove proximity.
+          return response.json({ code: "", expiresInMs: 0, supported: false });
+        }
+        response.json({
+          code: proximityCodeFor(session.proximitySecret),
+          expiresInMs: PROXIMITY_WINDOW_MS - (Date.now() % PROXIMITY_WINDOW_MS),
+          supported: true,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.get(
     "/api/attendance/open",
     authenticate,
@@ -1957,7 +2002,7 @@ function createApp(options = {}) {
         if (!attendance)
           return response.status(404).json({ error: "Attendance session not found" });
         requireCourse(data, request.user, attendance.courseId, "run");
-        response.json({ attendance });
+        response.json({ attendance: publicAttendance(attendance) });
       } catch (error) {
         next(error);
       }
@@ -1976,6 +2021,7 @@ function createApp(options = {}) {
             error: "Connect Wi‑Fi and turn on Bluetooth before marking attendance",
           });
         }
+        const submittedCode = String(request.body.code || "").trim().toUpperCase();
         // The roll number belongs to the account, so it is never re-entered.
         const submittedRoll = String(request.user.rollNumber || "").trim().toUpperCase();
 
@@ -1987,6 +2033,21 @@ function createApp(options = {}) {
             const error = new Error("Attendance is not open for this course");
             error.status = 404;
             throw error;
+          }
+          if (session.proximitySecret) {
+            // The previous window is accepted so a code cannot expire mid-tap.
+            const accepted = [0, -1].map((offset) =>
+              proximityCodeFor(session.proximitySecret, offset),
+            );
+            if (!accepted.includes(submittedCode)) {
+              const error = new Error(
+                submittedCode
+                  ? "That code is wrong or has expired — read the current one from the class screen"
+                  : "Enter the code shown on the class screen",
+              );
+              error.status = 403;
+              throw error;
+            }
           }
           const enrollment = database.enrollments.find(
             (item) =>
@@ -2089,7 +2150,7 @@ function createApp(options = {}) {
           }
           return session;
         });
-        response.json({ attendance });
+        response.json({ attendance: publicAttendance(attendance) });
       } catch (error) {
         next(error);
       }
@@ -2117,7 +2178,7 @@ function createApp(options = {}) {
           session.closedBy = request.user.id;
           return session;
         });
-        response.json({ attendance });
+        response.json({ attendance: publicAttendance(attendance) });
       } catch (error) {
         next(error);
       }

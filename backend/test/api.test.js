@@ -149,6 +149,14 @@ async function addClass(baseUrl, token, courseId, revision = 0) {
   return saved.body.schedule[0].id;
 }
 
+// Students prove they are in the room with the code the team's screen shows.
+async function attendanceCode(baseUrl, token, sessionId) {
+  const shown = await request(baseUrl, `/api/attendance/${sessionId}/code`, { token });
+  assert.equal(shown.response.status, 200);
+  assert.match(shown.body.code, /^[0-9A-F]{6}$/);
+  return shown.body.code;
+}
+
 function quizSettings(scheduleId, overrides = {}) {
   return {
     scheduleId,
@@ -983,7 +991,14 @@ test("a course without an uploaded roster builds one from enrolled students", as
     {
       method: "POST",
       token: student.token,
-      body: { signals: { wifi: true, bluetooth: true } },
+      body: {
+        signals: { wifi: true, bluetooth: true },
+        code: await attendanceCode(
+          testServer.baseUrl,
+          professor.token,
+          earlySession.body.attendance.id,
+        ),
+      },
     },
   );
   assert.equal(marked.response.status, 201);
@@ -1089,13 +1104,32 @@ test("students mark their own attendance only while the professor's session is o
   const checkedIn = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
     token: student.token,
-    body: { rollNumber: "MFTEST0001", signals: goodSignals },
+    body: {
+      rollNumber: "MFTEST0001",
+      signals: goodSignals,
+      code: await attendanceCode(testServer.baseUrl, professor.token, sessionId),
+    },
   });
   assert.equal(checkedIn.response.status, 201);
   assert.equal(checkedIn.body.checkedIn, true);
   assert.equal(checkedIn.body.rollNumber, "MFTEST0001");
   // The student payload must not carry the rest of the roster.
   assert.equal("records" in checkedIn.body, false);
+
+  // The code has to be the one on the class screen.
+  for (const code of ["", "ZZZZZZ"]) {
+    const refused = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+      method: "POST",
+      token: outsider.token,
+      body: { signals: goodSignals, code },
+    });
+    assert.equal(refused.response.status, 403);
+  }
+  // Students cannot read the code themselves.
+  const peeked = await request(testServer.baseUrl, `/api/attendance/${sessionId}/code`, {
+    token: student.token,
+  });
+  assert.equal(peeked.response.status, 403);
 
   // A roll number bound at join cannot be claimed by a second account.
   const stolen = await request(testServer.baseUrl, "/api/courses/join", {
@@ -1110,7 +1144,11 @@ test("students mark their own attendance only while the professor's session is o
   const spoofed = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
     token: outsider.token,
-    body: { rollNumber: "MFTEST0001", signals: goodSignals },
+    body: {
+      rollNumber: "MFTEST0001",
+      signals: goodSignals,
+      code: await attendanceCode(testServer.baseUrl, professor.token, sessionId),
+    },
   });
   assert.equal(spoofed.response.status, 201);
   assert.equal(spoofed.body.rollNumber, "MFTEST0002");
@@ -1119,7 +1157,10 @@ test("students mark their own attendance only while the professor's session is o
   const repeat = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
     token: student.token,
-    body: { signals: goodSignals },
+    body: {
+      signals: goodSignals,
+      code: await attendanceCode(testServer.baseUrl, professor.token, sessionId),
+    },
   });
   assert.equal(repeat.response.status, 201);
   assert.equal(repeat.body.rollNumber, "MFTEST0001");
