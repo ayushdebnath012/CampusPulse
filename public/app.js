@@ -1658,10 +1658,9 @@ function renderQuiz() {
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>Create a pulse check</h2><p>Keep it short — students answer live from their devices.</p></div><span class="badge purple">Draft</span></div>
+        <div class="session-title"><div><h2>New quiz for ${escapeHtml(course.courseCode)}</h2><p>Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.</p></div><span class="badge purple">Draft</span></div>
         <div class="quiz-builder" id="quizBuilder">
-          ${questionBlock(1, "Which relation is an equivalence relation?", ["Reflexive only", "Symmetric only", "Reflexive, symmetric & transitive", "Transitive only"], 2)}
-          ${questionBlock(2, "A tree with n vertices has how many edges?", ["n edges", "n − 1 edges", "n + 1 edges", "2n edges"], 1)}
+          ${questionBlock(1)}
           <button class="add-question" data-action="add-question">${icon("i-plus")} Add another question</button>
         </div>
         <div class="setup-actions"><button class="btn" data-route-link="dashboard">Save draft</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
@@ -1669,7 +1668,7 @@ function renderQuiz() {
       <aside class="card page-card quiz-settings">
         <div class="section-head"><h3>Quiz settings</h3></div>
         <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
-        <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" value="Concept check · Relations & Trees" />
+        <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" />
         <label for="duration">Time limit</label><select class="select" id="duration"><option>3 minutes</option><option>5 minutes</option><option>No limit</option></select>
         <label for="reveal">Results</label><select class="select" id="reveal"><option>Reveal after quiz ends</option><option>Reveal after each answer</option><option>Keep private</option></select>
         <div class="security-note"><span class="lock">✦</span><span>Quiz responses are linked to the active course and visible only to its teaching team.</span></div>
@@ -1706,10 +1705,10 @@ function renderStudentQuizAccess() {
     <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join a course before opening its quizzes.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
 }
 
-function questionBlock(number, question, options, answer) {
+function questionBlock(number, question = "", options = ["", "", "", ""], answer = 0) {
   return `<div class="question-card">
-    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" aria-label="Question ${number}" /><button class="icon-btn" aria-label="Question options">${icon("i-more")}</button></div>
-    <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
+    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" aria-label="Question options">${icon("i-more")}</button></div>
+    <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
   </div>`;
 }
 
@@ -1767,18 +1766,6 @@ function renderLiveQuiz() {
         }
       } catch {}
     }, 3000);
-  } else if (responses < 38) {
-    quizTimer = setTimeout(() => {
-      if (
-        state.route !== "quizzes" ||
-        state.userRole === "student" ||
-        !state.authenticated ||
-        selectedCourse()?.id !== liveCourseId ||
-        state.backendQuizCourseId !== liveCourseId
-      ) return;
-      state.quizResponses = Math.min(38, state.quizResponses + Math.ceil(Math.random() * 3));
-      persist(); renderLiveQuiz();
-    }, 1800);
   }
 }
 
@@ -3275,7 +3262,7 @@ document.addEventListener("click", async event => {
   }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
-    button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1, "Type your question here", ["Option A", "Option B", "Option C", "Option D"], 0));
+    button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1));
   }
   if (action === "publish-quiz") {
     const course = selectedCourse();
@@ -3305,7 +3292,7 @@ document.addEventListener("click", async event => {
       }
     }
     state.quizPublished = true;
-    state.quizResponses = backendConfigured() ? 0 : 3;
+    state.quizResponses = 0;
     persist(); renderLiveQuiz(); toast(`Quiz published to ${course.name}`);
   }
   if (action === "end-quiz") {
@@ -3322,10 +3309,18 @@ document.addEventListener("click", async event => {
       }
     }
     clearTimeout(quizTimer);
+    const finalResponses = state.quizResponses;
     state.quizPublished = false;
+    state.backendQuizId = "";
+    state.backendQuizCourseId = "";
+    state.backendQuizTitle = "";
+    state.backendQuizQuestions = [];
+    state.quizResponses = 0;
     persist();
-    toast(`Quiz ended with ${state.quizResponses} responses`);
-    navigate("dashboard");
+    renderQuiz();
+    toast(
+      `Quiz ended with ${finalResponses} ${finalResponses === 1 ? "response" : "responses"}. Build the next one below.`
+    );
   }
 });
 
