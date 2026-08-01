@@ -669,3 +669,19 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .section-link h3 { margin: 0; }
 .section-link svg { width: 14px; height: 14px; color: var(--primary); }
 .section-link:hover h3 { color: var(--primary); }
+
+.answer-hint {
+  display: flex; align-items: center; gap: 6px; margin: 14px 0 8px;
+  color: var(--muted); font-size: 10px; font-weight: 700;
+}
+.answer-hint svg { width: 13px; height: 13px; color: var(--green); }
+.option-input { position: relative; }
+.option-input input[type="radio"] { cursor: pointer; }
+.option-flag {
+  display: none; position: absolute; top: 50%; right: 10px; transform: translateY(-50%);
+  padding: 2px 7px; border-radius: 999px; background: var(--green-soft);
+  color: #087b59; font-size: 8px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase;
+}
+.option-input:has(input[type="radio"]:checked) { border-color: #b9ead8; background: var(--green-soft); }
+.option-input:has(input[type="radio"]:checked) .option-flag { display: block; }
+.option-input:has(input[type="radio"]:checked) input[type="text"] { background: transparent; }

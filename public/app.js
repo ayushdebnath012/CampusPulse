@@ -2157,7 +2157,8 @@ function questionBlock(number, question = "", options = ["", "", "", ""], answer
     <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" type="button" data-action="attach-question-image" aria-label="Attach an image to question ${number}">${icon("i-upload")}</button><button class="icon-btn danger" type="button" data-action="remove-question" aria-label="Delete question ${number}">${icon("i-close")}</button></div>
     <div class="question-image" ${image ? "" : "hidden"}><img alt="Question ${number} image" ${image ? `src="${escapeHtml(image)}" data-image="${escapeHtml(image)}"` : ""} /><button class="text-btn danger" type="button" data-action="remove-question-image">Remove image</button></div>
     <input class="question-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
-    <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
+    <p class="answer-hint">${icon("i-check")} Tick the circle beside the correct answer</p>
+    <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" title="Mark this option correct" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" aria-label="Option ${i + 1} text" /><span class="option-flag">Correct</span></div>`).join("")}</div>
   </div>`;
 }
 
