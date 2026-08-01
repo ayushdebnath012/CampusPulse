@@ -648,3 +648,11 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .notice strong { display: block; font-size: 12px; }
 .notice p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .notice-meta { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; }
+
+.results-picker { display: flex; align-items: center; gap: 8px; }
+.results-picker > span { color: var(--muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.results-picker .select { width: auto; min-width: 210px; }
+@media (max-width: 720px) {
+  .results-picker { width: 100%; }
+  .results-picker .select { flex: 1 1 auto; min-width: 0; }
+}

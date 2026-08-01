@@ -1742,6 +1742,10 @@ function renderQuiz() {
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     ${quizResultsCard()}
+    ${!quizResults && quizHistory.length ? `<div class="schedule-toolbar">
+      <div><strong>Past quiz marks</strong><span>Pick a date to see how the class scored.</span></div>
+      ${quizResultsPicker()}
+    </div>` : ""}
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${openDraft ? `${escapeHtml(openDraft.title || "Saved quiz")} · ${escapeHtml(course.courseCode)}` : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft
@@ -1895,13 +1899,36 @@ function formatQuizDate(value) {
     : date.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
 }
 
+function quizResultsPicker(selectedId = "") {
+  if (!quizHistory.length) return "";
+  return `<label class="results-picker">
+    <span>Marks for</span>
+    <select class="select" id="quizResultsSelect">
+      <option value="">Choose a date</option>
+      ${quizHistory
+        .map(item => {
+          const when = formatQuizDate(item.quizDate || item.publishedAt) || "No date";
+          const label = `${when} · ${item.title || "Quiz"}${item.classLabel ? ` · ${item.classLabel}` : ""}`;
+          return `<option value="${escapeHtml(item.id)}" ${item.id === selectedId ? "selected" : ""}>${escapeHtml(label)}</option>`;
+        })
+        .join("")}
+    </select>
+  </label>`;
+}
+
 function quizResultsCard() {
   if (!quizResults) return "";
   const { quiz, summary, results } = quizResults;
   return `<article class="card page-card" style="margin-bottom:22px">
     <div class="section-head">
-      <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Quiz")} · marks</h2><p class="stat-label">${escapeHtml(quiz.classLabel || quiz.day || "")}${quiz.quizDate || quiz.publishedAt ? ` · ${escapeHtml(formatQuizDate(quiz.quizDate || quiz.publishedAt))}` : ""} · ${summary.attempted} of ${summary.rostered} attempted · average ${summary.averageScore}/${quiz.total}</p></div>
+      <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Quiz")} · marks</h2><p class="stat-label">${[
+        formatQuizDate(quiz.quizDate || quiz.publishedAt),
+        quiz.classLabel || quiz.day,
+        `${summary.attempted} of ${summary.rostered} attempted`,
+        `average ${summary.averageScore}/${quiz.total}`
+      ].filter(Boolean).map(escapeHtml).join(" · ")}</p></div>
       <div class="setup-actions">
+        ${quizResultsPicker(quiz.id)}
         <button class="btn" type="button" data-action="export-quiz-results">${icon("i-download")} Excel</button>
         <button class="text-btn" type="button" data-action="close-quiz-results">Close</button>
       </div>
@@ -3940,6 +3967,23 @@ document.addEventListener("change", async event => {
     } finally {
       event.target.value = "";
     }
+  }
+  if (event.target.id === "quizResultsSelect") {
+    const quizId = event.target.value;
+    if (!quizId) {
+      quizResults = null;
+      renderQuiz();
+      return;
+    }
+    try {
+      quizResults = await apiRequest(`/api/quizzes/${encodeURIComponent(quizId)}/results`);
+    } catch (error) {
+      quizResults = null;
+      return toast(error.message || "Could not load those marks", "error");
+    }
+    renderQuiz();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
   }
   if (event.target.id === "quizClassSelect") {
     snapQuizDateToClassDay();
