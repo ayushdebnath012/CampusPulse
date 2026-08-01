@@ -1174,14 +1174,33 @@ function renderSchedule() {
       today: index === todayIndex,
     };
   });
-  const calendarEvents = events.map(event => ({
-    ...event,
-    topic: event.topic || course.name,
-    room: event.room || course.room || "Room TBA",
-    today: event.dayIndex === todayIndex,
-  }));
+  const calendarSource = imported
+    ? importedEvents.map(item => ({ ...item, courseId: course.id }))
+    : state.backendSchedule;
+  const calendarEvents = calendarSource
+    .map(event => {
+      const owner = state.courses.find(item => item.id === event.courseId) || course;
+      return {
+        ...event,
+        dayIndex: dayIndexFromName(event.day),
+        courseCode: owner.courseCode || "",
+        topic: event.topic || owner.name,
+        room: event.room || owner.room || "Room TBA",
+        otherCourse: owner.id !== course.id,
+      };
+    })
+    .filter(event => event.dayIndex >= 0)
+    .map(event => ({ ...event, today: event.dayIndex === todayIndex }));
+  const calendarCourseCount = new Set(calendarEvents.map(event => event.courseId)).size;
   setHeader(`${course.name} schedule`, `${course.courseCode} · WEEKLY AGENDA`, false);
   view.innerHTML = `
+    ${canManageSchedule(course) ? `<div class="schedule-toolbar">
+      <div><strong>${escapeHtml(course.courseCode)} timetable</strong><span>Upload a weekly grid or a day/start/end/subject list. Replaces this course's classes.</span></div>
+      <div class="setup-actions">
+        <button class="btn btn-primary" data-action="choose-timetable-upload">${icon("i-upload")} Upload timetable</button>
+        <input id="timetableFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
+      </div>
+    </div>` : ""}
     <article class="card page-card today-agenda-card">
       <div class="section-head"><div><h2 style="margin:0 0 5px">Today's classes</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.name)} · full class details</p></div><span class="badge ${todaysEvents.length ? "purple" : "gray"}">${todaysEvents.length} today</span></div>
       <div class="agenda-class-list">
@@ -1192,10 +1211,10 @@ function renderSchedule() {
     </article>
     <article class="card page-card calendar-page schedule-calendar-card">
       <div class="calendar-titlebar">
-        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · visual timetable for the selected course</p></div>
-        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
+        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>All courses</h2><p>${calendarCourseCount > 1 ? `Every course you teach or attend · ${calendarCourseCount} courses` : "Your full week across every course"}</p></div>
+        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${calendarEvents.length} sessions`}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
       </div>
-      <div class="calendar-scroll" aria-label="${escapeHtml(course.courseCode)} weekly class calendar">
+      <div class="calendar-scroll" aria-label="Weekly class calendar across all courses">
         <div class="calendar-board">
           <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(day => `<span class="${day.today ? "is-today" : ""}"><small>${day.label}</small><strong>${day.date}</strong></span>`).join("")}</div>
           <div class="calendar-body">
@@ -1322,11 +1341,7 @@ function scheduleEditor(course, entries) {
       <div class="field full"><label for="classSubtopics">Sub-classes / topic breakdown</label><textarea class="text-input" id="classSubtopics" name="subtopics" rows="3" placeholder="One item per line, e.g.&#10;Introduction&#10;Worked example&#10;Questions"></textarea></div>
       <div class="field" style="justify-content:flex-end"><button class="btn btn-primary" type="submit">${icon("i-plus")} Add class</button></div>
     </form>
-    <div class="setup-actions" style="margin-top:16px">
-      <button class="btn" data-action="choose-timetable-upload">${icon("i-upload")} Upload timetable</button>
-      <input id="timetableFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
-    </div>
-    <div class="security-note" style="margin-top:14px"><span class="lock">⌾</span><span>Upload a weekly grid (days down the side, time slots across the top) or a list with day, start, end, subject and room columns. Uploading replaces this course's timetable.</span></div>
+    <div class="security-note" style="margin-top:14px"><span class="lock">⌾</span><span>Use <strong>Upload timetable</strong> at the top of this page to import a weekly grid or a day/start/end/subject list.</span></div>
   </article>`;
 }
 
@@ -1351,7 +1366,8 @@ function calendarEvent(event) {
   const end = Math.max(start + 35, Math.min(18 * 60, timeToMinutes(event.end)));
   const top = ((start - 8 * 60) / (10 * 60)) * 100;
   const height = Math.max(8, ((end - start) / (10 * 60)) * 100);
-  return `<article class="calendar-event ${event.today ? "current" : ""}" style="--event-top:${top}%;--event-height:${height}%">
+  return `<article class="calendar-event ${event.today ? "current" : ""} ${event.otherCourse ? "is-other-course" : ""}" style="--event-top:${top}%;--event-height:${height}%">
+    ${event.courseCode ? `<em class="calendar-event-course">${escapeHtml(event.courseCode)}</em>` : ""}
     <strong>${escapeHtml(event.topic)}</strong><span>${escapeHtml(event.start)} · ${escapeHtml(event.room || "Room TBA")}</span>
   </article>`;
 }

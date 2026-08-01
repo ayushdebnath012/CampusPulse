@@ -582,3 +582,22 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .roster-actions { width:80px; text-align:right; }
 .text-btn.danger { color:var(--red); }
 @media (max-width: 1050px) { .roster-grid { grid-template-columns:1fr; } }
+
+.schedule-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 22px; padding: 16px 20px; border: 1px solid #e0defa; border-radius: var(--radius);
+  background: linear-gradient(180deg, #fbfaff, var(--paper));
+  box-shadow: 0 8px 24px rgba(91,91,214,.08);
+}
+.schedule-toolbar strong { display: block; font-size: 13px; }
+.schedule-toolbar span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.calendar-event-course {
+  display: block; font-size: 8px; font-weight: 800; letter-spacing: .08em;
+  text-transform: uppercase; opacity: .75; font-style: normal;
+}
+.calendar-event.is-other-course { background: #f2f2f8; border-color: #dedeeb; color: var(--muted); }
+.calendar-event.is-other-course strong { color: var(--ink); }
+@media (max-width: 720px) {
+  .schedule-toolbar { flex-direction: column; align-items: stretch; }
+  .schedule-toolbar .setup-actions .btn { width: 100%; }
+}
