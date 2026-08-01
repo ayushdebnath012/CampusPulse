@@ -1656,6 +1656,13 @@ function renderQuiz() {
     return;
   }
   setHeader("Quick quiz", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
+  const courseClasses = state.backendSchedule
+    .filter(item => item.courseId === course.id)
+    .sort(
+      (left, right) =>
+        dayIndexFromName(left.day) - dayIndexFromName(right.day) ||
+        timeToMinutes(left.start) - timeToMinutes(right.start)
+    );
   if (state.quizPublished && state.backendQuizCourseId === course.id) return renderLiveQuiz();
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
@@ -1673,19 +1680,15 @@ function renderQuiz() {
         <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
         <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" />
         <label for="quizClassSelect">Quiz for which class</label>
-        <select class="select" id="quizClassSelect">
+        ${courseClasses.length ? `<select class="select" id="quizClassSelect">
           <option value="">Not tied to a class</option>
-          ${state.backendSchedule
-            .filter(item => item.courseId === course.id)
+          ${courseClasses
             .map(item => {
-              const label = `${item.day} · ${item.start}${item.end ? `–${item.end}` : ""}${item.topic ? ` · ${item.topic}` : ""}`;
+              const label = scheduledClassLabel(item, course);
               return `<option value="${escapeHtml(item.id)}" data-day="${escapeHtml(item.day || "")}" data-label="${escapeHtml(label)}">${escapeHtml(label)}</option>`;
             })
             .join("")}
-          ${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            .map(day => `<option value="day:${day}" data-day="${day}" data-label="${day} class">${day} class</option>`)
-            .join("")}
-        </select>
+        </select>` : `<p class="stat-label">${escapeHtml(course.courseCode)} has no timetabled classes yet. Add them on the Schedule tab to tie a quiz to one.</p>`}
         <label for="duration">Time limit</label><select class="select" id="duration"><option>3 minutes</option><option>5 minutes</option><option>No limit</option></select>
         <label for="reveal">Results</label><select class="select" id="reveal"><option>Reveal after quiz ends</option><option>Reveal after each answer</option><option>Keep private</option></select>
         <div class="security-note"><span class="lock">✦</span><span>Quiz responses are linked to the active course and visible only to its teaching team.</span></div>
@@ -1723,6 +1726,15 @@ function renderStudentQuizAccess() {
 }
 
 // The selected class travels with the quiz so students know which one it is for.
+function scheduledClassLabel(item, course) {
+  const time = `${item.start || ""}${item.end ? `–${item.end}` : ""}`.trim();
+  const code = course.courseCode || "";
+  const topic = String(item.topic || "").trim();
+  // The topic is often just the course code after a timetable import.
+  const extra = topic && topic.toUpperCase() !== code.toUpperCase() ? ` · ${topic}` : "";
+  return [item.day, time, code].filter(Boolean).join(" · ") + extra;
+}
+
 function quizClassSelection() {
   const select = document.querySelector("#quizClassSelect");
   const option = select?.selectedOptions?.[0];
@@ -1730,7 +1742,7 @@ function quizClassSelection() {
   const day = option.dataset.day || "";
   const classLabel = option.dataset.label || "";
   return {
-    ...(select.value.startsWith("day:") ? {} : { scheduleId: select.value }),
+    scheduleId: select.value,
     ...(day ? { day } : {}),
     ...(classLabel ? { classLabel } : {})
   };
