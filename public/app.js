@@ -2096,7 +2096,6 @@ function renderStudentQuizAccess() {
         </form>` : `<button class="btn btn-primary" disabled>${icon(quizResponded ? "i-check" : "i-play")} ${quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
       </article>
       ${myQuizzesPanel()}
-      <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>${escapeHtml(course.courseCode)}</strong></div></div></aside>
     </div>` : `
     <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join a course before opening its quizzes.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
 }
