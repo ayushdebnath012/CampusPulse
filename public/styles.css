@@ -718,3 +718,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 
 .review-option.is-wrong { color: #a33; border-color: #f0c9c9; background: var(--red-soft); }
 .review-option.is-wrong .review-mark svg { color: var(--red); }
+
+.class-row.is-unrecorded { opacity: .72; }
+.class-row.is-unrecorded .badge { font-weight: 700; }

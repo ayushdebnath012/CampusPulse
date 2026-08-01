@@ -1666,6 +1666,59 @@ function stamp(value) {
     : when.toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" });
 }
 
+// Every class day for this course up to today: the timetable supplies the days
+// and dates, and any attendance session held on one supplies the outcome.
+function studentClassDays(course, sessions, weeks = 12) {
+  const byDate = new Map();
+  for (const session of sessions) {
+    const when = new Date(session.startedAt);
+    if (Number.isNaN(when.getTime())) continue;
+    byDate.set(isoDate(when), session);
+  }
+
+  const days = [];
+  const timetable = state.backendSchedule.filter(item => item.courseId === course.id);
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  for (let back = 0; back < weeks * 7; back += 1) {
+    const day = new Date(today);
+    day.setDate(today.getDate() - back);
+    const name = WEEKDAY_NAMES[(day.getDay() + 6) % 7];
+    for (const slot of timetable.filter(item => item.day === name)) {
+      const key = isoDate(day);
+      const session = byDate.get(key);
+      days.push({
+        key: `${key}-${slot.id}`,
+        date: day,
+        dayName: name,
+        classLabel: `${slot.day} · ${slot.start}${slot.end ? `–${slot.end}` : ""}`,
+        room: slot.room || course.room || "",
+        session: session || null,
+        held: Boolean(session),
+        present: Boolean(session?.present),
+      });
+      if (session) byDate.delete(key);
+    }
+  }
+
+  // Sessions held outside the timetable still belong in the record.
+  for (const session of byDate.values()) {
+    const when = new Date(session.startedAt);
+    days.push({
+      key: session.id,
+      date: when,
+      dayName: WEEKDAY_NAMES[(when.getDay() + 6) % 7],
+      classLabel: session.classLabel || "Extra class",
+      room: session.room || course.room || "",
+      session,
+      held: true,
+      present: Boolean(session.present),
+    });
+  }
+
+  return days.sort((left, right) => right.date - left.date);
+}
+
 // The student's own record for the course in view.
 function renderStudentAttendance() {
   const course = selectedCourse();
@@ -1677,6 +1730,7 @@ function renderStudentAttendance() {
   const summary = attendanceHistory?.summary;
   const sessions = attendanceHistory?.sessions || [];
   const percentage = summary?.percentage ?? 0;
+  const classDays = studentClassDays(course, sessions);
   view.innerHTML = `
     <div class="left-stack">
       <article class="card page-card">
@@ -1688,15 +1742,19 @@ function renderStudentAttendance() {
         </div>
       </article>
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Every class</h2><p class="stat-label">Open a day to see its detail.</p></div><span class="badge gray">${sessions.length}</span></div>
-        ${sessions.length ? `<div class="class-list">
-          ${sessions.map(session => `<button class="class-row attendance-day" type="button" data-action="open-attendance-day" data-session-id="${escapeHtml(session.id)}">
-            <div class="time">${escapeHtml(attendanceDayLabel(session).split(",")[0])}<small>${escapeHtml(shortDate(session.startedAt))}</small></div>
-            <div class="course"><strong>${escapeHtml(session.classLabel || course.name)}</strong><span>${escapeHtml(session.room || course.room || "Room TBA")}</span></div>
-            <span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Every class</h2><p class="stat-label">Each class day so far. Open a recorded one to see its detail.</p></div><span class="badge gray">${classDays.length}</span></div>
+        ${classDays.length ? `<div class="class-list">
+          ${classDays.map(day => day.held ? `<button class="class-row attendance-day" type="button" data-action="open-attendance-day" data-session-id="${escapeHtml(day.session.id)}">
+            <div class="time">${escapeHtml(day.dayName.slice(0, 3))}<small>${escapeHtml(day.date.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
+            <div class="course"><strong>${escapeHtml(day.classLabel)}</strong><span>${escapeHtml(day.room || "Room TBA")}</span></div>
+            <span class="badge ${day.present ? "green" : "gray"}">${day.present ? "Present" : "Absent"}</span>
             <span class="chevron">${icon("i-arrow")}</span>
-          </button>`).join("")}
-        </div>` : `<p class="stat-label">No class has been held yet.</p>`}
+          </button>` : `<div class="class-row is-unrecorded">
+            <div class="time">${escapeHtml(day.dayName.slice(0, 3))}<small>${escapeHtml(day.date.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
+            <div class="course"><strong>${escapeHtml(day.classLabel)}</strong><span>${escapeHtml(day.room || "Room TBA")}</span></div>
+            <span class="badge gray">Not recorded</span>
+          </div>`).join("")}
+        </div>` : `<p class="stat-label">No class on the timetable yet. Your professor adds classes on the Schedule tab.</p>`}
       </article>
     </div>`;
 }
