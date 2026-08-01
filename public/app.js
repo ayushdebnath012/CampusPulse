@@ -818,7 +818,7 @@ function renderSchedule() {
       ${isStudent ? `
         <div class="setup-actions">
           ${imported ? `<button class="btn btn-danger" data-action="clear-imported-schedule">Clear imported schedule</button>` : ""}
-          <button class="btn btn-primary" data-action="import-schedule">${icon("i-download")} Import CSV / ICS</button>
+          <button class="btn btn-primary" data-action="import-schedule">${icon("i-upload")} Import CSV / ICS</button>
           <input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />
         </div>
         <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser and is not uploaded to CampusPulse.</span></div>` : ""}
@@ -950,7 +950,7 @@ function renderAttendanceSetup() {
           ${ready
             ? `<button class="btn btn-primary" data-action="start-scan">${icon("i-play")} Take attendance</button>`
             : canManageCourse(course)
-              ? `<button class="btn btn-primary" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-download")} Upload roll list</button>`
+              ? `<button class="btn btn-primary" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload roll list</button>`
               : `<span class="badge gray">Waiting for the professor's roll list</span>`}
         </div>
       </article>
@@ -1208,7 +1208,7 @@ function renderCourseRoster(courseId) {
       <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · active course roster</p></div><span class="badge green">${roster.length} students</span></div>
       <div class="roster-toolbar roster-search-toolbar">
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
-        <div class="setup-actions"><button class="btn" data-action="choose-roster-upload">${icon("i-download")} Upload roll list</button><button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button><input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden /></div>
+        <div class="setup-actions"><button class="btn" data-action="choose-roster-upload">${icon("i-upload")} Upload roll list</button><button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button><input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden /></div>
       </div>
       <div class="roster roster-scroll professor-roster" id="professorRoster">
         ${roster.map((student, index) => studentRow({ ...student, present: false }, index, false, true)).join("")}
