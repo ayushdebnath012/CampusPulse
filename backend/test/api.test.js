@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { createApp } = require("../src/app");
 const { initialData, normalizeData } = require("../src/database");
+const { ACCOUNT_RESET_ID, deleteExistingAccountsOnce } = require("../src/maintenance");
 
 function syntheticRoster(courseCode, courseTitle, count, rollPrefix, namePrefix) {
   return {
@@ -736,6 +737,46 @@ test("first professor automatically owns courses and receives working join codes
     coursesAfterLogin.body.courses.find((course) => course.id === "soft401").code,
     softCourse.code,
   );
+});
+
+test("one-time account reset removes existing identities but preserves course data", async (t) => {
+  const testServer = await createTestServer({
+    env: {
+      FACULTY_SIGNUP_CODE: "",
+      COURSE_OWNER_EMAILS_JSON: "",
+    },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      name: "Reset Professor",
+      email: "reset-professor@iitkgp.ac.in",
+      password: "professor-password",
+    },
+  });
+  assert.equal(professor.response.status, 201);
+  const before = await testServer.store.read();
+  assert.equal(before.users.length, 1);
+  assert.ok(before.courses.some((course) => course.ownerId));
+
+  const reset = await deleteExistingAccountsOnce(testServer.store);
+  assert.deepEqual(reset, { applied: true, deletedAccounts: 1 });
+  const after = await testServer.store.read();
+  assert.equal(after.users.length, 0);
+  assert.equal(after.sessions.length, 0);
+  assert.equal(after.enrollments.length, 0);
+  assert.ok(after.courses.length >= 2);
+  assert.ok(after.courses.every((course) => !course.ownerId));
+  assert.ok(after.maintenance.includes(ACCOUNT_RESET_ID));
+
+  const repeated = await deleteExistingAccountsOnce(testServer.store);
+  assert.deepEqual(repeated, { applied: false, deletedAccounts: 0 });
 });
 
 test("production stays healthy and usable when course env vars are unset", async (t) => {
