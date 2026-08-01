@@ -212,10 +212,11 @@ function publicCourse(database, user, course) {
     ).length,
     capabilities: {
       canManageCourse: owner,
-      canManageRoster: owner,
+      canManageRoster: owner || assistant,
       canViewAttendanceRoster: owner || assistant,
       canRunAttendance: owner || assistant,
       canPublishQuiz: owner || assistant,
+      canUploadMaterials: owner || assistant,
     },
   };
 }
@@ -1073,7 +1074,7 @@ function createApp(options = {}) {
   app.put(
     "/api/courses/:id/roster",
     authenticate,
-    requireRoles("faculty"),
+    requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
         const result = await store.update((database) => {
@@ -1081,7 +1082,7 @@ function createApp(options = {}) {
             database,
             request.user,
             request.params.id,
-            "owner",
+            "run",
           );
           const students = normalizeRosterUpload(request.body.students, course.id);
           database.courseStudents = [
@@ -1135,7 +1136,7 @@ function createApp(options = {}) {
   app.post(
     "/api/courses/:id/roster",
     authenticate,
-    requireRoles("faculty"),
+    requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
         const result = await store.update((database) => {
@@ -1143,7 +1144,7 @@ function createApp(options = {}) {
             database,
             request.user,
             request.params.id,
-            "owner",
+            "run",
           );
           const rollNumber = String(request.body.rollNumber || "")
             .trim()
@@ -1190,7 +1191,7 @@ function createApp(options = {}) {
   app.delete(
     "/api/courses/:id/roster/:rollNumber",
     authenticate,
-    requireRoles("faculty"),
+    requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
         const result = await store.update((database) => {
@@ -1198,7 +1199,7 @@ function createApp(options = {}) {
             database,
             request.user,
             request.params.id,
-            "owner",
+            "run",
           );
           const rollNumber = String(request.params.rollNumber || "")
             .trim()
@@ -1251,7 +1252,7 @@ function createApp(options = {}) {
   app.post(
     "/api/courses/:id/materials",
     authenticate,
-    requireRoles("faculty"),
+    requireRoles("faculty", "ta"),
     express.raw({ type: () => true, limit: "8mb" }),
     async (request, response, next) => {
       try {
@@ -1277,7 +1278,7 @@ function createApp(options = {}) {
             database,
             request.user,
             request.params.id,
-            "owner",
+            "run",
           );
           const created = {
             id: `material-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

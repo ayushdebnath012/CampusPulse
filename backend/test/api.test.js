@@ -301,6 +301,8 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.equal(taJoinedSoft.response.status, 201);
   assert.equal(taJoinedSoft.body.course.capabilities.canRunAttendance, true);
   assert.equal(taJoinedSoft.body.course.capabilities.canManageCourse, false);
+  assert.equal(taJoinedSoft.body.course.capabilities.canManageRoster, true);
+  assert.equal(taJoinedSoft.body.course.capabilities.canUploadMaterials, true);
   assert.equal("code" in taJoinedSoft.body.course, false);
 
   const taJoinedKbs = await request(testServer.baseUrl, "/api/courses/join", {
@@ -515,16 +517,17 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   });
   assert.equal(taCourseCreateAttempt.response.status, 403);
 
-  const taRosterUploadAttempt = await request(
+  const taRosterUpload = await request(
     testServer.baseUrl,
     `/api/courses/${soft.id}/roster`,
     {
       method: "PUT",
       token: teachingAssistant.token,
-      body: { students: [{ rollNumber: "BLOCKED1", name: "Blocked Student" }] },
+      body: { students: rosterOf(310, "MFTEST", "TA Updated Student") },
     },
   );
-  assert.equal(taRosterUploadAttempt.response.status, 403);
+  assert.equal(taRosterUpload.response.status, 200);
+  assert.equal(taRosterUpload.body.students.length, 310);
 
   const otherProfessor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
@@ -1254,7 +1257,7 @@ test("the students list shows who joined, and only to the course team", async (t
   assert.deepEqual(otherView.body.students, []);
 });
 
-test("professors share course materials only with their enrolled course", async (t) => {
+test("course teams share materials only with their enrolled course", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
     await testServer.close();
@@ -1274,6 +1277,12 @@ test("professors share course materials only with their enrolled course", async 
     rollNumber: "MFTEST0001",
     password: "student-password",
   });
+  const teachingAssistant = await createVerifiedUser(testServer.baseUrl, {
+    role: "ta",
+    name: "Material Assistant",
+    email: "material-assistant@iitkgp.ac.in",
+    password: "assistant-password",
+  });
   const outsider = await createVerifiedUser(testServer.baseUrl, {
     role: "student",
     name: "Outside Reader",
@@ -1290,6 +1299,12 @@ test("professors share course materials only with their enrolled course", async 
     body: { code: course.code },
   });
   assert.equal(joined.response.status, 201);
+  const taJoined = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: teachingAssistant.token,
+    body: { code: course.code },
+  });
+  assert.equal(taJoined.response.status, 201);
 
   const contents = "Week 1 notes: neural networks and fuzzy logic.";
   const uploaded = await request(
@@ -1297,7 +1312,7 @@ test("professors share course materials only with their enrolled course", async 
     `/api/courses/${course.id}/materials`,
     {
       method: "POST",
-      token: professor.token,
+      token: teachingAssistant.token,
       headers: {
         "content-type": "text/plain",
         "x-file-name": encodeURIComponent("Week 1 notes.txt"),

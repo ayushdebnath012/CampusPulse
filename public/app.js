@@ -260,12 +260,20 @@ function canManageCourse(course = selectedCourse()) {
   return Boolean(courseCapabilities(course).canManageCourse);
 }
 
+function canManageRoster(course = selectedCourse()) {
+  return Boolean(courseCapabilities(course).canManageRoster);
+}
+
 function canRunAttendance(course = selectedCourse()) {
   return Boolean(courseCapabilities(course).canRunAttendance);
 }
 
 function canPublishQuiz(course = selectedCourse()) {
   return Boolean(courseCapabilities(course).canPublishQuiz);
+}
+
+function canUploadMaterials(course = selectedCourse()) {
+  return Boolean(courseCapabilities(course).canUploadMaterials);
 }
 
 function attendanceCourse() {
@@ -399,7 +407,7 @@ const loginProfiles = {
   ta: {
     title: "Teaching Assistant login",
     shortTitle: "TA",
-    description: "Join assigned courses by code, run attendance, and publish quizzes without changing course settings.",
+    description: "Join assigned courses by code, manage rosters and materials, run attendance, and publish quizzes.",
     idLabel: "Verified TA email",
     placeholder: "ta@iitkgp.ac.in",
     initials: "TA",
@@ -418,8 +426,10 @@ const loginProfiles = {
 
 function renderLogin(role = selectedLoginRole, mode = authMode) {
   courseRosters = new Map();
+  courseMaterials = new Map();
   activeAttendance = null;
   managedCourseId = "";
+  materialsCourseId = "";
   closeMenu();
   if (view) view.innerHTML = "";
   selectedLoginRole = loginProfiles[role] ? role : "faculty";
@@ -597,6 +607,7 @@ async function syncBackendState() {
   state.enrolledCourses = payload.enrolledCourseIds || [];
   state.backendSchedule = payload.schedule || [];
   courseRosters = new Map();
+  courseMaterials = new Map();
   applyAttendanceSnapshot(null);
   state.attendanceCheckedIn = false;
   applyQuizSnapshot(payload.quiz);
@@ -673,6 +684,8 @@ function setNavigationState(route) {
 function navigate(route) {
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
+  if (route === "students") managedCourseId = "";
+  if (route === "materials") materialsCourseId = "";
   state.route = route;
   setNavigationState(route);
   render();
@@ -691,6 +704,7 @@ function render() {
   if (state.route === "attendance") return renderAttendance();
   if (state.route === "quizzes") return renderQuiz();
   if (state.route === "students") return renderStudents();
+  if (state.route === "materials") return renderMaterials();
   return renderPlaceholder(state.route);
 }
 
@@ -1128,7 +1142,7 @@ function studentCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge green">Enrolled</span>
     <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
-    <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Quizzes</button><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">Materials (${Number(course.materialCount) || 0})</button></div>
+    <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Quizzes</button></div>
   </article>`;
 }
 
@@ -1428,14 +1442,12 @@ function renderLiveQuiz() {
 }
 
 function renderClasses() {
-  if (materialsCourseId) return renderCourseMaterials(materialsCourseId);
   if (state.userRole === "student") return renderStudentClasses();
   if (state.userRole === "ta") return renderTAClasses();
-  if (state.userRole === "faculty" && managedCourseId) return renderCourseRoster(managedCourseId);
   setHeader("My courses", "PROFESSOR WORKSPACE", false);
   view.innerHTML = `
     <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Manage join codes, rosters, and files shared with each enrolled class.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Create courses and share their private join codes. Rosters and files now have dedicated tabs.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
       <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
     </article>`;
 }
@@ -1444,17 +1456,16 @@ function facultyCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><h3>${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
     <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
-    <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} Not started — upload the roll list` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><button class="text-btn" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${course.rosterReady === false ? "Upload roll list" : "Manage roster"}</button></div>
-    <div class="course-footer"><span>${Number(course.materialCount) || 0} shared files</span><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">Manage materials</button></div>
+    <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} No official roster yet` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><span>${Number(course.materialCount) || 0} shared files</span></div>
   </article>`;
 }
 
-function rosterTableRow(student, index) {
+function rosterTableRow(student, index, editable = false) {
   return `<tr>
     <td class="roster-serial">${student.serial || index + 1}</td>
     <td class="roster-roll">${escapeHtml(student.rollNumber)}</td>
     <td>${escapeHtml(student.name)}</td>
-    <td class="roster-actions"><button class="text-btn danger" type="button" data-action="remove-roster-student" data-roll-number="${escapeHtml(student.rollNumber)}">Remove</button></td>
+    <td class="roster-actions">${editable ? `<button class="text-btn danger" type="button" data-action="remove-roster-student" data-roll-number="${escapeHtml(student.rollNumber)}">Remove</button>` : ""}</td>
   </tr>`;
 }
 
@@ -1463,11 +1474,16 @@ function renderCourseRoster(courseId) {
   const roster = courseRosters.get(courseId) || [];
   if (!course) {
     managedCourseId = "";
-    return renderClasses();
+    return renderStudents();
   }
-  setHeader(`${course.name} roster`, "PROFESSOR WORKSPACE", false);
+  const editable = canManageRoster(course);
+  setHeader(
+    `${course.name} roster`,
+    state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE",
+    false
+  );
   view.innerHTML = `
-    <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to courses</button>
+    <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to students</button>
     <div class="page-grid roster-grid">
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
@@ -1475,12 +1491,12 @@ function renderCourseRoster(courseId) {
         <div class="roster-scroll" id="professorRoster">
           ${roster.length ? `<table class="roster-table">
             <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th><th></th></tr></thead>
-            <tbody>${roster.map(rosterTableRow).join("")}</tbody>
+            <tbody>${roster.map((student, index) => rosterTableRow(student, index, editable)).join("")}</tbody>
           </table>` : `<p class="stat-label" style="padding:14px 2px">No students yet. Upload the roll list, or add them one at a time.</p>`}
         </div>
       </article>
 
-      <aside class="card page-card">
+      ${editable ? `<aside class="card page-card">
         <div class="section-head"><h3>Manage roll list</h3></div>
         <form id="addStudentForm" class="login-form">
           <label for="addRollNumber">Roll number</label>
@@ -1495,7 +1511,7 @@ function renderCourseRoster(courseId) {
           <input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden />
         </div>
         <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Uploading a file replaces the whole list. Removing a student also withdraws their enrolment from this course. Students never receive this list.</span></div>
-      </aside>
+      </aside>` : `<aside class="card page-card"><div class="section-head"><h3>Official roll list</h3></div><div class="security-note"><span class="lock">⌾</span><span>This roster is read-only for your account.</span></div></aside>`}
     </div>`;
 }
 
@@ -1530,26 +1546,53 @@ function materialTableRow(material, owner) {
   </tr>`;
 }
 
+function materialCourseCard(course) {
+  const upload = canUploadMaterials(course);
+  const owner = canManageCourse(course);
+  return `<article class="course-card">
+    <div class="course-accent"></div><span class="badge ${upload ? "purple" : "green"}">${upload ? "Course team" : "Enrolled"}</span>
+    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3>
+    <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <div class="course-footer"><span>${Number(course.materialCount) || 0} shared files</span><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">${owner ? "Upload & manage" : upload ? "Upload & view" : "View materials"}</button></div>
+  </article>`;
+}
+
+function renderMaterials() {
+  if (materialsCourseId) return renderCourseMaterials(materialsCourseId);
+  const roleLabel = state.userRole === "faculty"
+    ? "PROFESSOR WORKSPACE"
+    : state.userRole === "ta"
+      ? "TEACHING ASSISTANT WORKSPACE"
+      : "STUDENT WORKSPACE";
+  setHeader("Materials", roleLabel, false);
+  view.innerHTML = `
+    <article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Course materials</h2><p class="stat-label">Choose a course to ${state.userRole === "student" ? "view or download its shared files" : "upload, view, or download its shared files"}.</p></div><span class="badge purple">${state.courses.length} courses</span></div>
+      <div class="course-grid">${state.courses.map(materialCourseCard).join("") || `<div class="empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h3>No courses available</h3><p>Create or join a course before using materials.</p><button class="btn btn-primary" data-route-link="classes">Open Courses</button></div></div>`}</div>
+    </article>`;
+}
+
 function renderCourseMaterials(courseId) {
   const course = state.courses.find(item => item.id === courseId);
   if (!course) {
     materialsCourseId = "";
-    return renderClasses();
+    return renderMaterials();
   }
   const materials = courseMaterials.get(courseId) || [];
   const owner = canManageCourse(course);
+  const uploader = canUploadMaterials(course);
   setHeader(`${course.name} materials`, `${course.courseCode} · COURSE FILES`, false);
   view.innerHTML = `
-    <button class="back-btn" data-action="close-course-materials">${icon("i-back")} Back to courses</button>
+    <button class="back-btn" data-action="close-course-materials">${icon("i-back")} Back to materials</button>
     <article class="card page-card">
       <div class="section-head">
         <div><h2 style="margin:0 0 5px">Course materials</h2><p class="stat-label">Files here are private to this course's professor, teaching assistants, and enrolled students.</p></div>
-        <div class="setup-actions"><span class="badge ${materials.length ? "green" : "gray"}">${materials.length} files</span>${owner ? `<button class="btn btn-primary" type="button" data-action="choose-material-upload">${icon("i-upload")} Upload material</button><input id="materialUploadFile" type="file" hidden />` : ""}</div>
+        <div class="setup-actions"><span class="badge ${materials.length ? "green" : "gray"}">${materials.length} files</span>${uploader ? `<button class="btn btn-primary" type="button" data-action="choose-material-upload">${icon("i-upload")} Upload material</button><input id="materialUploadFile" type="file" hidden />` : ""}</div>
       </div>
       ${materials.length ? `<div class="roster-scroll"><table class="roster-table">
         <thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
         <tbody>${materials.map(material => materialTableRow(material, owner)).join("")}</tbody>
-      </table></div>` : `<div class="empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h3>No materials uploaded yet</h3><p>${owner ? "Upload notes, slides, PDFs, assignments, or other course files." : "Your professor has not shared any course files yet."}</p></div></div>`}
+      </table></div>` : `<div class="empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h3>No materials uploaded yet</h3><p>${uploader ? "Upload notes, slides, PDFs, assignments, or other course files." : "Your course team has not shared any course files yet."}</p></div></div>`}
     </article>`;
 }
 
@@ -1563,7 +1606,7 @@ function renderTAClasses() {
         <form class="join-code" id="joinForm"><div class="join-code-field"><label for="taJoinCode">Private course code</label><input id="taJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
       </article>
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled TA courses</h2><p class="stat-label">You can run attendance and publish quizzes, but cannot change course settings, rosters, or join codes.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled TA courses</h2><p class="stat-label">You can manage rosters and materials, run attendance, and publish quizzes. Course creation and join codes remain with the professor.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
         <div class="course-grid">${state.courses.map(taCourseCard).join("") || `<div class="empty-state"><div><p>No course joined yet.</p></div></div>`}</div>
       </article>
     </div>`;
@@ -1573,7 +1616,7 @@ function taCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge purple">Teaching assistant</span>
     <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
-    <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">Materials (${Number(course.materialCount) || 0})</button></div>
+    <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button></div>
   </article>`;
 }
 
@@ -1605,7 +1648,7 @@ function openCourseModal() {
           <div class="field"><label for="courseCode">Course code</label><input id="courseCode" name="courseCode" placeholder="CSE 308" required /></div>
           <div class="field"><label for="section">Section</label><input id="section" name="section" placeholder="Section A" required /></div>
           <div class="field"><label for="room">Classroom</label><input id="room" name="room" placeholder="Room 205" required /></div>
-          <div class="field full"><p class="stat-label">After creation, open the course to upload its official CSV or JSON roster. TA and student enrollment never changes that roster.</p></div>
+          <div class="field full"><p class="stat-label">After creation, use the Students tab to upload the official Excel, PDF, CSV, or JSON roster. The Materials tab holds course files.</p></div>
         </div>
         <div class="setup-actions"><button type="button" class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary">${icon("i-plus")} Create course</button></div>
       </form>
@@ -1633,6 +1676,7 @@ function renderPlaceholder(route) {
 // Everyone who signed up and joined, as opposed to the uploaded roll list.
 function renderStudents() {
   if (state.userRole === "student") return navigate("dashboard");
+  if (managedCourseId) return renderCourseRoster(managedCourseId);
   setHeader("Students", state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE", false);
   const enrolled = enrolledStudents;
   const byCourse = new Map();
@@ -1664,11 +1708,11 @@ function renderStudents() {
         }).join("") : `<p class="stat-label" style="padding:14px 2px">Nobody has joined yet. Share a course join code — students enter it with their roll number.</p>`}
       </article>
       <aside class="card page-card">
-        <div class="section-head"><h3>Roll list vs enrolled</h3></div>
+        <div class="section-head"><h3>Official rosters</h3></div>
         <div class="summary-list">
-          ${state.courses.map(course => `<div class="summary-item"><span>${escapeHtml(course.courseCode)}</span><strong>${(byCourse.get(course.id) || []).length} of ${Number(course.students) || 0}</strong></div>`).join("") || `<div class="summary-item"><span>No courses yet</span><strong>—</strong></div>`}
+          ${state.courses.map(course => `<div class="summary-item"><span>${escapeHtml(course.courseCode)} · ${(byCourse.get(course.id) || []).length} enrolled of ${Number(course.students) || 0}</span><button class="text-btn" type="button" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${canManageRoster(course) ? "Manage roster" : "View roster"}</button></div>`).join("") || `<div class="summary-item"><span>No courses yet</span><strong>—</strong></div>`}
         </div>
-        <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>The roll list is the official register you uploaded. This page shows who has actually created an account and joined.</span></div>
+        <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Professors and assigned TAs manage the official roll list here. The enrolled table shows who has created an account and joined.</span></div>
       </aside>
     </div>`;
 }
@@ -2324,21 +2368,23 @@ document.addEventListener("click", async event => {
   if (action === "view-course-roster") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
     const course = state.courses.find(item => item.id === courseId);
-    if (!canManageCourse(course)) return toast("Only the course owner can manage this roster", "error");
+    if (!courseCapabilities(course).canViewAttendanceRoster) {
+      return toast("Course roster access required", "error");
+    }
     try {
       await loadCourseRoster(courseId);
     } catch (error) {
       return toast(error.message || "Could not load the course roster", "error");
     }
     managedCourseId = courseId;
-    state.route = "classes";
-    setNavigationState("classes");
+    state.route = "students";
+    setNavigationState("students");
     persist();
-    return renderClasses();
+    return renderStudents();
   }
   if (action === "close-course-roster") {
     managedCourseId = "";
-    return renderClasses();
+    return renderStudents();
   }
   if (action === "open-course-materials") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
@@ -2352,19 +2398,19 @@ document.addEventListener("click", async event => {
     }
     managedCourseId = "";
     materialsCourseId = courseId;
-    state.route = "classes";
-    setNavigationState("classes");
+    state.route = "materials";
+    setNavigationState("materials");
     persist();
-    return renderClasses();
+    return renderMaterials();
   }
   if (action === "close-course-materials") {
     materialsCourseId = "";
-    return renderClasses();
+    return renderMaterials();
   }
   if (action === "choose-material-upload") {
     const course = state.courses.find(item => item.id === materialsCourseId);
-    if (!canManageCourse(course)) {
-      return toast("Only the course professor can upload materials", "error");
+    if (!canUploadMaterials(course)) {
+      return toast("Course-team material access required", "error");
     }
     return document.querySelector("#materialUploadFile")?.click();
   }
@@ -2423,7 +2469,7 @@ document.addEventListener("click", async event => {
   }
   if (action === "choose-roster-upload") {
     const course = state.courses.find(item => item.id === managedCourseId);
-    if (!canManageCourse(course)) return toast("Only the course owner can upload a roster", "error");
+    if (!canManageRoster(course)) return toast("Course-team roster access required", "error");
     return document.querySelector("#rosterUploadFile")?.click();
   }
   if (action === "open-course-quiz") {
@@ -2621,8 +2667,8 @@ document.addEventListener("click", async event => {
   if (action === "remove-roster-student") {
     const course = state.courses.find(item => item.id === managedCourseId);
     const rollNumber = event.target.closest("[data-roll-number]")?.dataset.rollNumber || "";
-    if (!course || !canManageCourse(course)) {
-      return toast("Only the course owner can change this roll list", "error");
+    if (!course || !canManageRoster(course)) {
+      return toast("Course-team roster access required", "error");
     }
     if (!window.confirm(`Remove ${rollNumber} from the ${course.courseCode} roll list? They lose access to this course.`)) return;
     try {
@@ -2732,7 +2778,7 @@ document.addEventListener("change", async event => {
   if (event.target.id === "materialUploadFile") {
     const file = event.target.files?.[0];
     const course = state.courses.find(item => item.id === materialsCourseId);
-    if (!file || !course || !canManageCourse(course)) return;
+    if (!file || !course || !canUploadMaterials(course)) return;
     if (!file.size) {
       event.target.value = "";
       return toast("That file is empty", "error");
@@ -2801,7 +2847,7 @@ ${preview}`)) return;
   if (event.target.id === "rosterUploadFile") {
     const file = event.target.files?.[0];
     const course = state.courses.find(item => item.id === managedCourseId);
-    if (!file || !canManageCourse(course)) return;
+    if (!file || !canManageRoster(course)) return;
     try {
       const students = await readRosterFile(file);
       // The PDF reader is heuristic, so show what was actually read before it
@@ -2996,8 +3042,8 @@ document.addEventListener("submit", async event => {
   }
   if (event.target.id === "addStudentForm") {
     const course = state.courses.find(item => item.id === managedCourseId);
-    if (!course || !canManageCourse(course)) {
-      return toast("Only the course owner can change this roll list", "error");
+    if (!course || !canManageRoster(course)) {
+      return toast("Course-team roster access required", "error");
     }
     const data = new FormData(event.target);
     try {
