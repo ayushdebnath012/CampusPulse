@@ -103,19 +103,13 @@ async function createVerifiedUser(baseUrl, user) {
           ? user.roleCode || "ta-invite"
           : user.roleCode,
   };
-  const requested = await request(baseUrl, "/api/auth/signup/request", {
+  const created = await request(baseUrl, "/api/auth/signup", {
     method: "POST",
     body: signupBody,
   });
-  assert.equal(requested.response.status, 202);
-  assert.match(requested.body.devCode, /^\d{6}$/);
-
-  const verified = await request(baseUrl, "/api/auth/signup/verify", {
-    method: "POST",
-    body: { email: user.email, code: requested.body.devCode },
-  });
-  assert.equal(verified.response.status, 201);
-  assert.equal(verified.body.user.role, user.role);
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.user.role, user.role);
+  assert.ok(created.body.token);
 
   const loggedIn = await request(baseUrl, "/api/auth/login", {
     method: "POST",
@@ -640,6 +634,39 @@ test("production signup does not expose a code when email delivery is unavailabl
   assert.equal("devCode" in requested.body, false);
 });
 
+test("signup creates and signs in an account without email delivery or OTP", async (t) => {
+  const testServer = await createTestServer({
+    env: {
+      NODE_ENV: "production",
+      ALLOW_DEV_VERIFICATION_CODE: "false",
+    },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const created = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "student",
+      name: "Password Only Student",
+      email: "password-only@kgpian.iitkgp.ac.in",
+      password: "student-password",
+    },
+  });
+  assert.equal(created.response.status, 201);
+  assert.ok(created.body.token);
+  assert.equal(created.body.user.email, "password-only@kgpian.iitkgp.ac.in");
+  assert.equal(created.body.user.verifiedAt, null);
+
+  const session = await request(testServer.baseUrl, "/api/me", {
+    token: created.body.token,
+  });
+  assert.equal(session.response.status, 200);
+  assert.equal(session.body.user.email, "password-only@kgpian.iitkgp.ac.in");
+});
+
 test("production signup sends the verification code through the configured mailer", async (t) => {
   let sentMessage;
   const testServer = await createTestServer({
@@ -691,21 +718,21 @@ test("faculty and TA signup require administrator invitation codes", async (t) =
   };
   const missingCode = await request(
     testServer.baseUrl,
-    "/api/auth/signup/request",
+    "/api/auth/signup",
     { method: "POST", body: baseUser },
   );
   assert.equal(missingCode.response.status, 403);
 
   const wrongCode = await request(
     testServer.baseUrl,
-    "/api/auth/signup/request",
+    "/api/auth/signup",
     { method: "POST", body: { ...baseUser, roleCode: "wrong-code" } },
   );
   assert.equal(wrongCode.response.status, 403);
 
   const uninvitedTA = await request(
     testServer.baseUrl,
-    "/api/auth/signup/request",
+    "/api/auth/signup",
     {
       method: "POST",
       body: {

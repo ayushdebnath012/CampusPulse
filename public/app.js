@@ -367,9 +367,9 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             </div>
             ${selectedLoginRole === "faculty" ? `<label for="facultyInviteCode">Professor invitation code</label><input id="facultyInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
             ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
-            <button class="btn btn-primary auth-submit" type="submit">${icon("i-send")} Check email & continue</button>
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
-          <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. You will verify it before the account is created.</p></div>` : `
+          <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. No email OTP is required.</p></div>` : `
           <form id="loginForm" class="login-form">
             <input type="hidden" name="role" value="${selectedLoginRole}" />
             <label for="loginEmail">${profile.idLabel}</label>
@@ -378,7 +378,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="8" required />
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
           </form>
-          <div class="auth-demo-note"><span>Verified accounts only</span><p>${state.accounts.length ? "Use the email and password from your completed sign-up." : "No account exists yet. Create and verify an account before signing in."}</p></div>`}
+          <div class="auth-demo-note"><span>Secure password sign-in</span><p>Use the email, password, and account role selected during sign-up.</p></div>`}
           <p class="auth-description" style="margin-top:18px"><a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a> · <a href="delete-account.html" target="_blank" rel="noopener">Delete an account</a></p>
         </div>
       </section>
@@ -1868,23 +1868,25 @@ document.addEventListener("submit", async event => {
     if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
     try {
-      await apiRequest("/api/auth/signup/request", {
+      const signedUp = await apiRequest("/api/auth/signup", {
         method: "POST",
         auth: false,
         body: { role: data.role, name, email, password: data.password, roleCode: data.roleCode || undefined }
       });
-      pendingSignup = {
-        remote: true,
-        role: data.role,
-        name,
-        email
-      };
+      apiToken = signedUp.token;
+      localStorage.setItem("campusPulseApiToken", apiToken);
+      state.userRole = signedUp.user.role;
+      state.authenticated = true;
+      state.accountName = signedUp.user.name;
+      state.authEmail = signedUp.user.email;
+      state.route = "dashboard";
+      await syncBackendState();
+      setNavigationState("dashboard");
+      showApp();
     } catch (error) {
-      return toast(error.message || "Could not start sign-up", "error");
+      return toast(error.message || "Could not create the account", "error");
     }
-    selectedLoginRole = data.role;
-    renderEmailVerification();
-    return toast("Verification email requested");
+    return toast("Account created and signed in");
   }
   if (event.target.id === "verificationForm") {
     if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");

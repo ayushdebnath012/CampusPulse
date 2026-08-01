@@ -307,7 +307,7 @@ function createApp(options = {}) {
   app.get("/api/health", async (_request, response, next) => {
     try {
       const production = String(env.NODE_ENV || "").toLowerCase() === "production";
-      const missingSecrets = production
+      const warnings = production
         ? [
             "FACULTY_SIGNUP_CODE",
             "TA_SIGNUP_CODE",
@@ -315,26 +315,81 @@ function createApp(options = {}) {
             "COURSE_JOIN_CODES_JSON",
           ].filter((key) => !String(env[key] || "").trim())
         : [];
-      if (missingSecrets.length) {
-        return response.status(503).json({
-          ok: false,
-          error: `Missing required configuration: ${missingSecrets.join(", ")}`,
-        });
-      }
       const data = await store.read();
       if (production && !data.courseStudents.length) {
-        return response.status(503).json({
-          ok: false,
-          error: "The private course roster source is not configured",
-        });
+        warnings.push("COURSE_ROSTERS_JSON_BASE64");
       }
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.0.0",
+        version: "1.2.0",
+        otpRequired: false,
         emailDelivery:
           mailer.provider || (mailer.configured ? "configured" : "disabled"),
+        ...(warnings.length ? { configurationWarnings: warnings } : {}),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/auth/signup", async (request, response, next) => {
+    try {
+      const role = String(request.body.role || "");
+      const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
+      const email = cleanEmail(request.body.email);
+      const password = String(request.body.password || "");
+      if (!ROLES.has(role)) return response.status(400).json({ error: "Invalid role" });
+      if (name.length < 2 || name.length > 80)
+        return response.status(400).json({ error: "Enter a valid full name" });
+      if (!isCampusEmail(email))
+        return response.status(400).json({ error: "Use an IIT KGP institutional email" });
+      if (password.length < 8 || password.length > 128)
+        return response.status(400).json({ error: "Password must contain 8–128 characters" });
+      if (role === "faculty" && !env.FACULTY_SIGNUP_CODE)
+        return response.status(403).json({
+          error: "Faculty accounts must be provisioned with an invitation code",
+        });
+      if (role === "faculty" && request.body.roleCode !== env.FACULTY_SIGNUP_CODE)
+        return response.status(403).json({ error: "Invalid faculty invitation code" });
+      if (
+        role === "ta" &&
+        (!env.TA_SIGNUP_CODE || request.body.roleCode !== env.TA_SIGNUP_CODE)
+      )
+        return response.status(403).json({
+          error: "TA accounts must be provisioned with a valid invitation code",
+        });
+
+      const passwordHash = await hashPassword(password);
+      const token = randomToken();
+      const result = await store.update((database) => {
+        if (database.users.some((user) => user.email === email)) {
+          return { error: "An account already exists for this email", status: 409 };
+        }
+        const now = new Date().toISOString();
+        const created = {
+          id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role,
+          name,
+          email,
+          passwordHash,
+          createdAt: now,
+          verifiedAt: null,
+        };
+        database.users.push(created);
+        database.sessions = database.sessions.filter(
+          (item) => Date.parse(item.expiresAt) > Date.now(),
+        );
+        database.sessions.push({
+          tokenHash: sha256(token),
+          userId: created.id,
+          createdAt: now,
+          expiresAt: new Date(Date.now() + THIRTY_DAYS).toISOString(),
+        });
+        return { user: created };
+      });
+      if (result.error) return response.status(result.status).json({ error: result.error });
+      response.status(201).json({ token, user: publicUser(result.user) });
     } catch (error) {
       next(error);
     }
