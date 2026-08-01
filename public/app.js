@@ -169,7 +169,6 @@ const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
 const courseSwitcher = document.querySelector("#courseSwitcher");
 const courseSwitcherWrap = document.querySelector("#courseSwitcherWrap");
-const attendanceNav = document.querySelector("#attendanceNav");
 const profileAvatar = document.querySelector("#profileAvatar");
 const profileName = document.querySelector("#profileName");
 const profileMeta = document.querySelector("#profileMeta");
@@ -719,14 +718,32 @@ function setHeader(title, eyebrow, showQuick = true) {
   if (menuAvatar) menuAvatar.textContent = profile.initials;
   if (menuName) menuName.textContent = profileName.textContent;
   if (menuMeta) menuMeta.textContent = state.authEmail || profile.meta;
-  const studentsNav = document.querySelector("#studentsNav");
-  if (studentsNav) studentsNav.style.display = state.userRole === "student" ? "none" : "";
-  if (attendanceNav) {
-    attendanceNav.style.display = state.courses.some(canRunAttendance) ? "" : "none";
-  }
+  syncNavVisibility();
 }
 
 const backNav = document.querySelector("#backNav");
+
+// One rule for every nav item, so the sidebar and the phone drawer agree and
+// nobody is offered a screen their role cannot use.
+function syncNavVisibility() {
+  const team = state.userRole === "faculty" || state.userRole === "ta";
+  const runsAttendance = state.courses.some(canRunAttendance);
+  const visible = {
+    dashboard: true,
+    schedule: true,
+    classes: true,
+    notices: true,
+    students: team,
+    materials: true,
+    attendance: team && runsAttendance,
+    quizzes: true,
+    settings: true,
+  };
+  document.querySelectorAll(".nav-item[data-route]").forEach(item => {
+    const allowed = visible[item.dataset.route];
+    item.hidden = allowed === false;
+  });
+}
 
 function syncBackButton() {
   if (!backNav) return;
@@ -757,7 +774,7 @@ window.addEventListener("popstate", event => {
 });
 
 function setNavigationState(route) {
-  document.querySelectorAll(".nav-item").forEach(btn => {
+  document.querySelectorAll(".nav-item[data-route]").forEach(btn => {
     const active = btn.dataset.route === route;
     btn.classList.toggle("active", active);
     if (active) btn.setAttribute("aria-current", "page");
@@ -2137,7 +2154,7 @@ function renderNotices() {
   const course = selectedCourse();
   setHeader("Notices", course ? `${course.courseCode} · COURSE NOTICE BOARD` : "COURSE NOTICE BOARD", false);
   if (!course) {
-    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-bell")}</span><h2>No notices</h2><p>${state.userRole === "faculty" ? "Create a course to post notices." : "Join a course to see its notices."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-bell")}</span><h2>No notices</h2><p>${state.userRole === "faculty" ? "Create a course to post notices." : state.userRole === "ta" ? "Join the course you assist to post notices." : "Join a course to see its notices."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
     return;
   }
   view.innerHTML = noticeBoard(course);

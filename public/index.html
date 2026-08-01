@@ -12,7 +12,7 @@
       content="CampusPulse helps professors manage private courses and official rosters while teaching teams run attendance and quick quizzes."
     />
     <title>CampusPulse — Classroom operations, simplified</title>
-    <link rel="stylesheet" href="styles.css?v=45" />
+    <link rel="stylesheet" href="styles.css?v=46" />
   </head>
   <body>
     <svg class="svg-defs" aria-hidden="true">
@@ -104,8 +104,16 @@
           </div>
           <button class="icon-btn" id="menuClose" type="button" aria-label="Close menu"><svg><use href="#i-close"/></svg></button>
         </div>
-        <nav class="app-menu-nav" aria-label="Account options">
-          <button class="app-menu-item" type="button" data-route-link="settings"><svg><use href="#i-settings"/></svg><span>Settings</span></button>
+        <nav class="app-menu-nav" aria-label="Navigation">
+          <button class="app-menu-item nav-item" type="button" data-route-link="dashboard" data-route="dashboard"><svg><use href="#i-grid"/></svg><span>Overview</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="schedule" data-route="schedule"><svg><use href="#i-calendar"/></svg><span>Schedule</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="classes" data-route="classes"><svg><use href="#i-users"/></svg><span>Courses</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="notices" data-route="notices"><svg><use href="#i-bell"/></svg><span>Notices</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="students" data-route="students"><svg><use href="#i-users"/></svg><span>Students</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="materials" data-route="materials"><svg><use href="#i-cloud"/></svg><span>Materials</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="attendance" data-route="attendance"><svg><use href="#i-users"/></svg><span>Attendance</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="quizzes" data-route="quizzes"><svg><use href="#i-quiz"/></svg><span>Quizzes</span></button>
+          <button class="app-menu-item nav-item" type="button" data-route-link="settings" data-route="settings"><svg><use href="#i-settings"/></svg><span>Settings</span></button>
           <button class="app-menu-item danger" type="button" data-action="logout"><svg><use href="#i-logout"/></svg><span>Sign out</span></button>
         </nav>
       </aside>
@@ -123,6 +131,6 @@
      <script src="config.js?v=13"></script>
      <script src="update-manager.js?v=24"></script>
      <script src="reminder-manager.js?v=2"></script>
-     <script src="app.js?v=52"></script>
+     <script src="app.js?v=53"></script>
   </body>
 </html>

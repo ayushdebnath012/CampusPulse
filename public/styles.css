@@ -700,3 +700,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .option-text { flex: 1 1 auto; min-width: 0; }
 .option-share { color: var(--muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
 .review-option.is-correct .option-share { color: #087b59; }
+
+.app-menu-item.nav-item { min-height: 44px; font-size: 13px; }
+.app-menu-item.nav-item.active { color: var(--primary); background: var(--primary-soft); }
+.app-menu-nav .app-menu-item.danger { margin-top: 8px; border-top: 1px solid var(--line); border-radius: 0 0 12px 12px; }
