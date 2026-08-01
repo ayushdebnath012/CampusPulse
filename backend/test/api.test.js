@@ -67,6 +67,7 @@ async function request(baseUrl, route, options = {}) {
 async function createVerifiedUser(baseUrl, user) {
   const signupBody = {
     phone: "9876543210",
+    department: user.department || "Mechanical Engineering",
     ...(user.role === "faculty" ? {} : { rollNumber: user.rollNumber || `TEST${Math.random().toString(36).slice(2, 8).toUpperCase()}`, hall: "Azad Hall" }),
     ...user,
     roleCode:
@@ -82,6 +83,7 @@ async function createVerifiedUser(baseUrl, user) {
   });
   assert.equal(created.response.status, 201);
   assert.equal(created.body.user.role, user.role);
+  assert.equal(created.body.user.department, signupBody.department);
   assert.ok(created.body.token);
 
   const loggedIn = await request(baseUrl, "/api/auth/login", {
@@ -89,6 +91,7 @@ async function createVerifiedUser(baseUrl, user) {
     body: { email: user.email, password: user.password, role: user.role },
   });
   assert.equal(loggedIn.response.status, 200);
+  assert.equal(loggedIn.body.user.department, signupBody.department);
   assert.ok(loggedIn.body.token);
   return loggedIn.body;
 }
@@ -255,6 +258,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.equal(bootstrap.body.courses[0].room, "NR221");
   assert.equal(bootstrap.body.courses[0].courseCode, "MF41601");
   assert.equal(bootstrap.body.courses[0].students, 310);
+  assert.deepEqual(bootstrap.body.teachingAssistants, []);
 
   const openedAttendance = await request(
     testServer.baseUrl,
@@ -301,9 +305,37 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.equal(taJoinedSoft.response.status, 201);
   assert.equal(taJoinedSoft.body.course.capabilities.canRunAttendance, true);
   assert.equal(taJoinedSoft.body.course.capabilities.canManageCourse, false);
+  assert.equal(taJoinedSoft.body.course.capabilities.canManageSchedule, true);
   assert.equal(taJoinedSoft.body.course.capabilities.canManageRoster, true);
   assert.equal(taJoinedSoft.body.course.capabilities.canUploadMaterials, true);
   assert.equal("code" in taJoinedSoft.body.course, false);
+
+  const taSchedule = await request(
+    testServer.baseUrl,
+    `/api/courses/${soft.id}/schedule`,
+    {
+      method: "PUT",
+      token: teachingAssistant.token,
+      body: {
+        revision: 0,
+        classes: [
+          {
+            day: "Tuesday",
+            start: "10:00 AM",
+            end: "11:00 AM",
+            topic: "TA tutorial",
+            room: "NR221",
+            subtopics: ["Review", "Problem solving"],
+          },
+        ],
+      },
+    },
+  );
+  assert.equal(taSchedule.response.status, 200);
+  assert.deepEqual(taSchedule.body.schedule[0].subtopics, [
+    "Review",
+    "Problem solving",
+  ]);
 
   const taJoinedKbs = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
@@ -311,6 +343,37 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: { code: kbs.code },
   });
   assert.equal(taJoinedKbs.response.status, 201);
+
+  const studentTeam = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.deepEqual(
+    studentTeam.body.teachingAssistants.map((assistant) => ({
+      name: assistant.name,
+      email: assistant.email,
+      courseCode: assistant.courseCode,
+      department: assistant.department,
+    })),
+    [
+      {
+        name: "Course Assistant",
+        email: "assistant@iitkgp.ac.in",
+        courseCode: "MF41601",
+        department: "Mechanical Engineering",
+      },
+    ],
+  );
+  const professorTeam = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: professor.token,
+  });
+  assert.deepEqual(
+    professorTeam.body.teachingAssistants.map((assistant) => assistant.courseCode),
+    ["ME60353", "MF41601"],
+  );
+  const enrolledStudentsOnly = await request(testServer.baseUrl, "/api/students", {
+    token: professor.token,
+  });
+  assert.ok(enrolledStudentsOnly.body.students.every((person) => person.role === "student"));
 
   const taRoster = await request(
     testServer.baseUrl,
@@ -644,6 +707,7 @@ test("production signup does not expose a code when email delivery is unavailabl
     body: {
       role: "student",
       name: "Email Test",
+      department: "Mechanical Engineering",
       email: "email-test@kgpian.iitkgp.ac.in",
       password: "student-password",
       phone: "9876543210",
@@ -672,6 +736,7 @@ test("signup creates and signs in an account without email delivery or OTP", asy
     body: {
       role: "student",
       name: "Password Only Student",
+      department: "Mechanical Engineering",
       email: "password-only@kgpian.iitkgp.ac.in",
       password: "student-password",
       phone: "9876543210",
@@ -682,6 +747,7 @@ test("signup creates and signs in an account without email delivery or OTP", asy
   assert.equal(created.response.status, 201);
   assert.ok(created.body.token);
   assert.equal(created.body.user.email, "password-only@kgpian.iitkgp.ac.in");
+  assert.equal(created.body.user.department, "Mechanical Engineering");
   assert.equal(created.body.user.verifiedAt, null);
 
   const session = await request(testServer.baseUrl, "/api/me", {
@@ -1142,8 +1208,16 @@ test("a professor adds and removes students and sets the weekly timetable", asyn
     method: "PUT",
     token: professor.token,
     body: {
+      revision: 0,
       classes: [
-        { day: "Mon", start: "8:0:AM", end: "8:55:AM", topic: "ME60215", room: "NC241" },
+        {
+          day: "Mon",
+          start: "8:0:AM",
+          end: "8:55:AM",
+          topic: "ME60215",
+          room: "NC241",
+          subtopics: ["Introduction", "Worked example"],
+        },
         { day: "Thur", start: "12:0:PM", end: "12:55:PM", topic: "ME60215" },
       ],
     },
@@ -1153,6 +1227,10 @@ test("a professor adds and removes students and sets the weekly timetable", asyn
     timetable.body.schedule.map((item) => [item.day, item.start, item.room]),
     [["Monday", "8:0:AM", "NC241"], ["Thursday", "12:0:PM", "Room TBA"]],
   );
+  assert.deepEqual(timetable.body.schedule[0].subtopics, [
+    "Introduction",
+    "Worked example",
+  ]);
 
   const bootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
     token: professor.token,
@@ -1165,13 +1243,91 @@ test("a professor adds and removes students and sets the weekly timetable", asyn
     averageAttendance: 0,
     quizzes: 0,
   });
+  assert.deepEqual(bootstrap.body.statsByCourse[course.id], bootstrap.body.stats);
+
+  const editedTimetable = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/schedule`,
+    {
+      method: "PUT",
+      token: professor.token,
+      body: {
+        revision: timetable.body.revision,
+        classes: timetable.body.schedule.map((entry, index) => ({
+          ...entry,
+          subtopics: index === 0 ? ["Updated topic", "Discussion"] : [],
+        })),
+      },
+    },
+  );
+  assert.equal(editedTimetable.response.status, 200);
+  assert.deepEqual(
+    editedTimetable.body.schedule.map((entry) => entry.id),
+    timetable.body.schedule.map((entry) => entry.id),
+  );
+  assert.deepEqual(editedTimetable.body.schedule[0].subtopics, [
+    "Updated topic",
+    "Discussion",
+  ]);
+
+  const staleTimetable = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/schedule`,
+    {
+      method: "PUT",
+      token: professor.token,
+      body: {
+        revision: timetable.body.revision,
+        classes: [],
+      },
+    },
+  );
+  assert.equal(staleTimetable.response.status, 409);
 
   const badDay = await request(testServer.baseUrl, `/api/courses/${course.id}/schedule`, {
     method: "PUT",
     token: professor.token,
-    body: { classes: [{ day: "Someday", start: "9:00 AM" }] },
+    body: {
+      revision: editedTimetable.body.revision,
+      classes: [{ day: "Someday", start: "9:00 AM" }],
+    },
   });
   assert.equal(badDay.response.status, 400);
+
+  const blankDay = await request(testServer.baseUrl, `/api/courses/${course.id}/schedule`, {
+    method: "PUT",
+    token: professor.token,
+    body: {
+      revision: editedTimetable.body.revision,
+      classes: [{ day: "", start: "9:00 AM" }],
+    },
+  });
+  assert.equal(blankDay.response.status, 400);
+
+  const tooManySubtopics = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/schedule`,
+    {
+      method: "PUT",
+      token: professor.token,
+      body: {
+        revision: editedTimetable.body.revision,
+        classes: [
+          {
+            day: "Monday",
+            start: "9:00 AM",
+            subtopics: Array.from({ length: 21 }, (_, index) => `Part ${index + 1}`),
+          },
+        ],
+      },
+    },
+  );
+  assert.equal(tooManySubtopics.response.status, 400);
+
+  const afterRejectedEdits = await request(testServer.baseUrl, "/api/schedule", {
+    token: professor.token,
+  });
+  assert.deepEqual(afterRejectedEdits.body.schedule, editedTimetable.body.schedule);
 });
 
 test("the students list shows who joined, and only to the course team", async (t) => {
@@ -1222,6 +1378,7 @@ test("the students list shows who joined, and only to the course team", async (t
       rollNumber: listed.body.students[0].rollNumber,
       name: listed.body.students[0].name,
       email: listed.body.students[0].email,
+      department: listed.body.students[0].department,
       phone: listed.body.students[0].phone,
       hall: listed.body.students[0].hall,
       courseId: listed.body.students[0].courseId,
@@ -1231,6 +1388,7 @@ test("the students list shows who joined, and only to the course team", async (t
       rollNumber: "23ME10001",
       name: "Joined Student",
       email: "joined@kgpian.iitkgp.ac.in",
+      department: "Mechanical Engineering",
       phone: "9876543210",
       hall: "Azad Hall",
       courseId: course.id,
@@ -1371,7 +1529,18 @@ test("course teams share materials only with their enrolled course", async (t) =
 });
 
 test("professors sign up from department subdomains, students do not", async (t) => {
-  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  const overrideEmail = "profile-override@mech.iitkgp.ac.in";
+  const testServer = await createTestServer({
+    env: {
+      FACULTY_SIGNUP_CODE: "",
+      PROFESSOR_PROFILE_OVERRIDES_JSON: JSON.stringify({
+        [overrideEmail]: {
+          phone: "+91 90000 00000",
+          department: "Mechanical Engineering",
+        },
+      }),
+    },
+  });
   t.after(async () => {
     await testServer.close();
     await fs.rm(testServer.directory, { recursive: true, force: true });
@@ -1382,18 +1551,29 @@ test("professors sign up from department subdomains, students do not", async (t)
     body: {
       role: "faculty",
       name: "Department Professor",
-      email: "dkpra@mech.iitkgp.ac.in",
+      department: "Mechanical Engineering",
+      email: overrideEmail,
       password: "professor-password",
       phone: "9876543210",
     },
   });
   assert.equal(departmentProfessor.response.status, 201);
+  assert.equal(
+    departmentProfessor.body.user.department,
+    "Mechanical Engineering",
+  );
+  const storedDepartmentProfessor = (await testServer.store.read()).users.find(
+    (user) => user.email === overrideEmail,
+  );
+  assert.equal(storedDepartmentProfessor.phone, "+91 90000 00000");
+  assert.equal(storedDepartmentProfessor.department, "Mechanical Engineering");
 
   const plainProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
     method: "POST",
     body: {
       role: "faculty",
       name: "Institute Professor",
+      department: "Mechanical Engineering",
       email: "someone@iitkgp.ac.in",
       password: "professor-password",
       phone: "9876543210",
@@ -1407,6 +1587,7 @@ test("professors sign up from department subdomains, students do not", async (t)
     body: {
       role: "faculty",
       name: "Not A Professor",
+      department: "Mechanical Engineering",
       email: "student@kgpian.iitkgp.ac.in",
       password: "professor-password",
       phone: "9876543210",
@@ -1420,6 +1601,7 @@ test("professors sign up from department subdomains, students do not", async (t)
     body: {
       role: "faculty",
       name: "Outsider",
+      department: "Mechanical Engineering",
       email: "someone@example.com",
       password: "professor-password",
       phone: "9876543210",
@@ -1591,6 +1773,7 @@ test("production stays healthy with no configuration and no courses", async (t) 
     body: {
       role: "student",
       name: "Unconfigured Student",
+      department: "Mechanical Engineering",
       email: "unconfigured@kgpian.iitkgp.ac.in",
       password: "student-password",
       phone: "9876543210",
@@ -1633,6 +1816,7 @@ test("production signup sends the verification code through the configured maile
     body: {
       role: "student",
       name: "Delivered Email",
+      department: "Mechanical Engineering",
       email: "delivered@kgpian.iitkgp.ac.in",
       password: "student-password",
       phone: "9876543210",
@@ -1656,6 +1840,7 @@ test("faculty signup ignores legacy invitations while TA still requires one", as
   const baseUser = {
     role: "faculty",
     name: "Uninvited Faculty",
+    department: "Mechanical Engineering",
     email: "uninvited@iitkgp.ac.in",
     password: "faculty-password",
     phone: "9876543210",
@@ -1675,6 +1860,7 @@ test("faculty signup ignores legacy invitations while TA still requires one", as
       body: {
         role: "ta",
         name: "Uninvited Assistant",
+        department: "Mechanical Engineering",
         email: "uninvited-ta@iitkgp.ac.in",
         password: "assistant-password",
       },

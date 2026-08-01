@@ -1,6 +1,6 @@
 {
   "name": "campuspulse",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "A lightweight course enrollment, attendance, and quiz prototype for classrooms.",
   "scripts": {
@@ -14,6 +14,7 @@
   "dependencies": {
     "@capacitor/android": "^8.4.2",
     "@capacitor/core": "^8.4.2",
+    "@capacitor/local-notifications": "^8.2.1",
     "@capgo/capacitor-updater": "^8.51.3",
     "@mdx-js/rollup": "^3.1.1",
     "@vitejs/plugin-react": "^5.1.4",

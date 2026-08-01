@@ -3,6 +3,7 @@ const path = require("node:path");
 const { createStore } = require("./database");
 const { createPostgresStore } = require("./postgres-database");
 const { createMailer } = require("./mailer");
+const { applyUserProfileOverride } = require("./profile-overrides");
 const {
   hashPassword,
   verifyPassword,
@@ -38,6 +39,7 @@ function publicUser(user) {
     role: user.role,
     name: user.name,
     email: user.email,
+    department: user.department || "",
     verifiedAt: user.verifiedAt,
   };
 }
@@ -212,6 +214,7 @@ function publicCourse(database, user, course) {
     ).length,
     capabilities: {
       canManageCourse: owner,
+      canManageSchedule: owner || assistant,
       canManageRoster: owner || assistant,
       canViewAttendanceRoster: owner || assistant,
       canRunAttendance: owner || assistant,
@@ -292,26 +295,56 @@ const WEEKDAYS = [
   "Sunday",
 ];
 
-function normalizeSchedule(classes, courseId) {
+function normalizeSchedule(classes, courseId, existingEntries = []) {
   if (!Array.isArray(classes) || classes.length > 60) {
     const error = new Error("Add up to 60 weekly classes");
     error.status = 400;
     throw error;
   }
+  const existingIds = new Set(existingEntries.map((entry) => entry.id).filter(Boolean));
+  const usedIds = new Set();
   return classes.map((entry, index) => {
     const dayInput = String(entry?.day || "").trim().toLowerCase();
-    const day = WEEKDAYS.find((name) => name.toLowerCase().startsWith(dayInput.slice(0, 3)));
+    const day = dayInput.length >= 3
+      ? WEEKDAYS.find((name) => name.toLowerCase().startsWith(dayInput.slice(0, 3)))
+      : null;
     const start = String(entry?.start || "").trim().slice(0, 20);
     const end = String(entry?.end || "").trim().slice(0, 20);
     const topic = String(entry?.topic || "").trim().replace(/\s+/g, " ").slice(0, 120);
     const room = String(entry?.room || "").trim().slice(0, 80) || "Room TBA";
+    const subtopicsInput = Array.isArray(entry?.subtopics)
+      ? entry.subtopics
+      : String(entry?.subtopics || entry?.subclasses || "")
+          .split(/\r?\n|,/);
+    const subtopics = subtopicsInput
+      .map((item) => String(item || "").trim().replace(/\s+/g, " ").slice(0, 120))
+      .filter(Boolean);
+    if (subtopics.length > 20) {
+      const error = new Error(`Class ${index + 1} can have up to 20 sub-classes`);
+      error.status = 400;
+      throw error;
+    }
     if (!day || !start) {
       const error = new Error(`Class ${index + 1} needs a weekday and a start time`);
       error.status = 400;
       throw error;
     }
+    const requestedId = String(entry?.id || "").trim();
+    const positionalId = String(existingEntries[index]?.id || "").trim();
+    let id = existingIds.has(requestedId) && !usedIds.has(requestedId)
+      ? requestedId
+      : existingIds.has(positionalId) && !usedIds.has(positionalId)
+        ? positionalId
+        : "";
+    let sequence = index + 1;
+    while (!id || usedIds.has(id)) {
+      const candidate = `schedule-${courseId}-${sequence}`;
+      sequence += 1;
+      if (!existingIds.has(candidate) && !usedIds.has(candidate)) id = candidate;
+    }
+    usedIds.add(id);
     return {
-      id: `schedule-${courseId}-${index + 1}`,
+      id,
       courseId,
       day,
       date: "",
@@ -319,6 +352,7 @@ function normalizeSchedule(classes, courseId) {
       end,
       topic,
       room,
+      subtopics,
     };
   });
 }
@@ -475,11 +509,17 @@ function createApp(options = {}) {
     try {
       const role = String(request.body.role || "");
       const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
+      const department = String(request.body.department || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 120);
       const email = cleanEmail(request.body.email);
       const password = String(request.body.password || "");
       if (!ROLES.has(role)) return response.status(400).json({ error: "Invalid role" });
       if (name.length < 2 || name.length > 80)
         return response.status(400).json({ error: "Enter a valid full name" });
+      if (department.length < 2)
+        return response.status(400).json({ error: "Enter your department name" });
       if (!isCampusEmail(email))
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
       if (role === "faculty" && !isFacultyEmail(email))
@@ -533,18 +573,19 @@ function createApp(options = {}) {
           };
         }
         const now = new Date().toISOString();
-        const created = {
+        const created = applyUserProfileOverride({
           id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role,
           name,
           email,
+          department,
           phone,
           ...(rollNumber ? { rollNumber } : {}),
           ...(hall ? { hall } : {}),
           passwordHash,
           createdAt: now,
           verifiedAt: null,
-        };
+        }, env);
         database.users.push(created);
         database.sessions = database.sessions.filter(
           (item) => Date.parse(item.expiresAt) > Date.now(),
@@ -568,11 +609,17 @@ function createApp(options = {}) {
     try {
       const role = String(request.body.role || "");
       const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
+      const department = String(request.body.department || "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 120);
       const email = cleanEmail(request.body.email);
       const password = String(request.body.password || "");
       if (!ROLES.has(role)) return response.status(400).json({ error: "Invalid role" });
       if (name.length < 2 || name.length > 80)
         return response.status(400).json({ error: "Enter a valid full name" });
+      if (department.length < 2)
+        return response.status(400).json({ error: "Enter your department name" });
       if (!isCampusEmail(email))
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
       if (password.length < 8 || password.length > 128)
@@ -607,6 +654,7 @@ function createApp(options = {}) {
           email,
           role,
           name,
+          department,
           passwordHash,
           codeHash: sha256(code),
           expiresAt,
@@ -650,14 +698,15 @@ function createApp(options = {}) {
         if (database.users.some((item) => item.email === email)) {
           return { error: "Account already exists", status: 409 };
         }
-        const created = {
+        const created = applyUserProfileOverride({
           id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: record.role,
           name: record.name,
           email: record.email,
+          department: record.department || "",
           passwordHash: record.passwordHash,
           verifiedAt: new Date().toISOString(),
-        };
+        }, env);
         database.users.push(created);
         database.verificationCodes = database.verificationCodes.filter(
           (item) => item.email !== email,
@@ -926,16 +975,49 @@ function createApp(options = {}) {
       const currentQuiz = [...data.quizzes]
         .reverse()
         .find((item) => item.status === "open" && courseIds.has(item.courseId));
+      const courseById = new Map(courses.map((course) => [course.id, course]));
+      const teachingAssistants = data.enrollments
+        .filter(
+          (item) => courseIds.has(item.courseId) && item.courseRole === "ta",
+        )
+        .map((item) => {
+          const user = data.users.find((person) => person.id === item.userId);
+          const course = courseById.get(item.courseId);
+          if (!user || !course) return null;
+          return {
+            userId: user.id,
+            name: user.name,
+            email: user.email,
+            department: user.department || "",
+            courseId: course.id,
+            courseCode: course.courseCode,
+            courseName: course.name,
+            joinedAt: item.joinedAt || null,
+          };
+        })
+        .filter(Boolean)
+        .sort(
+          (left, right) =>
+            left.courseCode.localeCompare(right.courseCode) ||
+            left.name.localeCompare(right.name),
+        );
       response.json({
         user: publicUser(request.user),
         courses: courses.map((course) => publicCourse(data, request.user, course)),
         enrolledCourseIds,
         schedule: data.schedule.filter((item) => courseIds.has(item.courseId)),
+        teachingAssistants,
         quiz:
           request.user.role === "student"
             ? safeQuizForStudent(currentQuiz, request.user.id)
             : currentQuiz || null,
         stats: workspaceStats(data, request.user, courses),
+        statsByCourse: Object.fromEntries(
+          courses.map((course) => [
+            course.id,
+            workspaceStats(data, request.user, [course]),
+          ]),
+        ),
       });
     } catch (error) {
       next(error);
@@ -957,6 +1039,7 @@ function createApp(options = {}) {
           .map((item) => {
             const user = data.users.find((person) => person.id === item.userId);
             if (!user) return null;
+            if ((item.courseRole || user.role) !== "student") return null;
             const course = byId.get(item.courseId);
             return {
               userId: user.id,
@@ -964,6 +1047,7 @@ function createApp(options = {}) {
               email: user.email,
               role: item.courseRole || user.role,
               rollNumber: item.rollNumber || user.rollNumber || "",
+              department: user.department || "",
               phone: user.phone || "",
               hall: user.hall || "",
               courseId: course.id,
@@ -1109,7 +1193,7 @@ function createApp(options = {}) {
   app.put(
     "/api/courses/:id/schedule",
     authenticate,
-    requireRoles("faculty"),
+    requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
         const result = await store.update((database) => {
@@ -1117,14 +1201,36 @@ function createApp(options = {}) {
             database,
             request.user,
             request.params.id,
-            "owner",
+            "run",
           );
-          const entries = normalizeSchedule(request.body.classes, course.id);
+          const currentRevision = Number(course.scheduleRevision) || 0;
+          if (
+            !Number.isInteger(request.body.revision) ||
+            request.body.revision !== currentRevision
+          ) {
+            const error = new Error(
+              "The timetable changed on another device. Refresh it before saving.",
+            );
+            error.status = 409;
+            throw error;
+          }
+          const existingEntries = database.schedule.filter(
+            (item) => item.courseId === course.id,
+          );
+          const entries = normalizeSchedule(
+            request.body.classes,
+            course.id,
+            existingEntries,
+          );
           database.schedule = [
             ...database.schedule.filter((item) => item.courseId !== course.id),
             ...entries,
           ];
-          return { schedule: entries };
+          course.scheduleRevision = currentRevision + 1;
+          return {
+            schedule: entries,
+            revision: course.scheduleRevision,
+          };
         });
         response.json(result);
       } catch (error) {

@@ -13,6 +13,10 @@
       "autoUpdate": "off",
       "appReadyTimeout": 10000,
       "keepUrlPathAfterReload": true
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_campuspulse",
+      "iconColor": "#5B5BD6"
     }
   }
 }

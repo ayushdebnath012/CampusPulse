@@ -1,4 +1,4 @@
-const APP_VERSION = "1.2.0";
+const APP_VERSION = "1.3.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -83,7 +83,10 @@ const defaultState = {
   quizResponses: 0,
   courses: [],
   enrolledCourses: [],
+  teachingAssistants: [],
   selectedCourseId: "",
+  stats: {},
+  statsByCourse: {},
   importedSchedule: []
 };
 
@@ -101,11 +104,16 @@ state.courses = defaultState.courses;
 state.enrolledCourses = Array.isArray(state.enrolledCourses)
   ? state.enrolledCourses.filter(courseId => defaultState.courses.some(course => course.id === courseId))
   : [];
-state.selectedCourseId = "";
+state.selectedCourseId = String(state.selectedCourseId || "");
 delete state.present;
 state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
 state.backendSchedule = Array.isArray(state.backendSchedule) ? state.backendSchedule : [];
 state.backendQuizQuestions = Array.isArray(state.backendQuizQuestions) ? state.backendQuizQuestions : [];
+state.teachingAssistants = Array.isArray(state.teachingAssistants) ? state.teachingAssistants : [];
+state.stats = state.stats && typeof state.stats === "object" ? state.stats : {};
+state.statsByCourse = state.statsByCourse && typeof state.statsByCourse === "object"
+  ? state.statsByCourse
+  : {};
 state.attendanceCheckedIn = Boolean(state.attendanceCheckedIn);
 state.quizResponded = Boolean(state.quizResponded);
 state.accounts = Array.isArray(state.accounts) ? state.accounts.filter(account => account?.email && account?.passwordHash && account?.role) : [];
@@ -143,6 +151,7 @@ let courseRosters = new Map();
 let managedCourseId = "";
 let courseMaterials = new Map();
 let materialsCourseId = "";
+let editingScheduleIndex = -1;
 let modalReturnFocus = null;
 let selectedLoginRole = state.userRole || "faculty";
 let authMode = state.accounts.length ? "login" : "signup";
@@ -152,6 +161,8 @@ const appShell = document.querySelector("#appShell");
 const pageTitle = document.querySelector("#pageTitle");
 const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
+const courseSwitcher = document.querySelector("#courseSwitcher");
+const courseSwitcherWrap = document.querySelector("#courseSwitcherWrap");
 const attendanceNav = document.querySelector("#attendanceNav");
 const profileAvatar = document.querySelector("#profileAvatar");
 const profileName = document.querySelector("#profileName");
@@ -159,6 +170,7 @@ const profileMeta = document.querySelector("#profileMeta");
 const updateBanner = document.querySelector("#updateBanner");
 const updateBannerMessage = document.querySelector("#updateBannerMessage");
 const updateManager = window.CAMPUSPULSE_UPDATES || null;
+const reminderManager = window.CAMPUSPULSE_REMINDERS || null;
 const appMenu = document.querySelector("#appMenu");
 const menuScrim = document.querySelector("#menuScrim");
 const menuToggle = document.querySelector("#menuToggle");
@@ -258,6 +270,10 @@ function courseCapabilities(course = selectedCourse()) {
 
 function canManageCourse(course = selectedCourse()) {
   return Boolean(courseCapabilities(course).canManageCourse);
+}
+
+function canManageSchedule(course = selectedCourse()) {
+  return Boolean(courseCapabilities(course).canManageSchedule);
 }
 
 function canManageRoster(course = selectedCourse()) {
@@ -384,6 +400,10 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   state.quizResponded = false;
   state.courses = defaultState.courses;
   state.enrolledCourses = [];
+  state.teachingAssistants = [];
+  state.selectedCourseId = "";
+  state.stats = {};
+  state.statsByCourse = {};
   state.backendSchedule = [];
   if (clearImportedSchedule) state.importedSchedule = [];
   if (view) view.innerHTML = "";
@@ -430,6 +450,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
   activeAttendance = null;
   managedCourseId = "";
   materialsCourseId = "";
+  if (courseSwitcherWrap) courseSwitcherWrap.hidden = true;
   closeMenu();
   if (view) view.innerHTML = "";
   selectedLoginRole = loginProfiles[role] ? role : "faculty";
@@ -474,6 +495,8 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <input type="hidden" name="role" value="${selectedLoginRole}" />
             <label for="signupName">Full name</label>
             <input id="signupName" name="name" type="text" placeholder="Enter your full name" autocomplete="name" minlength="2" required />
+            <label for="signupDepartment">Department</label>
+            <input id="signupDepartment" name="department" type="text" placeholder="e.g. Mechanical Engineering" autocomplete="organization" minlength="2" maxlength="120" required />
             <label for="signupEmail">IIT KGP email</label>
             <input id="signupEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="email" required />
             <div class="auth-field-pair">
@@ -601,19 +624,35 @@ async function syncBackendState() {
   state.courses = Array.isArray(payload.courses)
     ? payload.courses.map((course) => ({ ...course, code: course.code || "" }))
     : [];
+  migrateImportedScheduleCourseIds();
   if (!state.courses.some(course => course.id === state.selectedCourseId)) {
     state.selectedCourseId = state.courses[0]?.id || "";
   }
   state.enrolledCourses = payload.enrolledCourseIds || [];
+  state.teachingAssistants = Array.isArray(payload.teachingAssistants)
+    ? payload.teachingAssistants
+    : [];
+  state.stats = payload.stats || {};
+  state.statsByCourse = payload.statsByCourse || {};
   state.backendSchedule = payload.schedule || [];
   courseRosters = new Map();
   courseMaterials = new Map();
   applyAttendanceSnapshot(null);
   state.attendanceCheckedIn = false;
-  applyQuizSnapshot(payload.quiz);
+  applyQuizSnapshot(null);
+  const course = selectedCourse();
+  const courseRefreshes = [];
+  if (course && canRunAttendance(course)) {
+    courseRefreshes.push(selectAttendanceCourse(course.id));
+  }
+  if (course && (state.userRole === "student" || canPublishQuiz(course))) {
+    courseRefreshes.push(selectQuizCourse(course.id));
+  }
+  await Promise.allSettled(courseRefreshes);
   persist();
   await refreshOpenAttendance({ rerender: false });
   await refreshEnrolledStudents();
+  await syncClassReminders();
   startOpenAttendancePolling();
 }
 
@@ -651,8 +690,8 @@ function toast(message, type = "success") {
 function setHeader(title, eyebrow, showQuick = true) {
   pageTitle.textContent = title;
   pageEyebrow.textContent = eyebrow;
-  const attendanceCourse = selectedCourse() || state.courses.find(canRunAttendance);
-  quickAction.style.display = showQuick && canRunAttendance(attendanceCourse) ? "" : "none";
+  quickAction.style.display = showQuick ? "" : "none";
+  syncCourseSwitcher();
   const profiles = {
     faculty: { label: "Professor view", initials: "PF", name: "Professor Demo", meta: "Instructor · CSE" },
     ta: { label: "TA view", initials: "TA", name: "Teaching Assistant", meta: "Course team · CSE" },
@@ -685,7 +724,6 @@ function navigate(route) {
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
   if (route === "students") managedCourseId = "";
-  if (route === "materials") materialsCourseId = "";
   state.route = route;
   setNavigationState(route);
   render();
@@ -720,10 +758,8 @@ function renderDashboard() {
   const courseAttendanceStatus = attendanceMatchesCourse ? state.attendanceStatus : "not_started";
   const coursePresentCount = attendanceMatchesCourse ? currentPresentCount() : 0;
   setHeader(`Good morning, ${roleDisplayName()}`, todayLabel());
-  const attendanceLabel = courseAttendanceStatus === "complete" ? "Attendance recorded" : courseAttendanceStatus === "scanning" ? "Attendance in progress" : "Ready to begin";
   const stats = workspaceStats();
-  const todaysClasses = scheduleForToday(course);
-  const statusClass = courseAttendanceStatus === "complete" ? "green" : "amber";
+  const todaysClasses = scheduleForToday();
   view.innerHTML = `
     <div class="dashboard-grid">
       <div class="left-stack">
@@ -757,11 +793,11 @@ function renderDashboard() {
         </div>
 
         <article class="card card-pad">
-          <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="classes">View schedule</button></div>
+          <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="schedule">View schedule</button></div>
           <div class="class-list">
             ${todaysClasses.length
-              ? todaysClasses.map(item => classRow(item.start || "—", item.end || "", item.topic || course.name, `${course.courseCode} · ${course.section} · ${item.room || course.room}`, attendanceLabel, statusClass, canRunAttendance(course) ? "attendance" : "", course.id)).join("")
-              : `<p class="stat-label" style="padding:6px 2px">No classes scheduled yet. Import a timetable from the Schedule page.</p>`}
+              ? todaysClasses.map(item => todayClassRow(item, { attendanceLinks: true })).join("")
+              : `<p class="stat-label" style="padding:6px 2px">No classes scheduled for today. Add a timetable from the Schedule page.</p>`}
           </div>
         </article>
       </div>
@@ -780,20 +816,145 @@ function renderDashboard() {
 
 // Counters come from the server; a workspace with no history reports zeros.
 function workspaceStats() {
+  const courseId = selectedCourse()?.id || "";
   return {
     courses: 0,
     rosteredStudents: 0,
     classesCompleted: 0,
     averageAttendance: 0,
     quizzes: 0,
-    ...(state.stats || {})
+    ...(courseId ? state.statsByCourse?.[courseId] || state.stats : state.stats || {})
   };
 }
 
-function scheduleForToday(course) {
-  const today = new Date().toLocaleDateString("en-US", { weekday: "long" });
-  return state.backendSchedule.filter(
-    item => item.courseId === course.id && String(item.day || "") === today
+function scheduleForToday() {
+  const todayIndex = (new Date().getDay() + 6) % 7;
+  const course = selectedCourse();
+  const importedForCourse = state.importedSchedule.filter(item =>
+    scheduleBelongsToCourse(item, course)
+  );
+  const source = state.userRole === "student" && importedForCourse.length
+    ? importedForCourse
+    : state.backendSchedule;
+  return source
+    .filter(item =>
+      dayIndexFromName(String(item.day || "")) === todayIndex &&
+      scheduleBelongsToCourse(item, course)
+    )
+    .sort((left, right) => timeToMinutes(left.start) - timeToMinutes(right.start));
+}
+
+function scheduleBelongsToCourse(item, course) {
+  if (!course) return false;
+  if (item.courseId) return item.courseId === course.id;
+  if (state.courses.length === 1) return true;
+  const compact = value => String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const eventLabel = compact(`${item.courseCode || ""} ${item.topic || ""} ${item.courseName || ""}`);
+  return [course.courseCode, course.name]
+    .map(compact)
+    .filter(Boolean)
+    .some(label => eventLabel.includes(label));
+}
+
+function migrateImportedScheduleCourseIds() {
+  state.importedSchedule = state.importedSchedule.map(item => {
+    if (item.courseId) return item;
+    const matches = state.courses.filter(course => scheduleBelongsToCourse(item, course));
+    if (matches.length !== 1) return item;
+    const course = matches[0];
+    return {
+      ...item,
+      courseId: course.id,
+      courseCode: item.courseCode || course.courseCode,
+      courseName: item.courseName || course.name,
+    };
+  });
+}
+
+function syncCourseSwitcher() {
+  if (!courseSwitcher || !courseSwitcherWrap) return;
+  const visible = state.authenticated && state.courses.length > 0;
+  courseSwitcherWrap.hidden = !visible;
+  if (!visible) {
+    courseSwitcher.innerHTML = "";
+    return;
+  }
+  courseSwitcher.innerHTML = state.courses.map(course =>
+    `<option value="${escapeHtml(course.id)}">${escapeHtml(`${course.courseCode} · ${course.name}`)}</option>`
+  ).join("");
+  courseSwitcher.value = selectedCourse()?.id || "";
+}
+
+async function switchCourseContext(
+  courseId,
+  { renderView = true, notify = true } = {}
+) {
+  const course = state.courses.find(item => item.id === courseId);
+  if (!course) return toast("Course not found", "error");
+  clearTimeout(quizTimer);
+  state.selectedCourseId = course.id;
+  managedCourseId = "";
+  materialsCourseId = "";
+  applyAttendanceSnapshot(null);
+  applyQuizSnapshot(null);
+  persist();
+
+  const refreshes = [];
+  if (canRunAttendance(course)) refreshes.push(selectAttendanceCourse(course.id));
+  if (state.userRole === "student" || canPublishQuiz(course)) {
+    refreshes.push(selectQuizCourse(course.id));
+  }
+  const results = await Promise.allSettled(refreshes);
+  const failed = results.find(result => result.status === "rejected");
+  let materialFailure = null;
+
+  if (state.route === "materials") {
+    materialsCourseId = course.id;
+    try {
+      await loadCourseMaterials(course.id, { force: true });
+    } catch (error) {
+      materialFailure = error;
+      if (notify) {
+        toast(error.message || "Could not load course materials", "error");
+      }
+    }
+  }
+
+  persist();
+  if (renderView) render();
+  if (failed && notify) {
+    toast(failed.reason?.message || "Some course data could not be refreshed", "error");
+  } else if (notify && !materialFailure) {
+    toast(`Switched to ${course.courseCode}`);
+  }
+  return course;
+}
+
+function todayClassRow(item, { attendanceLinks = false } = {}) {
+  const course = state.courses.find(candidate => candidate.id === item.courseId);
+  const title = course?.name || item.topic || "Scheduled class";
+  const rawRoom = item.room || course?.room || "Room TBA";
+  const room = /^room\b/i.test(rawRoom) ? rawRoom : `Room ${rawRoom}`;
+  const detail = [
+    course?.courseCode,
+    item.topic && item.topic !== title ? item.topic : "",
+    room,
+    Array.isArray(item.subtopics) && item.subtopics.length
+      ? `Topics: ${item.subtopics.join(", ")}`
+      : "",
+  ].filter(Boolean).join(" · ");
+  const route = attendanceLinks && course && canRunAttendance(course)
+    ? "attendance"
+    : "schedule";
+  return classRow(
+    item.start || "Time TBA",
+    item.end || "",
+    title,
+    detail,
+    room,
+    "purple",
+    route,
+    course?.id || "",
   );
 }
 
@@ -876,16 +1037,29 @@ function attendanceCallCard(session) {
 }
 
 function renderStudentDashboard() {
-  setHeader(`Good morning, ${roleDisplayName()}`, "STUDENT DASHBOARD", false);
-  const enrolled = state.courses.filter(course => state.enrolledCourses.includes(course.id));
+  setHeader(`Good morning, ${roleDisplayName()}`, "STUDENT DASHBOARD");
+  const course = selectedCourse();
+  const enrolled = course && state.enrolledCourses.includes(course.id) ? [course] : [];
+  const selectedAttendance = openAttendance.filter(
+    session => !course || session.courseId === course.id
+  );
+  const todaysClasses = scheduleForToday();
   view.innerHTML = `
     <div class="left-stack">
-      ${openAttendance.length ? `<div class="attendance-call-stack">${openAttendance.map(attendanceCallCard).join("")}</div>` : ""}
+      ${selectedAttendance.length ? `<div class="attendance-call-stack">${selectedAttendance.map(attendanceCallCard).join("")}</div>` : ""}
       <section class="student-welcome">
-        <h2>${enrolled.length ? "Your classroom is ready" : "Join your first course"}</h2>
-        <p>${enrolled.length ? "Access your schedule, quick quizzes, and class updates. Mark yourself present when your professor opens attendance." : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
+        <h2>${enrolled.length ? escapeHtml(`${course.courseCode} · ${course.name}`) : "Join your first course"}</h2>
+        <p>${enrolled.length ? `Welcome to ${escapeHtml(course.name)}. Access this course's schedule, quick quizzes, materials, and class updates here.` : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
         <button class="btn" data-route-link="${enrolled.length ? "schedule" : "classes"}">${icon(enrolled.length ? "i-calendar" : "i-plus")} ${enrolled.length ? "View my schedule" : "Join a course"}</button>
       </section>
+      <article class="card card-pad">
+        <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="schedule">View schedule</button></div>
+        <div class="class-list">
+          ${todaysClasses.length
+            ? todaysClasses.map(item => todayClassRow(item)).join("")
+            : `<p class="stat-label" style="padding:6px 2px">No classes scheduled for today.</p>`}
+        </div>
+      </article>
       <div class="course-grid">
         ${enrolled.length ? enrolled.map(course => studentCourseCard(course)).join("") : `
           <article class="card empty-state" style="min-height:260px;grid-column:1/-1"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>No courses yet</h2><p>Ask your faculty for the course join code, then enter it on the Courses page.</p><button class="btn btn-primary" data-route-link="classes">Enter join code</button></div></article>`}
@@ -967,111 +1141,172 @@ function renderSchedule() {
     return;
   }
   const enrolled = state.enrolledCourses.includes(course.id);
-  const imported = isStudent && state.importedSchedule.length > 0;
-  const calendarDays = [
-    ["MON", "3"], ["TUE", "4"], ["WED", "5"], ["THU", "6"], ["FRI", "7"], ["SAT", "8"], ["SUN", "9"]
-  ];
-  const courseSchedule = state.backendSchedule.filter(item => item.courseId === course.id);
-  const defaultEvents = (courseSchedule.length ? courseSchedule : [
-    { day: "Monday", date: "3 Aug", start: "3:00 PM", end: "5:00 PM", topic: course.name, room: course.room, status: "Upcoming" }
-  ]).map((item, index) => ({
-    ...item,
-    dayIndex: dayIndexFromName(item.day),
-    status: item.status || (index === 0 ? "Next" : "Upcoming")
+  const importedEvents = state.importedSchedule.filter(item =>
+    scheduleBelongsToCourse(item, course)
+  );
+  const imported = isStudent && importedEvents.length > 0;
+  const courseSchedule = state.backendSchedule
+    .filter(item => item.courseId === course.id)
+    .map((item, index) => ({ ...item, scheduleIndex: index }));
+  const source = imported ? importedEvents : courseSchedule;
+  const todayIndex = (new Date().getDay() + 6) % 7;
+  const events = source
+    .map((item, index) => ({
+      ...item,
+      scheduleIndex: item.scheduleIndex ?? index,
+      dayIndex: dayIndexFromName(item.day),
+    }))
+    .filter(item => item.dayIndex >= 0)
+    .sort((left, right) =>
+      left.dayIndex - right.dayIndex || timeToMinutes(left.start) - timeToMinutes(right.start)
+    );
+  const todaysEvents = events.filter(item => item.dayIndex === todayIndex);
+  const weekDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const weekMonday = new Date();
+  weekMonday.setHours(12, 0, 0, 0);
+  weekMonday.setDate(weekMonday.getDate() - todayIndex);
+  const calendarDays = weekDays.map((day, index) => {
+    const date = new Date(weekMonday);
+    date.setDate(weekMonday.getDate() + index);
+    return {
+      label: day.slice(0, 3).toUpperCase(),
+      date: date.getDate(),
+      today: index === todayIndex,
+    };
+  });
+  const calendarEvents = events.map(event => ({
+    ...event,
+    topic: event.topic || course.name,
+    room: event.room || course.room || "Room TBA",
+    today: event.dayIndex === todayIndex,
   }));
-  const importedEvents = state.importedSchedule.map((item, index) => ({
-    ...item,
-    dayIndex: dayIndexFromName(item.day),
-    status: index === 0 ? "Next" : "Upcoming",
-    today: index === 0
-  })).filter(item => item.dayIndex >= 0);
-  const backendEvents = state.backendSchedule.map((item, index) => ({
-    ...item,
-    dayIndex: dayIndexFromName(item.day),
-    status: item.today ? "Today" : index === 0 ? "Completed" : "Upcoming",
-    today: Boolean(item.today)
-  })).filter(item => item.dayIndex >= 0);
-  const hasBackendSchedule = backendEvents.length > 0;
-  const events = imported && importedEvents.length
-    ? importedEvents
-    : hasBackendSchedule
-      ? backendEvents
-      : defaultEvents;
-  const scheduleLabel = imported
-    ? "My imported timetable"
-    : hasBackendSchedule
-      ? "Campus schedule"
-      : "3–9 August 2026";
-  const scheduleBadge = imported
-    ? "Timetable file imported"
-    : hasBackendSchedule
-      ? "Synced from CampusPulse"
-      : `${state.userRole === "faculty" ? "Professor" : state.userRole === "ta" ? "Teaching Assistant" : "Student"} view`;
-  const roleName = state.userRole === "faculty" ? "Professor" : state.userRole === "ta" ? "Teaching Assistant" : "Student";
-  setHeader("Schedule calendar", `${roleName.toUpperCase()} TIMETABLE`, false);
+  setHeader(`${course.name} schedule`, `${course.courseCode} · WEEKLY AGENDA`, false);
   view.innerHTML = `
-    <article class="card page-card calendar-page">
-      <div class="calendar-titlebar">
-        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${scheduleLabel}</h2><p>${imported ? "Imported locally from your timetable file" : `${escapeHtml(course.name)} · ${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}`}</p></div>
-        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${scheduleBadge}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
+    <article class="card page-card today-agenda-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Today's classes</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.name)} · full class details</p></div><span class="badge ${todaysEvents.length ? "purple" : "gray"}">${todaysEvents.length} today</span></div>
+      <div class="agenda-class-list">
+        ${todaysEvents.length
+          ? todaysEvents.map(event => weeklyAgendaClass(event, course, { isStudent, enrolled, editable: canManageSchedule(course), today: true })).join("")
+          : `<div class="empty-agenda"><strong>No class scheduled today</strong><span>${canManageSchedule(course) ? "Add a class below to show its time, room, topic, and sub-classes here." : "The teaching team has not added a class for today."}</span></div>`}
       </div>
-      <div class="calendar-scroll" aria-label="Weekly class calendar">
+    </article>
+    <article class="card page-card calendar-page schedule-calendar-card">
+      <div class="calendar-titlebar">
+        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · visual timetable for the selected course</p></div>
+        <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
+      </div>
+      <div class="calendar-scroll" aria-label="${escapeHtml(course.courseCode)} weekly class calendar">
         <div class="calendar-board">
-          <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(([day, date], index) => `<span class="${index === 0 ? "is-today" : ""}"><small>${day}</small><strong>${date}</strong></span>`).join("")}</div>
+          <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(day => `<span class="${day.today ? "is-today" : ""}"><small>${day.label}</small><strong>${day.date}</strong></span>`).join("")}</div>
           <div class="calendar-body">
             <div class="calendar-times">${["8 AM", "9 AM", "10 AM", "11 AM", "12 PM", "1 PM", "2 PM", "3 PM", "4 PM", "5 PM"].map(time => `<span>${time}</span>`).join("")}</div>
-            <div class="calendar-lanes">
-              ${calendarDays.map((_, index) => `<div class="calendar-lane ${index === 0 ? "is-today" : ""}">${events.filter(event => event.dayIndex === index).map(event => calendarEvent(event)).join("")}</div>`).join("")}
-            </div>
+            <div class="calendar-lanes">${calendarDays.map((day, index) => `<div class="calendar-lane ${day.today ? "is-today" : ""}">${calendarEvents.filter(event => event.dayIndex === index).map(event => calendarEvent(event)).join("")}</div>`).join("")}</div>
           </div>
         </div>
       </div>
-      <div class="calendar-agenda">
-        <div class="section-head"><div><h3>Class agenda</h3><p class="stat-label">All scheduled sessions for this week</p></div><span class="badge gray">${events.length} sessions</span></div>
-        <div class="schedule-week">${events.map(event => scheduleDay(event, course, isStudent, enrolled)).join("")}</div>
-      </div>
-      ${isStudent ? `
-        <div class="setup-actions">
-          ${imported ? `<button class="btn btn-danger" data-action="clear-imported-schedule">Clear imported schedule</button>` : ""}
-          <button class="btn btn-primary" data-action="import-schedule">${icon("i-upload")} Import CSV / ICS</button>
-          <input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />
-        </div>
-        <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser and is not uploaded to CampusPulse.</span></div>` : ""}
-      ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Ask the course professor for the private join code to unlock activities. Attendance remains teaching-team managed.</span></div>` : ""}
     </article>
-    ${canManageCourse(course) ? scheduleEditor(course, courseSchedule) : ""}`;
+    <article class="card page-card weekly-agenda-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Entire week</h2><p class="stat-label">Previous days remain visible, followed by today and upcoming classes.</p></div><div class="setup-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span>${isStudent ? `<button class="btn" data-action="import-schedule">${icon("i-upload")} Import CSV / ICS</button><input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />` : ""}</div></div>
+      <div class="weekly-agenda">
+        ${weekDays.map((day, dayIndex) => weeklyAgendaDay({
+          day,
+          dayIndex,
+          todayIndex,
+          events: events.filter(event => event.dayIndex === dayIndex),
+          course,
+          isStudent,
+          enrolled,
+          editable: canManageSchedule(course),
+        })).join("")}
+      </div>
+      ${isStudent ? `<div class="setup-actions" style="margin-top:16px">${imported ? `<button class="btn btn-danger" data-action="clear-imported-schedule">Clear imported schedule</button>` : ""}</div><div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Your imported file stays on this device and is attached to ${escapeHtml(course.courseCode)}.</span></div>` : ""}
+      ${isStudent && !enrolled ? `<div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Ask the course professor for the private join code to unlock activities.</span></div>` : ""}
+    </article>
+    ${canManageSchedule(course) ? scheduleEditor(course, courseSchedule) : ""}`;
+}
+
+function weeklyAgendaDay({ day, dayIndex, todayIndex, events, course, isStudent, enrolled, editable }) {
+  const status = dayIndex < todayIndex ? "Previous" : dayIndex === todayIndex ? "Today" : "Upcoming";
+  const tone = status === "Previous" ? "gray" : status === "Today" ? "purple" : "green";
+  const date = new Date();
+  date.setHours(12, 0, 0, 0);
+  date.setDate(date.getDate() - todayIndex + dayIndex);
+  const dateLabel = date.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+  });
+  return `<section class="weekly-agenda-day ${status.toLowerCase()}">
+    <div class="weekly-agenda-day-head"><div><h3>${escapeHtml(day)}</h3><span>${escapeHtml(dateLabel)} · ${events.length} ${events.length === 1 ? "class" : "classes"}</span></div><span class="badge ${tone}">${status}</span></div>
+    <div class="agenda-class-list">
+      ${events.length
+        ? events.map(event => weeklyAgendaClass(event, course, { isStudent, enrolled, editable, today: status === "Today" })).join("")
+        : `<div class="empty-agenda compact"><span>No classes</span></div>`}
+    </div>
+  </section>`;
+}
+
+function weeklyAgendaClass(event, course, { isStudent, enrolled, editable, today }) {
+  const subtopics = Array.isArray(event.subtopics) ? event.subtopics : [];
+  const room = event.room || course.room || "Room TBA";
+  const attendanceAction = today && !isStudent && canRunAttendance(course)
+    ? `<button class="btn btn-primary" data-action="open-dashboard-attendance" data-course-id="${escapeHtml(course.id)}">${icon("i-play")} Attendance</button>`
+    : today && isStudent && !enrolled
+      ? `<button class="btn" data-route-link="classes">Join course</button>`
+      : "";
+  return `<article class="agenda-class ${today ? "is-today" : ""}">
+    <div class="agenda-class-time"><strong>${escapeHtml(event.start || "Time TBA")}</strong><span>${escapeHtml(event.end || "")}</span></div>
+    <div class="agenda-class-main"><div class="agenda-class-title"><strong>${escapeHtml(event.topic || course.name)}</strong><span>${escapeHtml(room)}</span></div><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.name)}</p>${subtopics.length ? `<div class="subtopic-list">${subtopics.map((topic, index) => `<span><b>${index + 1}</b>${escapeHtml(topic)}</span>`).join("")}</div>` : `<span class="stat-label">No sub-classes or topic breakdown added</span>`}</div>
+    <div class="agenda-class-actions">${attendanceAction}${editable ? `<button class="btn btn-soft" data-action="edit-class-topics" data-index="${event.scheduleIndex}">Edit topics</button>` : ""}</div>
+  </article>`;
 }
 
 async function saveCourseSchedule(course, classes, message) {
   try {
     const result = await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/schedule`, {
       method: "PUT",
-      body: { classes }
+      body: {
+        classes,
+        revision: Number(course.scheduleRevision) || 0,
+      }
     });
     state.backendSchedule = [
       ...state.backendSchedule.filter(item => item.courseId !== course.id),
       ...(result.schedule || [])
     ];
+    state.courses = state.courses.map(item =>
+      item.id === course.id
+        ? { ...item, scheduleRevision: result.revision }
+        : item
+    );
     persist();
+    await syncClassReminders();
     renderSchedule();
     return toast(message);
   } catch (error) {
+    if (error.status === 409 && backendConfigured()) {
+      await syncBackendState().catch(() => {});
+      if (state.route === "schedule") renderSchedule();
+      return toast(
+        "The timetable changed elsewhere. Latest classes loaded; review and save again.",
+        "error"
+      );
+    }
     return toast(error.message || "Could not save the timetable", "error");
   }
 }
 
 function scheduleEditor(course, entries) {
   return `<article class="card page-card" style="margin-top:22px">
-    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly timetable</h2><p class="stat-label">${escapeHtml(course.courseCode)} · shown on everyone's calendar</p></div><span class="badge ${entries.length ? "green" : "amber"}">${entries.length} classes</span></div>
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly timetable</h2><p class="stat-label">${escapeHtml(course.courseCode)} · shown in the teaching team's and students' weekly agenda</p></div><span class="badge ${entries.length ? "green" : "amber"}">${entries.length} classes</span></div>
     ${entries.length ? `<table class="roster-table" style="margin-bottom:14px">
-      <thead><tr><th>Day</th><th>Start</th><th>End</th><th>Class</th><th>Room</th><th></th></tr></thead>
+      <thead><tr><th>Day</th><th>Time</th><th>Class topic</th><th>Sub-classes</th><th>Room</th><th></th></tr></thead>
       <tbody>${entries.map((item, index) => `<tr>
         <td>${escapeHtml(item.day || "")}</td>
-        <td>${escapeHtml(item.start || "")}</td>
-        <td>${escapeHtml(item.end || "")}</td>
+        <td>${escapeHtml(item.start || "")}${item.end ? `<br><span class="stat-label">to ${escapeHtml(item.end)}</span>` : ""}</td>
         <td>${escapeHtml(item.topic || course.name)}</td>
+        <td>${Array.isArray(item.subtopics) && item.subtopics.length ? item.subtopics.map(topic => `<span class="table-subtopic">${escapeHtml(topic)}</span>`).join("") : `<span class="stat-label">None yet</span>`}</td>
         <td>${escapeHtml(item.room || "")}</td>
-        <td class="roster-actions"><button class="text-btn danger" type="button" data-action="remove-schedule-class" data-index="${index}">Remove</button></td>
+        <td class="roster-actions"><div class="setup-actions"><button class="text-btn" type="button" data-action="edit-class-topics" data-index="${index}">Edit topics</button><button class="text-btn danger" type="button" data-action="remove-schedule-class" data-index="${index}">Remove</button></div></td>
       </tr>`).join("")}</tbody>
     </table>` : `<p class="stat-label" style="padding:6px 2px 14px">No classes yet. Add them by hand, or upload your timetable.</p>`}
     <form id="addClassForm" class="field-grid">
@@ -1084,6 +1319,7 @@ function scheduleEditor(course, entries) {
       <div class="field"><label for="classEnd">End</label><input class="text-input" id="classEnd" name="end" placeholder="5:00 PM" /></div>
       <div class="field"><label for="classTopic">Class</label><input class="text-input" id="classTopic" name="topic" placeholder="${escapeHtml(course.courseCode)}" /></div>
       <div class="field"><label for="classRoom">Room</label><input class="text-input" id="classRoom" name="room" placeholder="${escapeHtml(course.room || "NR221")}" /></div>
+      <div class="field full"><label for="classSubtopics">Sub-classes / topic breakdown</label><textarea class="text-input" id="classSubtopics" name="subtopics" rows="3" placeholder="One item per line, e.g.&#10;Introduction&#10;Worked example&#10;Questions"></textarea></div>
       <div class="field" style="justify-content:flex-end"><button class="btn btn-primary" type="submit">${icon("i-plus")} Add class</button></div>
     </form>
     <div class="setup-actions" style="margin-top:16px">
@@ -1217,7 +1453,7 @@ function renderAttendanceSetup() {
           <button class="btn" data-route-link="dashboard">Cancel</button>
           ${ready
             ? `<button class="btn btn-primary" data-action="start-scan">${icon("i-play")} Take attendance</button>`
-            : canManageCourse(course)
+            : canManageRoster(course)
               ? `<button class="btn btn-primary" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload roll list</button>`
               : `<span class="badge gray">Waiting for the professor's roll list</span>`}
         </div>
@@ -1363,22 +1599,28 @@ function renderQuiz() {
 }
 
 function renderStudentQuizAccess() {
-  setHeader("Course activities", "STUDENT ACCESS", false);
-  const course = state.courses.find(item => item.id === state.backendQuizCourseId) || selectedCourse();
+  const course = selectedCourse();
+  setHeader(
+    "Course activities",
+    course ? `${course.courseCode} · STUDENT ACCESS` : "STUDENT ACCESS",
+    false
+  );
   const hasAccess = Boolean(course && state.enrolledCourses.includes(course.id));
+  const quizMatchesCourse = Boolean(
+    course && state.backendQuizCourseId === course.id
+  );
+  const quizPublished = quizMatchesCourse && state.quizPublished;
+  const quizResponded = quizMatchesCourse && state.quizResponded;
   view.innerHTML = hasAccess ? `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge green">Enrolled</span></div>
-        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(state.backendQuizTitle || "Quick quiz")}</h3><p class="stat-label" style="margin-top:5px">${state.backendQuizQuestions.length} questions</p></div><span class="badge ${state.quizPublished ? "purple" : "gray"}">${state.quizResponded ? "Submitted" : state.quizPublished ? "Available now" : "Not started"}</span></div>
-        ${state.quizPublished && !state.quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
-          ${(state.backendQuizQuestions.length ? state.backendQuizQuestions : [
-            { text: "Which property is central to fuzzy membership?", options: ["Binary membership only", "Degrees of membership", "No membership", "Random membership"] },
-            { text: "A neural network learns primarily by adjusting what?", options: ["Room numbers", "Weights", "Course codes", "Calendar dates"] }
-          ]).map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question)}</strong></legend>${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
+        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(quizMatchesCourse ? state.backendQuizTitle || "Quick quiz" : "No quiz available")}</h3><p class="stat-label" style="margin-top:5px">${quizMatchesCourse ? state.backendQuizQuestions.length : 0} questions</p></div><span class="badge ${quizPublished ? "purple" : "gray"}">${quizResponded ? "Submitted" : quizPublished ? "Available now" : "Not started"}</span></div>
+        ${quizPublished && !quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
+          ${state.backendQuizQuestions.map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question)}</strong></legend>${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
           <button class="btn btn-primary" type="submit">${icon("i-send")} Submit quiz</button>
-        </form>` : `<button class="btn btn-primary" disabled>${icon(state.quizResponded ? "i-check" : "i-play")} ${state.quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
+        </form>` : `<button class="btn btn-primary" disabled>${icon(quizResponded ? "i-check" : "i-play")} ${quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
       </article>
       <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>${escapeHtml(course.courseCode)}</strong></div><div class="summary-item"><span>Attendance</span><strong>Teaching-team managed</strong></div></div><div class="security-note"><span class="lock">⌾</span><span>You can access course activities, but only the owning professor and enrolled TAs can view or change attendance.</span></div></aside>
     </div>` : `
@@ -1397,6 +1639,8 @@ function renderLiveQuiz() {
   if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
   const course = selectedCourse();
   if (!course || !canPublishQuiz(course) || state.backendQuizCourseId !== course.id) return renderQuiz();
+  const liveCourseId = course.id;
+  const liveQuizId = state.backendQuizId;
   const responses = state.quizResponses;
   const totalStudents = course.students;
   const percentage = totalStudents ? Math.round((responses / totalStudents) * 100) : 0;
@@ -1421,9 +1665,21 @@ function renderLiveQuiz() {
     </div>`;
   if (backendConfigured() && state.backendQuizId) {
     quizTimer = setTimeout(async () => {
-      if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
+      if (
+        state.route !== "quizzes" ||
+        state.userRole === "student" ||
+        !state.authenticated ||
+        selectedCourse()?.id !== liveCourseId ||
+        state.backendQuizCourseId !== liveCourseId ||
+        state.backendQuizId !== liveQuizId
+      ) return;
       try {
         const result = await apiRequest(`/api/quizzes/current?courseId=${encodeURIComponent(course.id)}`);
+        if (
+          selectedCourse()?.id !== liveCourseId ||
+          state.backendQuizCourseId !== liveCourseId ||
+          state.backendQuizId !== liveQuizId
+        ) return;
         const responseCount = result.quiz?.responses?.length || 0;
         if (responseCount !== state.quizResponses) {
           state.quizResponses = responseCount;
@@ -1434,7 +1690,13 @@ function renderLiveQuiz() {
     }, 3000);
   } else if (responses < 38) {
     quizTimer = setTimeout(() => {
-      if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
+      if (
+        state.route !== "quizzes" ||
+        state.userRole === "student" ||
+        !state.authenticated ||
+        selectedCourse()?.id !== liveCourseId ||
+        state.backendQuizCourseId !== liveCourseId
+      ) return;
       state.quizResponses = Math.min(38, state.quizResponses + Math.ceil(Math.random() * 3));
       persist(); renderLiveQuiz();
     }, 1800);
@@ -1445,11 +1707,33 @@ function renderClasses() {
   if (state.userRole === "student") return renderStudentClasses();
   if (state.userRole === "ta") return renderTAClasses();
   setHeader("My courses", "PROFESSOR WORKSPACE", false);
+  const course = selectedCourse();
   view.innerHTML = `
     <article class="card page-card">
       <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Create courses and share their private join codes. Rosters and files now have dedicated tabs.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
-      <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
-    </article>`;
+      <div class="course-grid">${course ? facultyCourseCard(course) : `<div class="empty-state"><div><p>No course created yet.</p></div></div>`}</div>
+    </article>
+    ${renderTeachingAssistantsSection()}`;
+}
+
+function renderTeachingAssistantsSection() {
+  const course = selectedCourse();
+  const assistants = (state.teachingAssistants || []).filter(
+    assistant => !course || assistant.courseId === course.id
+  );
+  if (!assistants.length) return "";
+  return `<article class="card page-card">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Teaching assistants</h2><p class="stat-label">TAs who have joined your accessible courses</p></div><span class="badge purple">${assistants.length} enrolled</span></div>
+    <div class="roster-scroll"><table class="roster-table">
+      <thead><tr><th>Course</th><th>Name</th><th>Email</th><th>Department</th></tr></thead>
+      <tbody>${assistants.map(assistant => `<tr>
+        <td class="roster-roll">${escapeHtml(assistant.courseCode)}</td>
+        <td>${escapeHtml(assistant.name)}</td>
+        <td><a href="mailto:${escapeHtml(assistant.email)}">${escapeHtml(assistant.email)}</a></td>
+        <td>${escapeHtml(assistant.department || "—")}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </article>`;
 }
 
 function facultyCourseCard(course) {
@@ -1507,7 +1791,6 @@ function renderCourseRoster(courseId) {
         </form>
         <div class="setup-actions" style="margin-top:16px">
           <button class="btn" data-action="choose-roster-upload">${icon("i-upload")} Upload roll list</button>
-          <button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button>
           <input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden />
         </div>
         <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Uploading a file replaces the whole list. Removing a student also withdraws their enrolment from this course. Students never receive this list.</span></div>
@@ -1558,18 +1841,35 @@ function materialCourseCard(course) {
 }
 
 function renderMaterials() {
-  if (materialsCourseId) return renderCourseMaterials(materialsCourseId);
+  const course = selectedCourse();
   const roleLabel = state.userRole === "faculty"
     ? "PROFESSOR WORKSPACE"
     : state.userRole === "ta"
       ? "TEACHING ASSISTANT WORKSPACE"
       : "STUDENT WORKSPACE";
-  setHeader("Materials", roleLabel, false);
-  view.innerHTML = `
-    <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Course materials</h2><p class="stat-label">Choose a course to ${state.userRole === "student" ? "view or download its shared files" : "upload, view, or download its shared files"}.</p></div><span class="badge purple">${state.courses.length} courses</span></div>
-      <div class="course-grid">${state.courses.map(materialCourseCard).join("") || `<div class="empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h3>No courses available</h3><p>Create or join a course before using materials.</p><button class="btn btn-primary" data-route-link="classes">Open Courses</button></div></div>`}</div>
-    </article>`;
+  if (!course) {
+    setHeader("Materials", roleLabel, false);
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h3>No course selected</h3><p>Create or join a course before using materials.</p><button class="btn btn-primary" data-route-link="classes">Open Courses</button></div></article>`;
+    return;
+  }
+  materialsCourseId = course.id;
+  if (!courseMaterials.has(course.id)) {
+    setHeader(`${course.name} materials`, `${course.courseCode} · COURSE FILES`, false);
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h3>Loading course materials</h3><p>Checking files shared with ${escapeHtml(course.courseCode)}.</p></div></article>`;
+    loadCourseMaterials(course.id)
+      .then(() => {
+        if (state.route === "materials" && selectedCourse()?.id === course.id) {
+          renderCourseMaterials(course.id);
+        }
+      })
+      .catch(error => {
+        if (state.route === "materials") {
+          view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h3>Materials unavailable</h3><p>${escapeHtml(error.message || "Could not load course materials")}</p></div></article>`;
+        }
+      });
+    return;
+  }
+  return renderCourseMaterials(course.id);
 }
 
 function renderCourseMaterials(courseId) {
@@ -1583,7 +1883,6 @@ function renderCourseMaterials(courseId) {
   const uploader = canUploadMaterials(course);
   setHeader(`${course.name} materials`, `${course.courseCode} · COURSE FILES`, false);
   view.innerHTML = `
-    <button class="back-btn" data-action="close-course-materials">${icon("i-back")} Back to materials</button>
     <article class="card page-card">
       <div class="section-head">
         <div><h2 style="margin:0 0 5px">Course materials</h2><p class="stat-label">Files here are private to this course's professor, teaching assistants, and enrolled students.</p></div>
@@ -1598,6 +1897,7 @@ function renderCourseMaterials(courseId) {
 
 function renderTAClasses() {
   setHeader("Courses you assist", "TEACHING ASSISTANT WORKSPACE", false);
+  const course = selectedCourse();
   view.innerHTML = `
     <div class="left-stack">
       <article class="card join-panel">
@@ -1606,9 +1906,10 @@ function renderTAClasses() {
         <form class="join-code" id="joinForm"><div class="join-code-field"><label for="taJoinCode">Private course code</label><input id="taJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
       </article>
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled TA courses</h2><p class="stat-label">You can manage rosters and materials, run attendance, and publish quizzes. Course creation and join codes remain with the professor.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
-        <div class="course-grid">${state.courses.map(taCourseCard).join("") || `<div class="empty-state"><div><p>No course joined yet.</p></div></div>`}</div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Selected TA course</h2><p class="stat-label">Use the course selector above to change rosters, materials, attendance, quizzes, and schedule together.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
+        <div class="course-grid">${course ? taCourseCard(course) : `<div class="empty-state"><div><p>No course joined yet.</p></div></div>`}</div>
       </article>
+      ${renderTeachingAssistantsSection()}
     </div>`;
 }
 
@@ -1622,7 +1923,8 @@ function taCourseCard(course) {
 
 function renderStudentClasses() {
   setHeader("Join a course", "STUDENT WORKSPACE", false);
-  const enrolled = state.courses.filter(course => state.enrolledCourses.includes(course.id));
+  const course = selectedCourse();
+  const enrolled = course && state.enrolledCourses.includes(course.id) ? [course] : [];
   view.innerHTML = `
     <div class="left-stack">
     <article class="card join-panel">
@@ -1634,6 +1936,7 @@ function renderStudentClasses() {
       </form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
     </article>
+    ${renderTeachingAssistantsSection()}
     </div>`;
 }
 
@@ -1656,10 +1959,109 @@ function openCourseModal() {
   setTimeout(() => document.querySelector("#courseName")?.focus(), 0);
 }
 
+function openScheduleTopicsModal(index) {
+  const course = selectedCourse();
+  const entries = state.backendSchedule.filter(item => item.courseId === course?.id);
+  const scheduleClass = entries[index];
+  if (!course || !canManageSchedule(course) || !scheduleClass) {
+    return toast("That class could not be opened", "error");
+  }
+  editingScheduleIndex = index;
+  modalReturnFocus = document.activeElement;
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <form class="modal" id="editClassTopicsForm" role="dialog" aria-modal="true" aria-labelledby="scheduleTopicsTitle">
+        <div class="modal-head"><div><h2 id="scheduleTopicsTitle">Class topics</h2><p>${escapeHtml(scheduleClass.day)} · ${escapeHtml(scheduleClass.start)} · ${escapeHtml(course.courseCode)}</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+        <div class="field-grid">
+          <div class="field full"><label for="editClassTopic">Main class topic</label><input class="text-input" id="editClassTopic" name="topic" maxlength="120" value="${escapeHtml(scheduleClass.topic || course.name)}" required /></div>
+          <div class="field full"><label for="editClassSubtopics">Break into sub-classes / topic items</label><textarea class="text-input" id="editClassSubtopics" name="subtopics" rows="7" placeholder="One item per line">${escapeHtml((scheduleClass.subtopics || []).join("\n"))}</textarea><span class="stat-label">Add up to 20 items, one per line. They appear in Today's classes and the full week.</span></div>
+        </div>
+        <div class="setup-actions"><button type="button" class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="submit">${icon("i-check")} Save topics</button></div>
+      </form>
+    </div>`;
+  setTimeout(() => document.querySelector("#editClassTopic")?.focus(), 0);
+}
+
+function reminderScheduleEntries() {
+  const accessibleCourseIds = new Set(state.courses.map(course => course.id));
+  const scopedImported = state.importedSchedule.filter(
+    event => event.courseId && accessibleCourseIds.has(event.courseId)
+  );
+  const useImported = state.userRole === "student" && scopedImported.length > 0;
+  const importedCourseIds = new Set(
+    scopedImported.map(event => event.courseId)
+  );
+  const source = useImported
+    ? [
+        ...state.backendSchedule.filter(event => !importedCourseIds.has(event.courseId)),
+        ...scopedImported,
+      ]
+    : state.backendSchedule;
+  const courses = new Map(state.courses.map(course => [course.id, course]));
+  return source.map((event, index) => {
+    const course = courses.get(event.courseId) || null;
+    return {
+      ...event,
+      id: event.id || `${useImported ? "imported" : "schedule"}-${index + 1}`,
+      courseCode: course?.courseCode || event.courseCode || event.topic || "Class",
+      courseName: course?.name || event.courseName || event.topic || "Scheduled class",
+      room: event.room || course?.room || "Room TBA",
+    };
+  });
+}
+
+async function syncClassReminders() {
+  if (!state.authenticated || !state.authEmail || !reminderManager) return null;
+  return reminderManager.reconcile({
+    accountEmail: state.authEmail,
+    events: reminderScheduleEntries(),
+  });
+}
+
+function openReminderModal() {
+  modalReturnFocus = document.activeElement;
+  const settings = reminderManager?.getSettings?.(state.authEmail) || {
+    enabled: false,
+    leadMinutes: 15,
+  };
+  const entries = reminderScheduleEntries();
+  const supported = Boolean(reminderManager?.supported);
+  const submitDisabled = !supported || !entries.length;
+  document.querySelector("#modalRoot").innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <form class="modal" id="reminderForm" role="dialog" aria-modal="true" aria-labelledby="reminderModalTitle" aria-describedby="reminderModalDescription">
+        <div class="modal-head"><div><h2 id="reminderModalTitle">${icon("i-bell")} Class reminders</h2><p id="reminderModalDescription">Get an alert on this phone before every scheduled class.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+        <div class="reminder-summary">
+          <span class="reminder-bell">${icon("i-bell")}</span>
+          <div><strong>${entries.length} weekly ${entries.length === 1 ? "class" : "classes"} found</strong><p>${settings.enabled ? `Reminders are on · ${settings.leadMinutes} minutes before class` : "Reminders are currently off"}</p></div>
+        </div>
+        <div class="field" style="margin-top:18px">
+          <label for="reminderLead">Remind me before class</label>
+          <select id="reminderLead" name="leadMinutes" ${submitDisabled ? "disabled" : ""}>
+            ${[5, 10, 15, 30, 60].map(minutes => `<option value="${minutes}" ${settings.leadMinutes === minutes ? "selected" : ""}>${minutes === 60 ? "1 hour" : `${minutes} minutes`} before</option>`).join("")}
+          </select>
+        </div>
+        ${supported
+          ? entries.length
+            ? `<div class="security-note"><span class="lock">${icon("i-bell")}</span><span>CampusPulse schedules these alerts on this Android phone. No SMS, email service, or internet connection is needed when an alert fires.</span></div>`
+            : `<div class="security-note"><span class="lock">${icon("i-calendar")}</span><span>Add or import a weekly timetable before enabling reminders.</span></div>`
+          : `<div class="security-note"><span class="lock">${icon("i-download")}</span><span>Phone reminders need the latest CampusPulse Android APK. This browser cannot reliably alert you while it is closed.</span></div>`}
+        <div class="setup-actions">
+          <button type="button" class="btn" data-action="close-modal">Cancel</button>
+          ${!entries.length ? `<button type="button" class="btn btn-soft" data-action="open-reminder-schedule">${icon("i-calendar")} Open schedule</button>` : ""}
+          ${settings.enabled ? `<button type="button" class="btn btn-danger" data-action="disable-class-reminders">Turn off</button>` : ""}
+          <button class="btn btn-primary" type="submit" ${submitDisabled ? "disabled" : ""}>${icon("i-bell")} ${settings.enabled ? "Update reminders" : "Enable reminders"}</button>
+        </div>
+      </form>
+    </div>`;
+  setTimeout(() => document.querySelector("#reminderLead:not([disabled])")?.focus(), 0);
+}
+
 function closeModal() {
   document.querySelector("#modalRoot").innerHTML = "";
   modalReturnFocus?.focus?.();
   modalReturnFocus = null;
+  editingScheduleIndex = -1;
 }
 
 function renderPlaceholder(route) {
@@ -1678,8 +2080,18 @@ function renderStudents() {
   if (state.userRole === "student") return navigate("dashboard");
   if (managedCourseId) return renderCourseRoster(managedCourseId);
   setHeader("Students", state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE", false);
-  const enrolled = enrolledStudents;
+  const course = selectedCourse();
+  const visibleCourses = course ? [course] : [];
+  const enrolled = enrolledStudents.filter(
+    student => !course || student.courseId === course.id
+  );
   const byCourse = new Map();
+  const officialRosterCourses = visibleCourses.filter(
+    course => course.rosterSource === "owner-upload"
+  );
+  const pendingRosterCourses = visibleCourses.filter(
+    course => canManageRoster(course) && course.rosterSource !== "owner-upload"
+  );
   for (const student of enrolled) {
     if (!byCourse.has(student.courseId)) byCourse.set(student.courseId, []);
     byCourse.get(student.courseId).push(student);
@@ -1688,17 +2100,21 @@ function renderStudents() {
     <div class="page-grid roster-grid">
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled students</h2><p class="stat-label">Accounts that joined this course using their registered roll number</p></div><div class="setup-actions"><span class="badge ${enrolled.length ? "green" : "amber"}">${enrolled.length} enrolled</span><button class="btn" type="button" data-action="export-enrolled" ${enrolled.length ? "" : "disabled"}>${icon("i-download")} Excel</button></div></div>
+        ${pendingRosterCourses.length ? `<div class="setup-actions roster-upload-actions">
+          ${pendingRosterCourses.map(course => `<button class="btn btn-soft" type="button" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload ${escapeHtml(course.courseCode)} roll list</button>`).join("")}
+        </div>` : ""}
         ${enrolled.length ? [...byCourse.entries()].map(([courseId, students]) => {
           const course = state.courses.find(item => item.id === courseId);
           return `<div style="margin-top:18px">
             <div class="section-head"><h3>${escapeHtml(course ? `${course.courseCode} · ${course.name}` : courseId)}</h3><span class="badge purple">${students.length}</span></div>
             <div class="roster-scroll">
               <table class="roster-table">
-                <thead><tr><th>Roll No</th><th>Name</th><th>Email</th><th>Phone</th><th>Hall</th></tr></thead>
+                <thead><tr><th>Roll No</th><th>Name</th><th>Email</th><th>Department</th><th>Phone</th><th>Hall</th></tr></thead>
                 <tbody>${students.map(student => `<tr>
                   <td class="roster-roll">${escapeHtml(student.rollNumber || "—")}</td>
                   <td>${escapeHtml(student.name)}</td>
                   <td>${escapeHtml(student.email)}</td>
+                  <td>${escapeHtml(student.department || "—")}</td>
                   <td>${escapeHtml(student.phone || "—")}</td>
                   <td>${escapeHtml(student.hall || "—")}</td>
                 </tr>`).join("")}</tbody>
@@ -1707,13 +2123,15 @@ function renderStudents() {
           </div>`;
         }).join("") : `<p class="stat-label" style="padding:14px 2px">Nobody has joined yet. Share a course join code — students enter it with their roll number.</p>`}
       </article>
-      <aside class="card page-card">
+      ${officialRosterCourses.length ? `<aside class="card page-card">
         <div class="section-head"><h3>Official rosters</h3></div>
         <div class="summary-list">
-          ${state.courses.map(course => `<div class="summary-item"><span>${escapeHtml(course.courseCode)} · ${(byCourse.get(course.id) || []).length} enrolled of ${Number(course.students) || 0}</span><button class="text-btn" type="button" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${canManageRoster(course) ? "Manage roster" : "View roster"}</button></div>`).join("") || `<div class="summary-item"><span>No courses yet</span><strong>—</strong></div>`}
+          ${officialRosterCourses.map(course => `<div class="summary-item"><span>${escapeHtml(course.courseCode)} · ${(byCourse.get(course.id) || []).length} enrolled of ${Number(course.students) || 0}</span></div>`).join("")}
         </div>
-        <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Professors and assigned TAs manage the official roll list here. The enrolled table shows who has created an account and joined.</span></div>
-      </aside>
+        <div class="security-note official-roster-actions" style="margin-top:16px">
+          ${officialRosterCourses.map(course => `<button class="btn btn-soft" type="button" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-users")} ${canManageRoster(course) ? "Manage roster" : "View roster"}${officialRosterCourses.length > 1 ? ` · ${escapeHtml(course.courseCode)}` : ""}</button>`).join("")}
+        </div>
+      </aside>` : ""}
     </div>`;
 }
 
@@ -2356,6 +2774,20 @@ document.addEventListener("click", async event => {
     return;
   }
 
+  if (action === "open-reminder-schedule") {
+    closeModal();
+    return navigate("schedule");
+  }
+  if (action === "disable-class-reminders") {
+    try {
+      await reminderManager?.disable(state.authEmail);
+      closeModal();
+      return toast("Class reminders turned off on this phone");
+    } catch (error) {
+      return toast(error.message || "Could not turn off class reminders", "error");
+    }
+  }
+
   if (action === "open-course-modal") {
     if (state.userRole !== "faculty") return toast("Only professors can create courses", "error");
     openCourseModal();
@@ -2371,6 +2803,7 @@ document.addEventListener("click", async event => {
     if (!courseCapabilities(course).canViewAttendanceRoster) {
       return toast("Course roster access required", "error");
     }
+    await switchCourseContext(courseId, { renderView: false, notify: false });
     try {
       await loadCourseRoster(courseId);
     } catch (error) {
@@ -2391,6 +2824,7 @@ document.addEventListener("click", async event => {
     if (!state.courses.some(course => course.id === courseId)) {
       return toast("Course not found", "error");
     }
+    await switchCourseContext(courseId, { renderView: false, notify: false });
     try {
       await loadCourseMaterials(courseId, { force: true });
     } catch (error) {
@@ -2404,7 +2838,7 @@ document.addEventListener("click", async event => {
     return renderMaterials();
   }
   if (action === "close-course-materials") {
-    materialsCourseId = "";
+    materialsCourseId = selectedCourse()?.id || "";
     return renderMaterials();
   }
   if (action === "choose-material-upload") {
@@ -2475,7 +2909,7 @@ document.addEventListener("click", async event => {
   if (action === "open-course-quiz") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
     try {
-      await selectQuizCourse(courseId);
+      await switchCourseContext(courseId, { renderView: false, notify: false });
     } catch (error) {
       return toast(error.message || "Could not open course quizzes", "error");
     }
@@ -2486,7 +2920,7 @@ document.addEventListener("click", async event => {
     const course = state.courses.find(item => item.id === courseId);
     if (!canRunAttendance(course)) return toast("Course-team attendance access required", "error");
     try {
-      await selectAttendanceCourse(courseId);
+      await switchCourseContext(courseId, { renderView: false, notify: false });
     } catch (error) {
       return toast(error.message || "Could not open course attendance", "error");
     }
@@ -2498,7 +2932,7 @@ document.addEventListener("click", async event => {
     const course = state.courses.find(item => item.id === courseId);
     if (!canRunAttendance(course)) return toast("Course-team attendance access required", "error");
     try {
-      await selectAttendanceCourse(courseId);
+      await switchCourseContext(courseId, { renderView: false, notify: false });
     } catch (error) {
       return toast(error.message || "Could not open course attendance", "error");
     }
@@ -2581,6 +3015,7 @@ document.addEventListener("click", async event => {
       "Delete your CampusPulse account, enrollment, and quiz response data? Official rosters and teaching-team-recorded attendance remain course records. This cannot be undone."
     );
     if (!confirmed) return;
+    const deletingEmail = state.authEmail;
     try {
       if (backendConfigured() && apiToken) {
         await apiRequest("/api/account", { method: "DELETE" });
@@ -2589,6 +3024,7 @@ document.addEventListener("click", async event => {
           (account) => account.email !== state.authEmail
         );
       }
+      await reminderManager?.disable(deletingEmail, { forget: true }).catch(() => {});
       apiToken = "";
       localStorage.removeItem("campusPulseApiToken");
       clearSensitiveClientState({ clearImportedSchedule: true });
@@ -2606,10 +3042,18 @@ document.addEventListener("click", async event => {
   }
   if (action === "import-schedule") document.querySelector("#scheduleFile")?.click();
   if (action === "clear-imported-schedule") {
-    state.importedSchedule = [];
+    const course = selectedCourse();
+    state.importedSchedule = state.importedSchedule.filter(
+      item => !course || (
+        Boolean(item.courseId) &&
+        item.courseId !== course.id &&
+        !scheduleBelongsToCourse(item, course)
+      )
+    );
     persist();
+    await syncClassReminders();
     renderSchedule();
-    toast("Imported timetable cleared");
+    toast(`Imported ${course?.courseCode || "course"} timetable cleared`);
   }
   if (action === "calendar-today") {
     document.querySelector(".calendar-scroll")?.scrollTo({ left: 220, behavior: "smooth" });
@@ -2617,6 +3061,7 @@ document.addEventListener("click", async event => {
   }
   if (action === "logout") {
     clearTimeout(quizTimer);
+    await reminderManager?.suspend(state.authEmail).catch(() => {});
     if (backendConfigured() && apiToken) {
       try { await apiRequest("/api/auth/logout", { method: "POST" }); } catch {}
       apiToken = "";
@@ -2634,29 +3079,38 @@ document.addEventListener("click", async event => {
     renderLogin(state.userRole);
   }
   if (action === "export-enrolled") {
-    if (!enrolledStudents.length) return toast("Nobody has joined yet", "error");
+    const course = selectedCourse();
+    const exportStudents = enrolledStudents.filter(
+      student => course && student.courseId === course.id
+    );
+    if (!exportStudents.length) return toast("Nobody has joined this course yet", "error");
     const stamp = new Date().toISOString().slice(0, 10);
     downloadXlsx(
-      `CampusPulse-enrolled-${stamp}.xlsx`,
-      ["Name", "Roll No", "Email", "Phone No", "Hall of Residence", "Course"],
-      enrolledStudents.map(student => [
+      `CampusPulse-${course.courseCode}-enrolled-${stamp}.xlsx`,
+      ["Name", "Roll No", "Email", "Department", "Phone No", "Hall of Residence", "Course"],
+      exportStudents.map(student => [
         student.name,
         student.rollNumber || "",
         student.email,
+        student.department || "",
         student.phone || "",
         student.hall || "",
         student.courseCode
       ])
     );
-    return toast(`${enrolledStudents.length} enrolled students exported`);
+    return toast(`${exportStudents.length} ${course.courseCode} students exported`);
   }
   if (action === "choose-timetable-upload") {
     return document.querySelector("#timetableFile")?.click();
   }
+  if (action === "edit-class-topics") {
+    const index = Number(event.target.closest("[data-index]")?.dataset.index);
+    return openScheduleTopicsModal(index);
+  }
   if (action === "remove-schedule-class") {
     const course = selectedCourse();
-    if (!course || !canManageCourse(course)) {
-      return toast("Only the course owner can change this timetable", "error");
+    if (!course || !canManageSchedule(course)) {
+      return toast("Course-team timetable access required", "error");
     }
     const index = Number(event.target.closest("[data-index]")?.dataset.index);
     const remaining = state.backendSchedule
@@ -2806,27 +3260,15 @@ document.addEventListener("change", async event => {
     }
   }
   if (event.target.id === "quizCourseSelect") {
-    try {
-      await selectQuizCourse(event.target.value);
-    } catch (error) {
-      return toast(error.message || "Could not switch quiz course", "error");
-    }
-    persist();
-    return renderQuiz();
+    return switchCourseContext(event.target.value);
   }
   if (event.target.id === "attendanceCourseSelect") {
-    try {
-      await selectAttendanceCourse(event.target.value);
-    } catch (error) {
-      return toast(error.message || "Could not switch course attendance", "error");
-    }
-    persist();
-    return renderAttendance();
+    return switchCourseContext(event.target.value);
   }
   if (event.target.id === "timetableFile") {
     const file = event.target.files?.[0];
     const course = selectedCourse();
-    if (!file || !course || !canManageCourse(course)) return;
+    if (!file || !course || !canManageSchedule(course)) return;
     try {
       const classes = await readTimetableFile(file);
       const preview = classes
@@ -2883,10 +3325,21 @@ ${preview}`)) return;
     const text = await file.text();
     const parsed = file.name.toLowerCase().endsWith(".ics") ? parseScheduleICS(text) : parseScheduleCSV(text);
     if (!parsed.length) throw new Error("No timetable entries found");
-    state.importedSchedule = parsed.slice(0, 30);
+    const course = selectedCourse();
+    const importedEntries = parsed.slice(0, 30).map(item => ({
+      ...item,
+      courseId: course?.id || "",
+      courseCode: course?.courseCode || item.courseCode || "",
+      courseName: course?.name || item.courseName || "",
+    }));
+    state.importedSchedule = [
+      ...state.importedSchedule.filter(item => item.courseId !== course?.id),
+      ...importedEntries,
+    ];
     persist();
+    await syncClassReminders();
     renderSchedule();
-    toast(`${state.importedSchedule.length} timetable entries imported`);
+    toast(`${importedEntries.length} ${course?.courseCode || "course"} timetable entries imported`);
   } catch (error) {
     toast(error.message || "Could not read that timetable file");
   }
@@ -2900,29 +3353,59 @@ document.addEventListener("input", event => {
   });
 });
 
-quickAction.addEventListener("click", async () => {
-  if (state.route === "dashboard") {
-    const course = selectedCourse() || state.courses.find(canRunAttendance);
-    if (!course || !canRunAttendance(course)) return toast("Join or create a course first", "error");
-    try {
-      await selectAttendanceCourse(course.id);
-    } catch (error) {
-      return toast(error.message || "Could not open course attendance", "error");
-    }
+quickAction.addEventListener("click", openReminderModal);
+courseSwitcher?.addEventListener("change", async event => {
+  courseSwitcher.disabled = true;
+  try {
+    await switchCourseContext(event.target.value);
+  } catch (error) {
+    toast(error.message || "Could not switch courses", "error");
+  } finally {
+    courseSwitcher.disabled = false;
+    syncCourseSwitcher();
   }
-  navigate("attendance");
 });
 
 document.addEventListener("submit", async event => {
   event.preventDefault();
+  if (event.target.id === "reminderForm") {
+    const data = new FormData(event.target);
+    try {
+      const result = await reminderManager.enable({
+        accountEmail: state.authEmail,
+        events: reminderScheduleEntries(),
+        leadMinutes: Number(data.get("leadMinutes")),
+      });
+      closeModal();
+      let exactAlarm = result.exactAlarm;
+      if (
+        exactAlarm !== "granted" &&
+        reminderManager.requestExactTiming &&
+        window.confirm("For reminders at the exact selected minute, allow CampusPulse to use Alarms & reminders in Android settings?")
+      ) {
+        exactAlarm = await reminderManager.requestExactTiming();
+        await syncClassReminders();
+      }
+      const timingNote = exactAlarm === "granted"
+        ? ""
+        : " Android may deliver them a few minutes around the selected time.";
+      return toast(
+        `${result.scheduled} weekly class ${result.scheduled === 1 ? "reminder" : "reminders"} enabled.${timingNote}`,
+      );
+    } catch (error) {
+      return toast(error.message || "Could not enable class reminders", "error");
+    }
+  }
   if (event.target.id === "signupForm") {
     const data = Object.fromEntries(new FormData(event.target));
     const email = String(data.email || "").trim().toLowerCase();
     const name = String(data.name || "").trim().replace(/\s+/g, " ");
+    const department = String(data.department || "").trim().replace(/\s+/g, " ");
     if (!backendConfigured()) {
       return toast("Connect CampusPulse to its API before creating an account", "error");
     }
     if (name.length < 2) return toast("Enter your full name", "error");
+    if (department.length < 2) return toast("Enter your department name", "error");
     if (!isCampusEmail(email)) return toast("Use a valid IIT KGP institutional email", "error");
     if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
@@ -2933,6 +3416,7 @@ document.addEventListener("submit", async event => {
         body: {
           role: data.role,
           name,
+          department,
           email,
           password: data.password,
           phone: String(data.phone || "").trim(),
@@ -3013,7 +3497,10 @@ document.addEventListener("submit", async event => {
         }
       });
       await syncBackendState();
-      state.selectedCourseId = result.course.id;
+      await switchCourseContext(result.course.id, {
+        renderView: false,
+        notify: false,
+      });
     } catch (error) {
       return toast(error.message || "Could not create the course", "error");
     }
@@ -3024,21 +3511,63 @@ document.addEventListener("submit", async event => {
   }
   if (event.target.id === "addClassForm") {
     const course = selectedCourse();
-    if (!course || !canManageCourse(course)) {
-      return toast("Only the course owner can change this timetable", "error");
+    if (!course || !canManageSchedule(course)) {
+      return toast("Course-team timetable access required", "error");
     }
     const data = new FormData(event.target);
     const existing = state.backendSchedule
       .filter(item => item.courseId === course.id)
-      .map(({ day, start, end, topic, room }) => ({ day, start, end, topic, room }));
+      .map(({ id, day, start, end, topic, room, subtopics }) => ({
+        id,
+        day,
+        start,
+        end,
+        topic,
+        room,
+        subtopics: Array.isArray(subtopics) ? subtopics : [],
+      }));
     existing.push({
       day: String(data.get("day") || ""),
       start: String(data.get("start") || "").trim(),
       end: String(data.get("end") || "").trim(),
       topic: String(data.get("topic") || "").trim() || course.courseCode,
-      room: String(data.get("room") || "").trim() || course.room || ""
+      room: String(data.get("room") || "").trim() || course.room || "",
+      subtopics: String(data.get("subtopics") || "")
+        .split(/\r?\n/)
+        .map(item => item.trim())
+        .filter(Boolean),
     });
     return saveCourseSchedule(course, existing, "Class added to the timetable");
+  }
+  if (event.target.id === "editClassTopicsForm") {
+    const course = selectedCourse();
+    const index = editingScheduleIndex;
+    if (!course || !canManageSchedule(course) || index < 0) {
+      return toast("Course-team topic access required", "error");
+    }
+    const data = new FormData(event.target);
+    const entries = state.backendSchedule
+      .filter(item => item.courseId === course.id)
+      .map(({ id, day, start, end, topic, room, subtopics }) => ({
+        id,
+        day,
+        start,
+        end,
+        topic,
+        room,
+        subtopics: Array.isArray(subtopics) ? subtopics : [],
+      }));
+    if (!entries[index]) return toast("That class no longer exists", "error");
+    entries[index] = {
+      ...entries[index],
+      topic: String(data.get("topic") || "").trim() || course.name,
+      subtopics: String(data.get("subtopics") || "")
+        .split(/\r?\n/)
+        .map(item => item.trim())
+        .filter(Boolean),
+    };
+    closeModal();
+    return saveCourseSchedule(course, entries, "Class topics updated");
   }
   if (event.target.id === "addStudentForm") {
     const course = state.courses.find(item => item.id === managedCourseId);
@@ -3124,7 +3653,10 @@ document.addEventListener("submit", async event => {
         body: { code }
       });
       await syncBackendState();
-      state.selectedCourseId = result.course.id;
+      await switchCourseContext(result.course.id, {
+        renderView: false,
+        notify: false,
+      });
       persist();
       renderClasses();
       return toast(`You joined ${result.course.name}`);
@@ -3158,6 +3690,13 @@ document.addEventListener("submit", async event => {
     toast("Quiz response saved on this device");
   }
 });
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    syncClassReminders().catch(() => {});
+  }
+});
+
 persist();
 if (backendConfigured() && apiToken) {
   restoreBackendSession().then((restored) => {

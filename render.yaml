@@ -26,6 +26,8 @@ services:
         sync: false
       - key: TA_SIGNUP_CODE
         sync: false
+      - key: PROFESSOR_PROFILE_OVERRIDES_JSON
+        sync: false
 
 databases:
   - name: campuspulse-db

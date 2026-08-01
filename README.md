@@ -4,16 +4,17 @@ CampusPulse is a classroom operations app inspired by Acadly. This rollout conta
 
 ## Included
 
-- Sign-up-first authentication with IIT KGP email validation and six-digit verification
+- Password sign-up and login with IIT KGP email validation and a required department
 - Password hashing, bearer sessions, and role-based API authorization
 - TA and student enrollment with course-specific private join codes
-- A shared weekly schedule for professors, TAs, and students
-- Professor-owned courses with owner-only course and roster management
+- A selected-course switcher that changes the full workspace together
+- A shared weekly agenda with previous days, class topics, and sub-class breakdowns
+- Professor-owned courses with professor/TA roster, schedule, and material management
 - Attendance marking by the owning professor or an enrolled TA
 - Quiz publishing by the owning professor/enrolled TAs and one-response student submissions
 - Browser-local student CSV/ICS timetable import
 - Persistent JSON storage locally and PostgreSQL storage in cloud deployments
-- Capacitor Android project and automated APK build
+- Capacitor Android project, native class reminders, and automated APK builds
 
 ## Run the complete app locally
 
@@ -26,7 +27,7 @@ $env:COURSE_OWNER_EMAILS_JSON='{"soft401":"professor@iitkgp.ac.in","kbs60353":"p
 npm.cmd start
 ```
 
-Open `http://127.0.0.1:8787`. Email verification requires SMTP or Resend. A development code is returned by the API only when `ALLOW_DEV_VERIFICATION_CODE=true` outside production; the web app never displays it.
+Open `http://127.0.0.1:8787`. Password sign-up works without OTP. SMTP or Resend is optional and is used only by the legacy verification and password-recovery routes.
 
 Run the backend test:
 
@@ -41,7 +42,7 @@ The repository includes `render.yaml`, which creates a Node web service and Post
 
 [Deploy CampusPulse to Render](https://render.com/deploy?repo=https://github.com/ayushdebnath012/CampusPulse)
 
-During deployment, configure these required Render environment variables for email delivery:
+During deployment, configure the private invitation variables. Email variables are optional while password recovery is not being used:
 
 - `RESEND_API_KEY`
 - `EMAIL_FROM`, such as `CampusPulse <noreply@your-verified-domain.example>`
@@ -49,6 +50,7 @@ During deployment, configure these required Render environment variables for ema
 - `TA_SIGNUP_CODE`, a private administrator code used to provision trusted TA accounts
 - `COURSE_OWNER_EMAILS_JSON`, mapping each existing course ID/code to its professor's verified email
 - `COURSE_JOIN_CODES_JSON`, private enrollment codes for the existing courses
+- `PROFESSOR_PROFILE_OVERRIDES_JSON`, a private mapping of professor emails to database-only phone/department corrections
 
 For example:
 
@@ -56,9 +58,9 @@ For example:
 {"soft401":"professor@iitkgp.ac.in","kbs60353":"professor@iitkgp.ac.in"}
 ```
 
-Existing seeded courses are fail-closed until their owner email mapping resolves to a verified professor account. Newly created courses are automatically exclusive to the professor who creates them. TAs and students see a course only after joining it with the professor-shared code. Enrolled TAs can run attendance and publish quizzes; only the owner can create courses, replace rosters, or see join codes.
+Existing seeded courses are fail-closed until their owner email mapping resolves to a verified professor account. Newly created courses are automatically exclusive to the professor who creates them. TAs and students see a course only after joining it with the professor-shared code. Enrolled TAs can manage rosters, schedules, topics, materials, attendance, and quizzes. Only the professor owner can create courses, remove materials, or see join codes.
 
-Production keeps `ALLOW_DEV_VERIFICATION_CODE=false`; signup returns a temporary-unavailable error instead of exposing a code when email delivery is not configured. Render's free PostgreSQL database is suitable for a prototype but expires after 30 days; select a paid database for long-term records.
+Production keeps `ALLOW_DEV_VERIFICATION_CODE=false`; direct password sign-up does not depend on email delivery. Render's free PostgreSQL database is suitable for a prototype but may have retention limits; select an appropriate paid database for long-term records.
 
 On the GitHub Pages app or in the APK, open **Settings**, enter the deployed HTTPS API URL, save, and sign up.
 
@@ -87,7 +89,7 @@ The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk
 
 Android builds include a local fallback copy of the app and the Capacitor updater. Every push to `main` packages `public/` as a versioned ZIP, publishes it through GitHub Pages, and writes a SHA-256 protected update manifest. Installed Android copies check that manifest on launch, download a newer web bundle in the background, and apply it after the app is restarted or backgrounded. The update status and a **Restart and update** action are available in **Settings**.
 
-Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. An already-installed APK from before version 1.2.0 must be replaced once before it has the updater.
+Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.3.0 once to add native class reminders; later web-only changes can again arrive through the in-app updater.
 
 ### Keep Android upgrades installable
 
