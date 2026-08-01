@@ -667,6 +667,77 @@ test("signup creates and signs in an account without email delivery or OTP", asy
   assert.equal(session.body.user.email, "password-only@kgpian.iitkgp.ac.in");
 });
 
+test("first professor automatically owns courses and receives working join codes", async (t) => {
+  const testServer = await createTestServer({
+    env: {
+      NODE_ENV: "production",
+      FACULTY_SIGNUP_CODE: "",
+      COURSE_OWNER_EMAILS_JSON: "",
+      COURSE_JOIN_CODES_JSON: "",
+    },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      name: "Automatic Professor",
+      email: "automatic-professor@iitkgp.ac.in",
+      password: "professor-password",
+    },
+  });
+  assert.equal(professor.response.status, 201);
+
+  const professorCourses = await request(testServer.baseUrl, "/api/courses", {
+    token: professor.body.token,
+  });
+  assert.equal(professorCourses.response.status, 200);
+  assert.equal(professorCourses.body.courses.length, 2);
+  const softCourse = professorCourses.body.courses.find(
+    (course) => course.id === "soft401",
+  );
+  assert.match(softCourse.code, /^[A-Z0-9]{8}$/);
+
+  const student = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "student",
+      name: "Automatic Student",
+      email: "automatic-student@kgpian.iitkgp.ac.in",
+      password: "student-password",
+    },
+  });
+  assert.equal(student.response.status, 201);
+
+  const joined = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.body.token,
+    body: { code: softCourse.code },
+  });
+  assert.equal(joined.response.status, 201);
+  assert.equal(joined.body.course.id, "soft401");
+
+  const professorLogin = await request(testServer.baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      email: "automatic-professor@iitkgp.ac.in",
+      password: "professor-password",
+    },
+  });
+  const coursesAfterLogin = await request(testServer.baseUrl, "/api/courses", {
+    token: professorLogin.body.token,
+  });
+  assert.equal(
+    coursesAfterLogin.body.courses.find((course) => course.id === "soft401").code,
+    softCourse.code,
+  );
+});
+
 test("production stays healthy and usable when course env vars are unset", async (t) => {
   const testServer = await createTestServer({
     env: {
@@ -686,7 +757,7 @@ test("production stays healthy and usable when course env vars are unset", async
   const health = await request(testServer.baseUrl, "/api/health");
   assert.equal(health.response.status, 200);
   assert.equal(health.body.ok, true);
-  assert.ok(health.body.configurationWarnings.includes("COURSE_JOIN_CODES_JSON"));
+  assert.deepEqual(health.body.lockedCourses, ["soft401", "kbs60353"]);
 
   const created = await request(testServer.baseUrl, "/api/auth/signup", {
     method: "POST",
@@ -743,7 +814,7 @@ test("production signup sends the verification code through the configured maile
   assert.match(sentMessage.code, /^\d{6}$/);
 });
 
-test("faculty and TA signup require administrator invitation codes", async (t) => {
+test("configured faculty and TA signup require administrator invitation codes", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
     await testServer.close();

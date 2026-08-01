@@ -24,13 +24,7 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
-      - key: FACULTY_SIGNUP_CODE
-        sync: false
       - key: TA_SIGNUP_CODE
-        sync: false
-      - key: COURSE_OWNER_EMAILS_JSON
-        sync: false
-      - key: COURSE_JOIN_CODES_JSON
         sync: false
       - key: COURSE_ROSTERS_JSON_BASE64
         sync: false

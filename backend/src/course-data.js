@@ -108,6 +108,7 @@ function buildCourseData(env = process.env) {
     courses.push({
       id: config.id,
       code: joinCode,
+      joinCodeConfigured: Boolean(configuredCode),
       name: config.name,
       courseCode: config.courseCode,
       section: config.section,

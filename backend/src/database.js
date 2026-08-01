@@ -69,6 +69,15 @@ function normalizeData(value, env = process.env) {
     ...defaults.courses.map((course) => {
       const existing = existingCourses.get(course.id);
       const merged = { ...existing, ...course };
+      if (
+        !course.joinCodeConfigured &&
+        existing?.ownerId &&
+        existing?.code &&
+        !String(existing.code).startsWith("LOCKED-")
+      ) {
+        merged.code = existing.code;
+        merged.joinCodeConfigured = true;
+      }
       return existing?.rosterSource === "owner-upload"
         ? { ...merged, students: existing.students }
         : merged;

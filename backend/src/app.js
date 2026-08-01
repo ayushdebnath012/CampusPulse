@@ -24,6 +24,10 @@ function isCampusEmail(email) {
   return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
 }
 
+function isFacultyEmail(email) {
+  return cleanEmail(email).split("@")[1] === "iitkgp.ac.in";
+}
+
 function publicUser(user) {
   return {
     id: user.id,
@@ -112,7 +116,12 @@ function publicCourse(database, user, course) {
   const assistant =
     hasValidCourseOwner(database, course) &&
     isEnrolledAssistant(database, user, course.id);
-  const { ownerId: _ownerId, code, ...metadata } = course;
+  const {
+    ownerId: _ownerId,
+    code,
+    joinCodeConfigured: _joinCodeConfigured,
+    ...metadata
+  } = course;
   return {
     ...metadata,
     ...(owner ? { code } : {}),
@@ -155,6 +164,21 @@ function createJoinCode(database) {
     code = randomToken().replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase();
   } while (!code || database.courses.some((course) => course.code === code));
   return code;
+}
+
+function claimUnownedCourses(database, user) {
+  if (user.role !== "faculty") return [];
+  const claimed = [];
+  for (const course of database.courses) {
+    if (hasValidCourseOwner(database, course)) continue;
+    course.ownerId = user.id;
+    if (!course.code || String(course.code).startsWith("LOCKED-")) {
+      course.code = createJoinCode(database);
+      course.joinCodeConfigured = true;
+    }
+    claimed.push(course.id);
+  }
+  return claimed;
 }
 
 function normalizeRosterUpload(students, courseId) {
@@ -239,6 +263,9 @@ function createApp(options = {}) {
   const allowDevVerificationCode =
     String(env.NODE_ENV || "").toLowerCase() !== "production" &&
     String(env.ALLOW_DEV_VERIFICATION_CODE || "").toLowerCase() === "true";
+  const automaticallyAssignFacultyCourses = !String(
+    env.COURSE_OWNER_EMAILS_JSON || "",
+  ).trim();
   const app = express();
 
   const allowedOrigins = new Set(
@@ -309,10 +336,7 @@ function createApp(options = {}) {
       const production = String(env.NODE_ENV || "").toLowerCase() === "production";
       const warnings = production
         ? [
-            "FACULTY_SIGNUP_CODE",
             "TA_SIGNUP_CODE",
-            "COURSE_OWNER_EMAILS_JSON",
-            "COURSE_JOIN_CODES_JSON",
           ].filter((key) => !String(env[key] || "").trim())
         : [];
       const data = await store.read();
@@ -348,13 +372,17 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Enter a valid full name" });
       if (!isCampusEmail(email))
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
+      if (role === "faculty" && !isFacultyEmail(email))
+        return response.status(400).json({
+          error: "Professor accounts require an @iitkgp.ac.in email",
+        });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
-      if (role === "faculty" && !env.FACULTY_SIGNUP_CODE)
-        return response.status(403).json({
-          error: "Faculty accounts must be provisioned with an invitation code",
-        });
-      if (role === "faculty" && request.body.roleCode !== env.FACULTY_SIGNUP_CODE)
+      if (
+        role === "faculty" &&
+        env.FACULTY_SIGNUP_CODE &&
+        request.body.roleCode !== env.FACULTY_SIGNUP_CODE
+      )
         return response.status(403).json({ error: "Invalid faculty invitation code" });
       if (
         role === "ta" &&
@@ -381,6 +409,9 @@ function createApp(options = {}) {
           verifiedAt: null,
         };
         database.users.push(created);
+        if (automaticallyAssignFacultyCourses) {
+          claimUnownedCourses(database, created);
+        }
         database.sessions = database.sessions.filter(
           (item) => Date.parse(item.expiresAt) > Date.now(),
         );
@@ -557,6 +588,10 @@ function createApp(options = {}) {
       }
       const token = randomToken();
       await store.update((database) => {
+        const currentUser = database.users.find((item) => item.id === user.id) || user;
+        if (automaticallyAssignFacultyCourses) {
+          claimUnownedCourses(database, currentUser);
+        }
         database.sessions = database.sessions.filter(
           (item) => Date.parse(item.expiresAt) > Date.now() && item.userId !== user.id,
         );

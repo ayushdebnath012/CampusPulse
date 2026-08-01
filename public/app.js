@@ -365,7 +365,6 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
               <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
               <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="8" required /></div>
             </div>
-            ${selectedLoginRole === "faculty" ? `<label for="facultyInviteCode">Professor invitation code</label><input id="facultyInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
             ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
