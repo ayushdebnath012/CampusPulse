@@ -132,6 +132,7 @@ let openAttendance = [];
 let openAttendanceTimer = null;
 let enrolledStudents = [];
 let quizDrafts = [];
+let editingDraftId = "";
 let passwordResetEmail = "";
 // Reset by email is only offered when the server can actually send one.
 let emailDeliveryAvailable = false;
@@ -1704,6 +1705,7 @@ function renderQuiz() {
     return;
   }
   setHeader("Quick quiz", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
+  const openDraft = quizDrafts.find(item => item.id === editingDraftId) || null;
   const courseClasses = state.backendSchedule
     .filter(item => item.courseId === course.id)
     .sort(
@@ -1716,18 +1718,33 @@ function renderQuiz() {
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>New quiz for ${escapeHtml(course.courseCode)}</h2><p>Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.</p></div><span class="badge purple">Draft</span></div>
+        <div class="session-title"><div><h2>${openDraft ? escapeHtml(openDraft.title || "Saved quiz") : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft ? `Saved for ${escapeHtml(openDraft.classLabel || course.name)}. Edit it below, then publish when the class starts.` : `Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.`}</p></div>${openDraft ? `<button class="text-btn" type="button" data-action="close-draft-quiz">Start a new quiz</button>` : `<span class="badge purple">Draft</span>`}</div>
         <div class="quiz-builder" id="quizBuilder">
-          ${questionBlock(1)}
+          ${openDraft && openDraft.questions.length
+            ? openDraft.questions
+                .map((question, index) =>
+                  questionBlock(
+                    index + 1,
+                    question.text || "",
+                    question.options && question.options.length ? question.options : ["", "", "", ""],
+                    Number(question.answer) || 0,
+                    question.image || ""
+                  )
+                )
+                .join("")
+            : questionBlock(1)}
           <button class="add-question" data-action="add-question">${icon("i-plus")} Add another question</button>
         </div>
-        <div class="setup-actions"><button class="btn" type="button" data-action="save-quiz-draft">${icon("i-check")} Save for later</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
+        <div class="setup-actions"><button class="btn" type="button" data-action="save-quiz-draft">${icon("i-check")} ${openDraft ? "Save changes" : "Save for later"}</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
       </article>
       <aside class="card page-card quiz-settings">
         ${quizDrafts.length ? `<div class="saved-quizzes">
           <div class="section-head"><h3>Saved for later</h3><span class="badge purple">${quizDrafts.length}</span></div>
-          ${quizDrafts.map(draft => `<div class="saved-quiz">
-            <div><strong>${escapeHtml(draft.title || "Saved quiz")}</strong><span>${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${escapeHtml(draft.classLabel)}` : ""}</span></div>
+          ${quizDrafts.map(draft => `<div class="saved-quiz ${draft.id === editingDraftId ? "is-open-draft" : ""}">
+            <button class="saved-quiz-open" type="button" data-action="open-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">
+              <strong>${escapeHtml(draft.title || "Saved quiz")}</strong>
+              <span>${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${escapeHtml(draft.classLabel)}` : ""}${draft.id === editingDraftId ? " · open" : ""}</span>
+            </button>
             <div class="saved-quiz-actions">
               <button class="btn btn-primary" type="button" data-action="publish-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">${icon("i-send")} Publish</button>
               <button class="text-btn danger" type="button" data-action="delete-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">Delete</button>
@@ -1736,14 +1753,14 @@ function renderQuiz() {
         </div>` : ""}
         <div class="section-head"><h3>Quiz settings</h3></div>
         <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
-        <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" />
+        <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" value="${openDraft ? escapeHtml(openDraft.title || "") : ""}" />
         <label for="quizClassSelect">Quiz for which class</label>
         ${courseClasses.length ? `<select class="select" id="quizClassSelect">
           <option value="">Not tied to a class</option>
           ${courseClasses
             .map(item => {
               const label = scheduledClassLabel(item, course);
-              return `<option value="${escapeHtml(item.id)}" data-day="${escapeHtml(item.day || "")}" data-label="${escapeHtml(label)}">${escapeHtml(label)}</option>`;
+              return `<option value="${escapeHtml(item.id)}" data-day="${escapeHtml(item.day || "")}" data-label="${escapeHtml(label)}" ${openDraft?.scheduleId === item.id ? "selected" : ""}>${escapeHtml(label)}</option>`;
             })
             .join("")}
         </select>` : `<p class="stat-label">${escapeHtml(course.courseCode)} has no timetabled classes yet. Add them on the Schedule tab to tie a quiz to one.</p>`}
@@ -1833,10 +1850,10 @@ function quizClassSelection() {
   };
 }
 
-function questionBlock(number, question = "", options = ["", "", "", ""], answer = 0) {
+function questionBlock(number, question = "", options = ["", "", "", ""], answer = 0, image = "") {
   return `<div class="question-card">
     <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" type="button" data-action="attach-question-image" aria-label="Attach an image to question ${number}">${icon("i-upload")}</button><button class="icon-btn danger" type="button" data-action="remove-question" aria-label="Delete question ${number}">${icon("i-close")}</button></div>
-    <div class="question-image" hidden><img alt="Question ${number} image" /><button class="text-btn danger" type="button" data-action="remove-question-image">Remove image</button></div>
+    <div class="question-image" ${image ? "" : "hidden"}><img alt="Question ${number} image" ${image ? `src="${escapeHtml(image)}" data-image="${escapeHtml(image)}"` : ""} /><button class="text-btn danger" type="button" data-action="remove-question-image">Remove image</button></div>
     <input class="question-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
     <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
   </div>`;
@@ -3468,27 +3485,47 @@ document.addEventListener("click", async event => {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1));
   }
+  if (action === "open-draft-quiz") {
+    const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
+    if (!quizDrafts.some(item => item.id === quizId)) {
+      return toast("That saved quiz is no longer available", "error");
+    }
+    editingDraftId = quizId;
+    renderQuiz();
+    return;
+  }
+  if (action === "close-draft-quiz") {
+    editingDraftId = "";
+    renderQuiz();
+    return;
+  }
   if (action === "save-quiz-draft") {
     const course = selectedCourse();
     if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
+    const body = {
+      courseId: course.id,
+      status: "draft",
+      title: document.querySelector("#quizTitle")?.value || "Saved quiz",
+      ...quizClassSelection(),
+      questions: readQuizBuilder()
+    };
     try {
-      await apiRequest("/api/quizzes", {
-        method: "POST",
-        body: {
-          courseId: course.id,
-          status: "draft",
-          title: document.querySelector("#quizTitle")?.value || "Saved quiz",
-          ...quizClassSelection(),
-          questions: readQuizBuilder()
-        }
-      });
+      const saved = editingDraftId
+        ? await apiRequest(`/api/quizzes/${encodeURIComponent(editingDraftId)}`, {
+            method: "PUT",
+            body
+          })
+        : await apiRequest("/api/quizzes", { method: "POST", body });
+      editingDraftId = saved.quiz?.id || editingDraftId;
       await refreshQuizDrafts(course.id);
     } catch (error) {
       return toast(error.message || "Could not save the quiz", "error");
     }
     renderQuiz();
-    return toast("Quiz saved. Publish it when the class starts.");
+    return toast(
+      editingDraftId ? "Saved quiz updated" : "Quiz saved. Publish it when the class starts."
+    );
   }
   if (action === "publish-draft-quiz") {
     const course = selectedCourse();
@@ -3500,6 +3537,7 @@ document.addEventListener("click", async event => {
         body: {}
       });
       applyQuizSnapshot(result.quiz);
+      editingDraftId = "";
       await refreshQuizDrafts(course.id);
     } catch (error) {
       return toast(error.message || "Could not publish that quiz", "error");
@@ -3515,6 +3553,7 @@ document.addEventListener("click", async event => {
     if (!window.confirm("Delete this saved quiz?")) return;
     try {
       await apiRequest(`/api/quizzes/${encodeURIComponent(quizId)}`, { method: "DELETE" });
+      if (editingDraftId === quizId) editingDraftId = "";
       await refreshQuizDrafts(course.id);
     } catch (error) {
       return toast(error.message || "Could not delete that quiz", "error");
@@ -3525,6 +3564,31 @@ document.addEventListener("click", async event => {
   if (action === "publish-quiz") {
     const course = selectedCourse();
     if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
+    if (backendConfigured() && editingDraftId) {
+      try {
+        await apiRequest(`/api/quizzes/${encodeURIComponent(editingDraftId)}`, {
+          method: "PUT",
+          body: {
+            title: document.querySelector("#quizTitle")?.value || "Quick quiz",
+            ...quizClassSelection(),
+            questions: readQuizBuilder()
+          }
+        });
+        const result = await apiRequest(
+          `/api/quizzes/${encodeURIComponent(editingDraftId)}/publish`,
+          { method: "POST", body: {} }
+        );
+        applyQuizSnapshot(result.quiz);
+        editingDraftId = "";
+        await refreshQuizDrafts(course.id);
+      } catch (error) {
+        return toast(error.message || "Could not publish the quiz", "error");
+      }
+      state.quizPublished = true;
+      persist();
+      renderLiveQuiz();
+      return toast(`Quiz published to ${course.name}`);
+    }
     if (backendConfigured()) {
       const questions = readQuizBuilder();
       try {

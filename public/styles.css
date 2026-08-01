@@ -633,3 +633,10 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 
 .back-nav-btn { flex: 0 0 auto; border: 1px solid var(--line); background: white; }
 .back-nav-btn:hover { color: var(--primary); border-color: #cccced; }
+
+.saved-quiz-open {
+  flex: 1 1 auto; min-width: 0; padding: 6px 8px; margin: -6px -8px;
+  border: 0; border-radius: 10px; background: none; text-align: left; cursor: pointer;
+}
+.saved-quiz-open:hover { background: #f4f4fa; }
+.saved-quiz.is-open-draft { border-left: 3px solid var(--primary); padding-left: 9px; }

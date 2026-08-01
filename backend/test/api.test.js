@@ -1799,6 +1799,28 @@ test("a quiz can be saved for a class ahead of time and published later", async 
   });
   assert.equal(denied.response.status, 403);
 
+  // Reopening a saved quiz and editing it updates that draft in place.
+  const edited = await request(testServer.baseUrl, `/api/quizzes/${saved.body.quiz.id}`, {
+    method: "PUT",
+    token: professor.token,
+    body: {
+      title: "Week 4 check (revised)",
+      questions: [
+        { text: "Ready now?", options: ["Yes", "No", "Maybe"], answer: 2 },
+        { text: "Second question", options: ["A", "B"], answer: 0 },
+      ],
+    },
+  });
+  assert.equal(edited.response.status, 200);
+  assert.equal(edited.body.quiz.status, "draft");
+  assert.equal(edited.body.quiz.questions.length, 2);
+  const stillOneDraft = await request(
+    testServer.baseUrl,
+    `/api/quizzes/drafts?courseId=${course.id}`,
+    { token: professor.token },
+  );
+  assert.equal(stillOneDraft.body.drafts.length, 1);
+
   const published = await request(
     testServer.baseUrl,
     `/api/quizzes/${saved.body.quiz.id}/publish`,
@@ -1811,7 +1833,8 @@ test("a quiz can be saved for a class ahead of time and published later", async 
     token: student.token,
   });
   assert.equal(studentAfter.body.quiz.id, saved.body.quiz.id);
-  assert.equal(studentAfter.body.quiz.title, "Week 4 check");
+  assert.equal(studentAfter.body.quiz.title, "Week 4 check (revised)");
+  assert.equal(studentAfter.body.quiz.questions.length, 2);
 
   // Publishing twice is refused, since it is no longer a draft.
   const again = await request(

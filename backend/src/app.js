@@ -2112,6 +2112,57 @@ function createApp(options = {}) {
     },
   );
 
+  app.put(
+    "/api/quizzes/:id",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const questions = normalizeQuizQuestions(request.body.questions);
+        const quiz = await store.update((database) => {
+          const draft = database.quizzes.find(
+            (item) => item.id === request.params.id && item.status === "draft",
+          );
+          if (!draft) {
+            const error = new Error("That draft quiz no longer exists");
+            error.status = 404;
+            throw error;
+          }
+          requireCourse(database, request.user, draft.courseId, "run");
+          const scheduleId = String(request.body.scheduleId || "").trim();
+          if (
+            scheduleId &&
+            !database.schedule.some(
+              (item) => item.id === scheduleId && item.courseId === draft.courseId,
+            )
+          ) {
+            const error = new Error("That class is not on this course timetable");
+            error.status = 400;
+            throw error;
+          }
+          draft.title = String(request.body.title || draft.title).slice(0, 100);
+          draft.questions = questions;
+          const day = WEEKDAYS.find(
+            (item) =>
+              item.toLowerCase() === String(request.body.day || "").trim().toLowerCase(),
+          );
+          if (day) draft.day = day;
+          else delete draft.day;
+          if (scheduleId) draft.scheduleId = scheduleId;
+          else delete draft.scheduleId;
+          if (request.body.classLabel) {
+            draft.classLabel = String(request.body.classLabel).trim().slice(0, 120);
+          } else delete draft.classLabel;
+          draft.updatedAt = new Date().toISOString();
+          return draft;
+        });
+        response.json({ quiz });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.post(
     "/api/quizzes/:id/publish",
     authenticate,
