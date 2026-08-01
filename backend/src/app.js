@@ -24,8 +24,12 @@ function isCampusEmail(email) {
   return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
 }
 
+// Professors and staff use iitkgp.ac.in or a department subdomain such as
+// mech.iitkgp.ac.in; kgpian.iitkgp.ac.in is the student domain.
 function isFacultyEmail(email) {
-  return cleanEmail(email).split("@")[1] === "iitkgp.ac.in";
+  const domain = cleanEmail(email).split("@")[1] || "";
+  if (domain === "kgpian.iitkgp.ac.in") return false;
+  return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
 }
 
 function publicUser(user) {
@@ -184,21 +188,6 @@ function createJoinCode(database) {
   return code;
 }
 
-function claimUnownedCourses(database, user) {
-  if (user.role !== "faculty") return [];
-  const claimed = [];
-  for (const course of database.courses) {
-    if (hasValidCourseOwner(database, course)) continue;
-    course.ownerId = user.id;
-    if (!course.code || String(course.code).startsWith("LOCKED-")) {
-      course.code = createJoinCode(database);
-      course.joinCodeConfigured = true;
-    }
-    claimed.push(course.id);
-  }
-  return claimed;
-}
-
 function normalizeRosterUpload(students, courseId) {
   if (!Array.isArray(students) || !students.length || students.length > 500) {
     const error = new Error("Upload a roster containing 1–500 students");
@@ -281,9 +270,6 @@ function createApp(options = {}) {
   const allowDevVerificationCode =
     String(env.NODE_ENV || "").toLowerCase() !== "production" &&
     String(env.ALLOW_DEV_VERIFICATION_CODE || "").toLowerCase() === "true";
-  const automaticallyAssignFacultyCourses = !String(
-    env.COURSE_OWNER_EMAILS_JSON || "",
-  ).trim();
   const app = express();
 
   const allowedOrigins = new Set(
@@ -421,9 +407,6 @@ function createApp(options = {}) {
           verifiedAt: null,
         };
         database.users.push(created);
-        if (automaticallyAssignFacultyCourses) {
-          claimUnownedCourses(database, created);
-        }
         database.sessions = database.sessions.filter(
           (item) => Date.parse(item.expiresAt) > Date.now(),
         );
@@ -591,10 +574,6 @@ function createApp(options = {}) {
       }
       const token = randomToken();
       await store.update((database) => {
-        const currentUser = database.users.find((item) => item.id === user.id) || user;
-        if (automaticallyAssignFacultyCourses) {
-          claimUnownedCourses(database, currentUser);
-        }
         database.sessions = database.sessions.filter(
           (item) => Date.parse(item.expiresAt) > Date.now() && item.userId !== user.id,
         );
@@ -607,6 +586,123 @@ function createApp(options = {}) {
         return null;
       });
       response.json({ token, user: publicUser(user) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/auth/password", authenticate, async (request, response, next) => {
+    try {
+      const currentPassword = String(request.body.currentPassword || "");
+      const newPassword = String(request.body.newPassword || "");
+      if (newPassword.length < 8 || newPassword.length > 128) {
+        return response
+          .status(400)
+          .json({ error: "Password must contain 8–128 characters" });
+      }
+      if (!(await verifyPassword(currentPassword, request.user.passwordHash))) {
+        return response.status(403).json({ error: "Your current password is incorrect" });
+      }
+      const passwordHash = await hashPassword(newPassword);
+      await store.update((database) => {
+        const user = database.users.find((item) => item.id === request.user.id);
+        if (user) user.passwordHash = passwordHash;
+        // Every other device is signed out; this session stays valid.
+        database.sessions = database.sessions.filter(
+          (item) =>
+            item.userId !== request.user.id ||
+            item.tokenHash === request.sessionTokenHash,
+        );
+        return null;
+      });
+      response.json({ updated: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/auth/password/forgot", async (request, response, next) => {
+    try {
+      const email = cleanEmail(request.body.email);
+      if (!mailer.configured) {
+        return response.status(503).json({
+          error:
+            "Password reset email is unavailable. Ask your professor to reset it for you.",
+        });
+      }
+      const data = await store.read();
+      const user = data.users.find((item) => item.email === email);
+      // Answer the same way whether or not the address is registered.
+      if (!user) return response.status(202).json({ sent: true });
+
+      const code = randomCode();
+      await store.update((database) => {
+        database.verificationCodes = database.verificationCodes.filter(
+          (item) =>
+            !(item.email === email && item.purpose === "password-reset") &&
+            Date.parse(item.expiresAt) > Date.now(),
+        );
+        database.verificationCodes.push({
+          email,
+          purpose: "password-reset",
+          codeHash: sha256(code),
+          expiresAt: new Date(Date.now() + TEN_MINUTES).toISOString(),
+          attempts: 0,
+        });
+        return null;
+      });
+      await mailer.sendPasswordReset({ email, name: user.name, code });
+      response.status(202).json({ sent: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/auth/password/reset", async (request, response, next) => {
+    try {
+      const email = cleanEmail(request.body.email);
+      const codeHash = sha256(String(request.body.code || "").trim());
+      const newPassword = String(request.body.newPassword || "");
+      if (newPassword.length < 8 || newPassword.length > 128) {
+        return response
+          .status(400)
+          .json({ error: "Password must contain 8–128 characters" });
+      }
+      const passwordHash = await hashPassword(newPassword);
+      const result = await store.update((database) => {
+        const record = database.verificationCodes.find(
+          (item) => item.email === email && item.purpose === "password-reset",
+        );
+        if (!record || Date.parse(record.expiresAt) < Date.now()) {
+          return { error: "That reset code has expired", status: 400 };
+        }
+        record.attempts = (record.attempts || 0) + 1;
+        if (record.attempts > 5 || record.codeHash !== codeHash) {
+          if (record.attempts > 5) {
+            database.verificationCodes = database.verificationCodes.filter(
+              (item) => item !== record,
+            );
+          }
+          return {
+            error: record.attempts > 5 ? "Too many attempts" : "Incorrect reset code",
+            status: 400,
+          };
+        }
+        const user = database.users.find((item) => item.email === email);
+        if (!user) return { error: "That reset code has expired", status: 400 };
+        user.passwordHash = passwordHash;
+        database.verificationCodes = database.verificationCodes.filter(
+          (item) => item !== record,
+        );
+        database.sessions = database.sessions.filter(
+          (item) => item.userId !== user.id,
+        );
+        return { ok: true };
+      });
+      if (result.error) {
+        return response.status(result.status).json({ error: result.error });
+      }
+      response.json({ updated: true });
     } catch (error) {
       next(error);
     }
@@ -934,7 +1030,7 @@ function createApp(options = {}) {
     async (request, response, next) => {
       try {
         const session = await store.update((database) => {
-          const courseId = request.body.courseId || "soft401";
+          const courseId = String(request.body.courseId || "").trim();
           const course = requireCourse(database, request.user, courseId, "run");
           const roster = courseRoster(database, courseId);
           if (!roster.length) {

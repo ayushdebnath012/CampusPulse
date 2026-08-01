@@ -27,28 +27,7 @@ function initialData(env = process.env) {
     maintenance: [],
     courses,
     courseStudents,
-    schedule: [
-      {
-        id: "schedule-1",
-        courseId: "soft401",
-        day: "Monday",
-        date: "3 Aug",
-        start: "3:00 PM",
-        end: "5:00 PM",
-        topic: "Foundations of Soft Computing",
-        room: "NR221",
-      },
-      {
-        id: "schedule-2",
-        courseId: "soft401",
-        day: "Tuesday",
-        date: "4 Aug",
-        start: "2:00 PM",
-        end: "4:00 PM",
-        topic: "Fuzzy Sets & Membership",
-        room: "NR221",
-      },
-    ],
+    schedule: [],
     attendanceSessions: [],
     quizzes: [],
   };
@@ -62,42 +41,6 @@ function normalizeData(value, env = process.env) {
       Array.isArray(value?.[key]) ? value[key] : fallback,
     ]),
   );
-  const managedCourseIds = new Set(defaults.courses.map((course) => course.id));
-  const existingCourses = new Map(
-    normalized.courses.map((course) => [course.id, course]),
-  );
-  normalized.courses = [
-    ...defaults.courses.map((course) => {
-      const existing = existingCourses.get(course.id);
-      const merged = { ...existing, ...course };
-      if (
-        !course.joinCodeConfigured &&
-        existing?.ownerId &&
-        existing?.code &&
-        !String(existing.code).startsWith("LOCKED-")
-      ) {
-        merged.code = existing.code;
-        merged.joinCodeConfigured = true;
-      }
-      return existing?.rosterSource === "owner-upload"
-        ? { ...merged, students: existing.students }
-        : merged;
-    }),
-    ...normalized.courses.filter((course) => !managedCourseIds.has(course.id)),
-  ];
-  const ownerEmails = configuredCourseOwners(env);
-  normalized.courses = normalized.courses.map((course) => {
-    if (course.ownerId) return course;
-    const ownerEmail = ownerEmails[course.id] || ownerEmails[course.courseCode];
-    const owner = ownerEmail
-      ? normalized.users.find(
-          (user) =>
-            user.role === "faculty" &&
-            String(user.email || "").trim().toLowerCase() === ownerEmail,
-        )
-      : null;
-    return owner ? { ...course, ownerId: owner.id } : course;
-  });
   normalized.enrollments = normalized.enrollments
     .map((enrollment) => {
       const user = normalized.users.find((item) => item.id === enrollment.userId);
@@ -107,23 +50,6 @@ function normalizeData(value, env = process.env) {
       return courseRole ? { ...enrollment, courseRole } : null;
     })
     .filter(Boolean);
-  if (defaults.courseStudents.length) {
-    const ownerManagedRosterIds = new Set(
-      normalized.courses
-        .filter((course) => course.rosterSource === "owner-upload")
-        .map((course) => course.id),
-    );
-    normalized.courseStudents = [
-      ...normalized.courseStudents.filter(
-        (student) =>
-          !managedCourseIds.has(student.courseId) ||
-          ownerManagedRosterIds.has(student.courseId),
-      ),
-      ...defaults.courseStudents.filter(
-        (student) => !ownerManagedRosterIds.has(student.courseId),
-      ),
-    ];
-  }
   normalized.attendanceSessions = normalized.attendanceSessions.map((session) => {
     if (Array.isArray(session.records) && session.records.length) return session;
     const roster = normalized.courseStudents.filter(
@@ -152,10 +78,6 @@ function normalizeData(value, env = process.env) {
       });
     return { ...session, records };
   });
-  normalized.schedule = [
-    ...normalized.schedule.filter((item) => item.courseId !== "soft401"),
-    ...defaults.schedule,
-  ];
   return normalized;
 }
 

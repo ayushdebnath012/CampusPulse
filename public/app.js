@@ -52,12 +52,9 @@ const defaultState = {
   checks: { wifi: false, bluetooth: false },
   quizPublished: false,
   quizResponses: 0,
-  courses: [
-    { id: "soft401", code: "", name: "Soft Computing", courseCode: "MF41601", section: "Autumn 2026-2027", room: "NR221", students: 310 },
-    { id: "kbs60353", code: "", name: "Knowledge Based Systems in Engineering", courseCode: "ME60353", section: "Autumn 2026-2027", room: "Room TBA", students: 22 }
-  ],
+  courses: [],
   enrolledCourses: [],
-  selectedCourseId: "soft401",
+  selectedCourseId: "",
   importedSchedule: []
 };
 
@@ -75,9 +72,7 @@ state.courses = defaultState.courses;
 state.enrolledCourses = Array.isArray(state.enrolledCourses)
   ? state.enrolledCourses.filter(courseId => defaultState.courses.some(course => course.id === courseId))
   : [];
-state.selectedCourseId = defaultState.courses.some(course => course.id === state.selectedCourseId)
-  ? state.selectedCourseId
-  : "soft401";
+state.selectedCourseId = "";
 delete state.present;
 state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
 state.backendSchedule = Array.isArray(state.backendSchedule) ? state.backendSchedule : [];
@@ -97,6 +92,23 @@ let activeAttendance = null;
 // in so the card appears as soon as the professor starts attendance.
 let openAttendance = [];
 let openAttendanceTimer = null;
+let passwordResetEmail = "";
+// Reset by email is only offered when the server can actually send one.
+let emailDeliveryAvailable = false;
+
+async function refreshEmailDeliveryState() {
+  if (!backendConfigured()) return;
+  try {
+    const health = await apiRequest("/api/health", { auth: false });
+    const available = Boolean(health.emailDelivery) && health.emailDelivery !== "disabled";
+    if (available !== emailDeliveryAvailable) {
+      emailDeliveryAvailable = available;
+      if (!state.authenticated) renderLogin(selectedLoginRole, authMode);
+    }
+  } catch {
+    // Sign-in must still work when the health probe cannot be reached.
+  }
+}
 let courseRosters = new Map();
 let managedCourseId = "";
 let modalReturnFocus = null;
@@ -206,7 +218,7 @@ function selectedCourse() {
 }
 
 function softComputingCourse() {
-  return state.courses.find(course => course.id === "soft401") || state.courses[0] || defaultState.courses[0];
+  return selectedCourse();
 }
 
 function courseCapabilities(course = selectedCourse()) {
@@ -367,7 +379,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
   closeMenu();
   if (view) view.innerHTML = "";
   selectedLoginRole = loginProfiles[role] ? role : "faculty";
-  authMode = mode === "login" ? "login" : "signup";
+  authMode = ["login", "signup", "forgot", "reset"].includes(mode) ? mode : "signup";
   const profile = loginProfiles[selectedLoginRole];
   appShell.hidden = true;
   authRoot.hidden = false;
@@ -400,7 +412,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
           </div>
           <div class="auth-mode-switch" role="tablist" aria-label="Account action">
             <button type="button" class="${authMode === "signup" ? "active" : ""}" data-auth-mode="signup">Create account</button>
-            <button type="button" class="${authMode === "login" ? "active" : ""}" data-auth-mode="login">Sign in</button>
+            <button type="button" class="${authMode !== "signup" ? "active" : ""}" data-auth-mode="login">Sign in</button>
           </div>
           <p class="auth-description">${profile.description}</p>
           ${authMode === "signup" ? `
@@ -418,6 +430,24 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
           <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. No email OTP is required.</p></div>` : `
+          ${authMode === "forgot" ? `
+          <form id="forgotPasswordForm" class="login-form">
+            <label for="forgotEmail">Registered email</label>
+            <input id="forgotEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="username" required />
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-send")} Email me a reset code</button>
+          </form>
+          <div class="verification-actions"><button type="button" class="text-btn" data-auth-mode="login">Back to sign in</button><button type="button" class="text-btn" data-auth-mode="reset">I already have a code</button></div>
+          <div class="auth-demo-note"><span>Registered address only</span><p>The code goes to the email your account was created with. Nothing is shown on this page.</p></div>` : authMode === "reset" ? `
+          <form id="resetPasswordForm" class="login-form">
+            <label for="resetCode">Reset code</label>
+            <input id="resetCode" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
+            <div class="auth-field-pair">
+              <div><label for="resetPassword">New password</label><input id="resetPassword" name="newPassword" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
+              <div><label for="resetConfirm">Confirm password</label><input id="resetConfirm" name="confirmNewPassword" type="password" autocomplete="new-password" minlength="8" required /></div>
+            </div>
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-check")} Set new password</button>
+          </form>
+          <div class="verification-actions"><button type="button" class="text-btn" data-auth-mode="forgot">Send another code</button><button type="button" class="text-btn" data-auth-mode="login">Back to sign in</button></div>` : `
           <form id="loginForm" class="login-form">
             <input type="hidden" name="role" value="${selectedLoginRole}" />
             <label for="loginEmail">${profile.idLabel}</label>
@@ -426,12 +456,14 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="8" required />
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
           </form>
-          <div class="auth-demo-note"><span>Secure password sign-in</span><p>Use the email, password, and account role selected during sign-up.</p></div>`}
+          ${emailDeliveryAvailable ? `<div class="verification-actions"><span></span><button type="button" class="text-btn" data-auth-mode="forgot">Forgot password?</button></div>` : ""}
+          <div class="auth-demo-note"><span>Secure password sign-in</span><p>Use the email, password, and account role selected during sign-up.${emailDeliveryAvailable ? "" : " Password reset by email is switched off, so ask your professor if you are locked out."}</p></div>`}`}
           <p class="auth-description" style="margin-top:18px"><a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a> · <a href="delete-account.html" target="_blank" rel="noopener">Delete an account</a></p>
         </div>
       </section>
     </div>`;
-  setTimeout(() => document.querySelector(authMode === "signup" ? "#signupName" : "#loginEmail")?.focus(), 0);
+  const firstField = { signup: "#signupName", forgot: "#forgotEmail", reset: "#resetCode" }[authMode] || "#loginEmail";
+  setTimeout(() => document.querySelector(firstField)?.focus(), 0);
 }
 
 function isCampusEmail(email = "") {
@@ -1322,6 +1354,18 @@ function renderSettings() {
         <div class="summary-list"><div class="summary-item"><span>Mode</span><strong>${backendConfigured() ? "Persistent API" : "This-device prototype"}</strong></div><div class="summary-item"><span>Account session</span><strong>${apiToken ? "Signed in" : "Not connected"}</strong></div><div class="summary-item"><span>App version</span><strong>${APP_VERSION}</strong></div></div>
         <div class="setup-actions" style="margin-top:20px"><a class="btn" href="privacy.html" target="_blank" rel="noopener">Privacy policy</a><button class="btn" type="button" data-action="logout">Sign out</button><button class="btn btn-danger" type="button" data-action="delete-account">Delete my account</button></div>
       </aside>
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Change password</h2><p class="stat-label">Signs out your other devices. ${escapeHtml(state.authEmail || "your account")}</p></div></div>
+        <form id="changePasswordForm" class="login-form">
+          <label for="currentPassword">Current password</label>
+          <input id="currentPassword" name="currentPassword" type="password" autocomplete="current-password" required />
+          <div class="auth-field-pair">
+            <div><label for="newPassword">New password</label><input id="newPassword" name="newPassword" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
+            <div><label for="confirmNewPassword">Confirm new password</label><input id="confirmNewPassword" name="confirmNewPassword" type="password" autocomplete="new-password" minlength="8" required /></div>
+          </div>
+          <button class="btn btn-primary" type="submit">${icon("i-check")} Update password</button>
+        </form>
+      </article>
       <article class="card page-card update-settings-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">App updates</h2><p id="webUpdateDetail" class="stat-label">${escapeHtml(updateState.message || "Updates are delivered with the website")}</p></div><span id="webUpdateStatus" class="badge ${updateState.status === "error" ? "amber" : "green"}">${updateStatusLabel(updateState.status)}</span></div>
         <p class="update-explainer">Web features, fixes, and styling download and install automatically in the Android app, except while a class is running — those wait until you leave the screen. Native Android changes still require a newly signed APK.</p>
@@ -1580,26 +1624,69 @@ function decodePdfHex(raw) {
   return out;
 }
 
-// Text-showing operators only; positioning operators end the current line.
-function pdfTextLines(content) {
-  const lines = [];
-  let current = "";
+// Each drawn string with the text-space position it was placed at. Roster PDFs
+// are tables, so every cell is its own positioned string.
+function pdfTextItems(content) {
+  const items = [];
+  let x = 0;
+  let y = 0;
+  let lineX = 0;
+  let lineY = 0;
+  let leading = 12;
+  let numbers = [];
   let pending = [];
   const tokens = content.matchAll(
-    /\((?:\\[\s\S]|[^\\()])*\)|<[0-9A-Fa-f\s]*>|\bTJ\b|\bTj\b|\bTD\b|\bTd\b|\bT\*|\bTm\b|\bBT\b|\bET\b/g
+    /\((?:\\[\s\S]|[^\\()])*\)|<[0-9A-Fa-f\s]*>|-?\d+(?:\.\d+)?|BT|ET|T\*|Tm|TD|Td|TL|TJ|Tj/g
   );
-  const flushLine = () => {
-    if (current.trim()) lines.push(current.trim());
-    current = "";
-  };
   for (const [token] of tokens) {
-    if (token.startsWith("(")) pending.push(decodePdfLiteral(token.slice(1, -1)));
-    else if (token.startsWith("<")) pending.push(decodePdfHex(token.slice(1, -1)));
-    else if (token === "Tj" || token === "TJ") { current += pending.join(""); pending = []; }
-    else { pending = []; flushLine(); }
+    if (token.startsWith("(")) { pending.push(decodePdfLiteral(token.slice(1, -1))); continue; }
+    if (token.startsWith("<")) { pending.push(decodePdfHex(token.slice(1, -1))); continue; }
+    if (/^-?\d/.test(token)) { numbers.push(Number(token)); continue; }
+    if (token === "BT") { x = y = lineX = lineY = 0; }
+    else if (token === "Tm" && numbers.length >= 6) {
+      x = lineX = numbers[numbers.length - 2];
+      y = lineY = numbers[numbers.length - 1];
+    } else if ((token === "Td" || token === "TD") && numbers.length >= 2) {
+      if (token === "TD") leading = -numbers[numbers.length - 1];
+      lineX += numbers[numbers.length - 2];
+      lineY += numbers[numbers.length - 1];
+      x = lineX;
+      y = lineY;
+    } else if (token === "TL" && numbers.length) {
+      leading = numbers[numbers.length - 1];
+    } else if (token === "T*") {
+      lineY -= leading;
+      x = lineX;
+      y = lineY;
+    } else if (token === "Tj" || token === "TJ") {
+      const text = pending.join("");
+      if (text.trim()) items.push({ x, y, text });
+    }
+    numbers = [];
+    if (token === "Tj" || token === "TJ") pending = [];
   }
-  flushLine();
-  return lines;
+  return items;
+}
+
+// Cells sharing a baseline form one row, read left to right, top row first.
+function pdfTextLines(content) {
+  const rows = new Map();
+  for (const item of pdfTextItems(content)) {
+    const key = Math.round(item.y);
+    if (!rows.has(key)) rows.set(key, []);
+    rows.get(key).push(item);
+  }
+  return [...rows.entries()]
+    .sort((left, right) => right[0] - left[0])
+    .map(([, cells]) =>
+      cells
+        .sort((left, right) => left.x - right.x)
+        .map(cell => cell.text)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim()
+    )
+    .filter(Boolean);
 }
 
 async function pdfContentStreams(buffer) {
@@ -1636,7 +1723,7 @@ async function pdfContentStreams(buffer) {
     } else {
       chunks.push(new TextDecoder("latin1").decode(slice));
     }
-    marker.lastIndex = stop;
+    marker.lastIndex = stop + "endstream".length;
   }
   return chunks;
 }
@@ -2308,6 +2395,57 @@ document.addEventListener("submit", async event => {
     renderClasses();
     toast(`${result.course.name} created · Code ${result.course.code}`);
   }
+  if (event.target.id === "changePasswordForm") {
+    const data = new FormData(event.target);
+    const newPassword = String(data.get("newPassword") || "");
+    if (newPassword !== String(data.get("confirmNewPassword") || "")) {
+      return toast("The new passwords do not match", "error");
+    }
+    try {
+      await apiRequest("/api/auth/password", {
+        method: "POST",
+        body: { currentPassword: String(data.get("currentPassword") || ""), newPassword }
+      });
+    } catch (error) {
+      return toast(error.message || "Could not update the password", "error");
+    }
+    event.target.reset();
+    return toast("Password updated. Other devices were signed out");
+  }
+  if (event.target.id === "forgotPasswordForm") {
+    const email = String(new FormData(event.target).get("email") || "").trim().toLowerCase();
+    try {
+      await apiRequest("/api/auth/password/forgot", {
+        method: "POST",
+        auth: false,
+        body: { email }
+      });
+    } catch (error) {
+      return toast(error.message || "Could not send a reset code", "error");
+    }
+    passwordResetEmail = email;
+    renderLogin(selectedLoginRole, "reset");
+    return toast("If that address is registered, a reset code is on its way");
+  }
+  if (event.target.id === "resetPasswordForm") {
+    const data = new FormData(event.target);
+    const newPassword = String(data.get("newPassword") || "");
+    if (newPassword !== String(data.get("confirmNewPassword") || "")) {
+      return toast("The new passwords do not match", "error");
+    }
+    try {
+      await apiRequest("/api/auth/password/reset", {
+        method: "POST",
+        auth: false,
+        body: { email: passwordResetEmail, code: String(data.get("code") || ""), newPassword }
+      });
+    } catch (error) {
+      return toast(error.message || "Could not reset the password", "error");
+    }
+    passwordResetEmail = "";
+    renderLogin(selectedLoginRole, "login");
+    return toast("Password reset. Sign in with your new password");
+  }
   if (event.target.id === "joinForm") {
     const data = new FormData(event.target);
     const code = String(data.get("joinCode") || "").trim().toUpperCase();
@@ -2361,3 +2499,4 @@ if (backendConfigured() && apiToken) {
 } else {
   render();
 }
+refreshEmailDeliveryState();

@@ -7,35 +7,6 @@ const { createApp } = require("../src/app");
 const { initialData, normalizeData } = require("../src/database");
 const { ACCOUNT_RESET_ID, deleteExistingAccountsOnce } = require("../src/maintenance");
 
-function syntheticRoster(courseCode, courseTitle, count, rollPrefix, namePrefix) {
-  return {
-    courseCode,
-    courseTitle,
-    term: "AUTUMN, 2026-2027",
-    studentCount: count,
-    students: Array.from({ length: count }, (_, index) => ({
-      serial: index + 1,
-      rollNumber: `${rollPrefix}${String(index + 1).padStart(4, "0")}`,
-      name: `${namePrefix} ${String(index + 1).padStart(3, "0")}`,
-    })),
-  };
-}
-
-const TEST_ROSTERS_JSON = JSON.stringify([
-  syntheticRoster("MF41601", "SOFT COMPUTING", 310, "MFTEST", "Soft Student"),
-  syntheticRoster(
-    "ME60353",
-    "KNOWLEDGE BASED SYSTEMS IN ENGINEERING",
-    22,
-    "METEST",
-    "KBS Student",
-  ),
-]);
-const TEST_ROSTER_ENV = { COURSE_ROSTERS_JSON: TEST_ROSTERS_JSON };
-const TEST_OWNER_EMAILS = JSON.stringify({
-  soft401: "professor@iitkgp.ac.in",
-  kbs60353: "professor@iitkgp.ac.in",
-});
 
 async function createTestServer(options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campuspulse-api-"));
@@ -54,12 +25,6 @@ async function createTestServer(options = {}) {
       ALLOW_DEV_VERIFICATION_CODE: "true",
       FACULTY_SIGNUP_CODE: "faculty-invite",
       TA_SIGNUP_CODE: "ta-invite",
-      COURSE_OWNER_EMAILS_JSON: TEST_OWNER_EMAILS,
-      COURSE_JOIN_CODES_JSON: JSON.stringify({
-        soft401: "SC401A",
-        kbs60353: "KB60353",
-      }),
-      ...TEST_ROSTER_ENV,
       ...(options.env || {}),
     },
   });
@@ -121,6 +86,45 @@ async function createVerifiedUser(baseUrl, user) {
   return loggedIn.body;
 }
 
+function rosterOf(count, prefix, namePrefix) {
+  return Array.from({ length: count }, (_, index) => ({
+    rollNumber: `${prefix}${String(index + 1).padStart(4, "0")}`,
+    name: `${namePrefix} ${String(index + 1).padStart(3, "0")}`,
+  }));
+}
+
+// Nothing is seeded, so every test that needs a course builds one the way a
+// professor does: create it, then upload its roll list.
+async function createCourse(baseUrl, token, options = {}) {
+  const created = await request(baseUrl, "/api/courses", {
+    method: "POST",
+    token,
+    body: {
+      name: options.name || "Soft Computing",
+      courseCode: options.courseCode || "MF41601",
+      section: options.section || "Autumn 2026-2027",
+      room: options.room || "NR221",
+    },
+  });
+  assert.equal(created.response.status, 201);
+  const course = created.body.course;
+  const students = options.students || rosterOf(3, "MFTEST", "Soft Student");
+  if (students.length) {
+    const uploaded = await request(baseUrl, `/api/courses/${course.id}/roster`, {
+      method: "PUT",
+      token,
+      body: { students },
+    });
+    assert.equal(
+      uploaded.response.status,
+      200,
+      `roster upload failed: ${JSON.stringify(uploaded.body)}`,
+    );
+    return { ...course, ...uploaded.body.course, students };
+  }
+  return { ...course, students };
+}
+
 test("CampusPulse API connects professor attendance to the authoritative rosters", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
@@ -151,22 +155,34 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     password: "assistant-password",
   });
 
+  const soft = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Soft Computing",
+    courseCode: "MF41601",
+    students: rosterOf(310, "MFTEST", "Soft Student"),
+  });
+  const kbs = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Knowledge Based Systems in Engineering",
+    courseCode: "ME60353",
+    room: "Room TBA",
+    students: rosterOf(22, "METEST", "KBS Student"),
+  });
+
   const softRoster = await request(
     testServer.baseUrl,
-    "/api/courses/soft401/roster",
+    `/api/courses/${soft.id}/roster`,
     { token: professor.token },
   );
   assert.equal(softRoster.response.status, 200);
   assert.equal(softRoster.body.course.courseCode, "MF41601");
   assert.equal(softRoster.body.students.length, 310);
   assert.deepEqual(softRoster.body.students[0], {
-    courseId: "soft401",
+    courseId: soft.id,
     serial: 1,
     rollNumber: "MFTEST0001",
     name: "Soft Student 001",
   });
   assert.deepEqual(softRoster.body.students.at(-1), {
-    courseId: "soft401",
+    courseId: soft.id,
     serial: 310,
     rollNumber: "MFTEST0310",
     name: "Soft Student 310",
@@ -174,7 +190,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
 
   const kbsRoster = await request(
     testServer.baseUrl,
-    "/api/courses/kbs60353/roster",
+    `/api/courses/${kbs.id}/roster`,
     { token: professor.token },
   );
   assert.equal(kbsRoster.response.status, 200);
@@ -185,7 +201,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   for (const token of [student.token, teachingAssistant.token]) {
     const restrictedRoster = await request(
       testServer.baseUrl,
-      "/api/courses/soft401/roster",
+      `/api/courses/${soft.id}/roster`,
       { token },
     );
     assert.equal(restrictedRoster.response.status, 403);
@@ -214,35 +230,23 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const joined = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.token,
-    body: { code: "SC401A", rollNumber: "MFTEST0001" },
+    body: { code: soft.code, rollNumber: "MFTEST0001" },
   });
   assert.equal(joined.response.status, 201);
-  assert.equal(joined.body.course.id, "soft401");
+  assert.equal(joined.body.course.id, soft.id);
   assert.equal("code" in joined.body.course, false);
 
   const bootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
     token: student.token,
   });
   assert.equal(bootstrap.response.status, 200);
-  assert.deepEqual(bootstrap.body.enrolledCourseIds, ["soft401"]);
+  assert.deepEqual(bootstrap.body.enrolledCourseIds, [soft.id]);
   assert.equal("attendance" in bootstrap.body, false);
   assert.equal("attendanceByCourse" in bootstrap.body, false);
-  assert.equal(bootstrap.body.schedule.length, 2);
+  assert.equal(bootstrap.body.schedule.length, 0);
   assert.equal(bootstrap.body.courses[0].room, "NR221");
   assert.equal(bootstrap.body.courses[0].courseCode, "MF41601");
   assert.equal(bootstrap.body.courses[0].students, 310);
-  assert.deepEqual(
-    bootstrap.body.schedule.map(({ day, start, end, room }) => ({
-      day,
-      start,
-      end,
-      room,
-    })),
-    [
-      { day: "Monday", start: "3:00 PM", end: "5:00 PM", room: "NR221" },
-      { day: "Tuesday", start: "2:00 PM", end: "4:00 PM", room: "NR221" },
-    ],
-  );
 
   const openedAttendance = await request(
     testServer.baseUrl,
@@ -250,7 +254,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: professor.token,
-      body: { courseId: "soft401", scheduleId: "schedule-2" },
+      body: { courseId: soft.id },
     },
   );
   assert.equal(openedAttendance.response.status, 201);
@@ -261,7 +265,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   for (const token of [student.token, teachingAssistant.token]) {
     const restrictedCurrent = await request(
       testServer.baseUrl,
-      "/api/attendance/current?courseId=soft401",
+      `/api/attendance/current?courseId=${soft.id}`,
       { token },
     );
     assert.equal(restrictedCurrent.response.status, 403);
@@ -284,7 +288,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const taJoinedSoft = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: teachingAssistant.token,
-    body: { code: "SC401A" },
+    body: { code: soft.code },
   });
   assert.equal(taJoinedSoft.response.status, 201);
   assert.equal(taJoinedSoft.body.course.capabilities.canRunAttendance, true);
@@ -294,13 +298,13 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const taJoinedKbs = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: teachingAssistant.token,
-    body: { code: "KB60353" },
+    body: { code: kbs.code },
   });
   assert.equal(taJoinedKbs.response.status, 201);
 
   const taRoster = await request(
     testServer.baseUrl,
-    "/api/courses/soft401/roster",
+    `/api/courses/${soft.id}/roster`,
     { token: teachingAssistant.token },
   );
   assert.equal(taRoster.response.status, 200);
@@ -312,7 +316,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: teachingAssistant.token,
-      body: { courseId: "kbs60353" },
+      body: { courseId: kbs.id },
     },
   );
   assert.equal(taOpenedKbs.response.status, 201);
@@ -365,7 +369,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     method: "POST",
     token: teachingAssistant.token,
     body: {
-      courseId: "soft401",
+      courseId: soft.id,
       title: "Soft Computing check",
       questions: [
         {
@@ -382,7 +386,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     method: "POST",
     token: teachingAssistant.token,
     body: {
-      courseId: "soft401",
+      courseId: soft.id,
       title: "Invalid quiz",
       questions: [{ text: "Invalid", options: ["Only one"], answer: 0 }],
     },
@@ -440,7 +444,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
 
   const latestClosedSoftAttendance = await request(
     testServer.baseUrl,
-    "/api/attendance/current?courseId=soft401",
+    `/api/attendance/current?courseId=${soft.id}`,
     { token: professor.token },
   );
   assert.equal(latestClosedSoftAttendance.response.status, 200);
@@ -454,7 +458,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: professor.token,
-      body: { courseId: "kbs60353" },
+      body: { courseId: kbs.id },
     },
   );
   assert.equal(openedKbsAttendance.response.status, 201);
@@ -467,14 +471,14 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: professor.token,
-      body: { courseId: "soft401" },
+      body: { courseId: soft.id },
     },
   );
   assert.equal(reopenedSoftAttendance.response.status, 201);
 
   for (const [courseId, attendance] of [
-    ["soft401", reopenedSoftAttendance.body.attendance],
-    ["kbs60353", openedKbsAttendance.body.attendance],
+    [soft.id, reopenedSoftAttendance.body.attendance],
+    [kbs.id, openedKbsAttendance.body.attendance],
   ]) {
     const currentForCourse = await request(
       testServer.baseUrl,
@@ -505,7 +509,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
 
   const taRosterUploadAttempt = await request(
     testServer.baseUrl,
-    "/api/courses/soft401/roster",
+    `/api/courses/${soft.id}/roster`,
     {
       method: "PUT",
       token: teachingAssistant.token,
@@ -527,7 +531,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
 
   const crossRosterAttempt = await request(
     testServer.baseUrl,
-    "/api/courses/soft401/roster",
+    `/api/courses/${soft.id}/roster`,
     { token: otherProfessor.token },
   );
   assert.equal(crossRosterAttempt.response.status, 403);
@@ -538,7 +542,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: otherProfessor.token,
-      body: { courseId: "soft401" },
+      body: { courseId: soft.id },
     },
   );
   assert.equal(crossAttendanceAttempt.response.status, 403);
@@ -670,121 +674,122 @@ test("signup creates and signs in an account without email delivery or OTP", asy
   assert.equal(session.body.user.email, "password-only@kgpian.iitkgp.ac.in");
 });
 
-test("first professor automatically owns courses and receives working join codes", async (t) => {
+test("a professor can create several courses, each with its own join code", async (t) => {
   const testServer = await createTestServer({
-    env: {
-      NODE_ENV: "production",
-      FACULTY_SIGNUP_CODE: "",
-      COURSE_OWNER_EMAILS_JSON: "",
-      COURSE_JOIN_CODES_JSON: "",
-    },
+    env: { NODE_ENV: "production", FACULTY_SIGNUP_CODE: "" },
   });
   t.after(async () => {
     await testServer.close();
     await fs.rm(testServer.directory, { recursive: true, force: true });
   });
 
-  const professor = await request(testServer.baseUrl, "/api/auth/signup", {
-    method: "POST",
-    body: {
-      role: "faculty",
-      name: "Automatic Professor",
-      email: "automatic-professor@iitkgp.ac.in",
-      password: "professor-password",
-    },
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Department Professor",
+    email: "dkpra@mech.iitkgp.ac.in",
+    password: "professor-password",
   });
-  assert.equal(professor.response.status, 201);
 
-  const professorCourses = await request(testServer.baseUrl, "/api/courses", {
-    token: professor.body.token,
+  // A brand new workspace holds nothing at all.
+  const empty = await request(testServer.baseUrl, "/api/courses", {
+    token: professor.token,
   });
-  assert.equal(professorCourses.response.status, 200);
-  assert.equal(professorCourses.body.courses.length, 2);
-  const softCourse = professorCourses.body.courses.find(
-    (course) => course.id === "soft401",
-  );
-  assert.match(softCourse.code, /^[A-Z0-9]{8}$/);
+  assert.deepEqual(empty.body.courses, []);
 
-  const student = await request(testServer.baseUrl, "/api/auth/signup", {
-    method: "POST",
-    body: {
-      role: "student",
-      name: "Automatic Student",
-      email: "automatic-student@kgpian.iitkgp.ac.in",
-      password: "student-password",
-    },
+  const first = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Soft Computing",
+    courseCode: "MF41601",
+    students: rosterOf(4, "MFTEST", "Soft Student"),
   });
-  assert.equal(student.response.status, 201);
+  const second = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Knowledge Based Systems in Engineering",
+    courseCode: "ME60353",
+    students: rosterOf(2, "METEST", "KBS Student"),
+  });
 
-  const joined = await request(testServer.baseUrl, "/api/courses/join", {
-    method: "POST",
-    token: student.body.token,
-    body: { code: softCourse.code, rollNumber: "MFTEST0001" },
+  const owned = await request(testServer.baseUrl, "/api/courses", {
+    token: professor.token,
   });
-  assert.equal(joined.response.status, 201);
-  assert.equal(joined.body.course.id, "soft401");
+  assert.equal(owned.body.courses.length, 2);
+  assert.ok(owned.body.courses.every((course) => course.owned && course.rosterReady));
+  assert.match(first.code, /^[A-Z0-9]{8}$/);
+  assert.match(second.code, /^[A-Z0-9]{8}$/);
+  assert.notEqual(first.code, second.code);
 
-  const professorLogin = await request(testServer.baseUrl, "/api/auth/login", {
+  const duplicate = await request(testServer.baseUrl, "/api/courses", {
     method: "POST",
-    body: {
-      role: "faculty",
-      email: "automatic-professor@iitkgp.ac.in",
-      password: "professor-password",
-    },
+    token: professor.token,
+    body: { name: "Repeat", courseCode: "MF41601" },
   });
-  const coursesAfterLogin = await request(testServer.baseUrl, "/api/courses", {
-    token: professorLogin.body.token,
+  assert.equal(duplicate.response.status, 409);
+
+  // A student joins each course with the roll number from its own list.
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Dual Enrolled",
+    email: "dual@kgpian.iitkgp.ac.in",
+    password: "student-password",
   });
-  assert.equal(
-    coursesAfterLogin.body.courses.find((course) => course.id === "soft401").code,
-    softCourse.code,
-  );
+  for (const [course, rollNumber] of [[first, "MFTEST0001"], [second, "METEST0001"]]) {
+    const joined = await request(testServer.baseUrl, "/api/courses/join", {
+      method: "POST",
+      token: student.token,
+      body: { code: course.code, rollNumber },
+    });
+    assert.equal(joined.response.status, 201);
+  }
+  const bootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.equal(bootstrap.body.enrolledCourseIds.length, 2);
 });
 
-test("one-time account reset removes existing identities but preserves course data", async (t) => {
-  const testServer = await createTestServer({
-    env: {
-      FACULTY_SIGNUP_CODE: "",
-      COURSE_OWNER_EMAILS_JSON: "",
-    },
-  });
+test("the one-time reset empties the workspace completely", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
   t.after(async () => {
     await testServer.close();
     await fs.rm(testServer.directory, { recursive: true, force: true });
   });
 
-  const professor = await request(testServer.baseUrl, "/api/auth/signup", {
-    method: "POST",
-    body: {
-      role: "faculty",
-      name: "Reset Professor",
-      email: "reset-professor@iitkgp.ac.in",
-      password: "professor-password",
-    },
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Reset Professor",
+    email: "reset-professor@iitkgp.ac.in",
+    password: "professor-password",
   });
-  assert.equal(professor.response.status, 201);
+  await createCourse(testServer.baseUrl, professor.token, {
+    students: rosterOf(2, "MFTEST", "Soft Student"),
+  });
+
   const before = await testServer.store.read();
   assert.equal(before.users.length, 1);
-  assert.ok(before.courses.some((course) => course.ownerId));
+  assert.equal(before.courses.length, 1);
+  assert.equal(before.courseStudents.length, 2);
 
   const reset = await deleteExistingAccountsOnce(testServer.store);
-  assert.deepEqual(reset, { applied: true, deletedAccounts: 1 });
+  assert.deepEqual(reset, { applied: true, deletedAccounts: 1, deletedCourses: 1 });
+
   const after = await testServer.store.read();
-  assert.equal(after.users.length, 0);
-  assert.equal(after.sessions.length, 0);
-  assert.equal(after.enrollments.length, 0);
-  assert.ok(after.courses.length >= 2);
-  assert.ok(after.courses.every((course) => !course.ownerId));
+  for (const key of [
+    "users",
+    "sessions",
+    "enrollments",
+    "courses",
+    "courseStudents",
+    "schedule",
+    "attendanceSessions",
+    "quizzes",
+  ]) {
+    assert.deepEqual(after[key], [], `${key} should be empty after the reset`);
+  }
   assert.ok(after.maintenance.includes(ACCOUNT_RESET_ID));
 
   const repeated = await deleteExistingAccountsOnce(testServer.store);
-  assert.deepEqual(repeated, { applied: false, deletedAccounts: 0 });
+  assert.deepEqual(repeated, { applied: false, deletedAccounts: 0, deletedCourses: 0 });
 });
 
 test("a course stays closed until its professor uploads the roll list", async (t) => {
-  const testServer = await createTestServer({
-    env: { COURSE_ROSTERS_JSON: JSON.stringify([]) },
-  });
+  const testServer = await createTestServer();
   t.after(async () => {
     await testServer.close();
     await fs.rm(testServer.directory, { recursive: true, force: true });
@@ -803,16 +808,18 @@ test("a course stays closed until its professor uploads the roll list", async (t
     password: "student-password",
   });
 
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [],
+  });
   const ownedBefore = await request(testServer.baseUrl, "/api/courses", {
     token: professor.token,
   });
-  const softBefore = ownedBefore.body.courses.find((course) => course.id === "soft401");
-  assert.equal(softBefore.rosterReady, false);
+  assert.equal(ownedBefore.body.courses[0].rosterReady, false);
 
   const earlyJoin = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.token,
-    body: { code: "SC401A" },
+    body: { code: course.code, rollNumber: "21ME10001" },
   });
   assert.equal(earlyJoin.response.status, 409);
   assert.match(earlyJoin.body.error, /has not started yet/i);
@@ -820,12 +827,12 @@ test("a course stays closed until its professor uploads the roll list", async (t
   const earlySession = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: "soft401" },
+    body: { courseId: course.id },
   });
   assert.equal(earlySession.response.status, 409);
   assert.match(earlySession.body.error, /roll list/i);
 
-  const uploaded = await request(testServer.baseUrl, "/api/courses/soft401/roster", {
+  const uploaded = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
     method: "PUT",
     token: professor.token,
     body: {
@@ -841,14 +848,14 @@ test("a course stays closed until its professor uploads the roll list", async (t
   const join = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.token,
-    body: { code: "SC401A", rollNumber: "21ME10001" },
+    body: { code: course.code, rollNumber: "21ME10001" },
   });
   assert.equal(join.response.status, 201);
 
   const session = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: "soft401" },
+    body: { courseId: course.id },
   });
   assert.equal(session.response.status, 201);
   assert.deepEqual(
@@ -862,7 +869,7 @@ test("a course stays closed until its professor uploads the roll list", async (t
     {
       method: "POST",
       token: student.token,
-      body: { rollNumber: "21ME10001", signals: { wifi: true, bluetooth: true } },
+      body: { signals: { wifi: true, bluetooth: true } },
     },
   );
   assert.equal(marked.response.status, 201);
@@ -893,11 +900,15 @@ test("students mark their own attendance only while the professor's session is o
     email: "outsider@kgpian.iitkgp.ac.in",
     password: "outsider-password",
   });
+
+  const soft = await createCourse(testServer.baseUrl, professor.token, {
+    students: rosterOf(4, "MFTEST", "Soft Student"),
+  });
   // Admission is checked against the roll list at join time.
   const notAdmitted = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.token,
-    body: { code: "SC401A", rollNumber: "NOTONROSTER" },
+    body: { code: soft.code, rollNumber: "NOTONROSTER" },
   });
   assert.equal(notAdmitted.response.status, 403);
   assert.match(notAdmitted.body.error, /not admitted/i);
@@ -905,7 +916,7 @@ test("students mark their own attendance only while the professor's session is o
   const noRoll = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.token,
-    body: { code: "SC401A" },
+    body: { code: soft.code },
   });
   assert.equal(noRoll.response.status, 400);
 
@@ -916,7 +927,7 @@ test("students mark their own attendance only while the professor's session is o
     const joined = await request(testServer.baseUrl, "/api/courses/join", {
       method: "POST",
       token,
-      body: { code: "SC401A", rollNumber },
+      body: { code: soft.code, rollNumber },
     });
     assert.equal(joined.response.status, 201);
   }
@@ -939,7 +950,7 @@ test("students mark their own attendance only while the professor's session is o
   const started = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: "soft401" },
+    body: { courseId: soft.id },
   });
   assert.equal(started.response.status, 201);
   const sessionId = started.body.attendance.id;
@@ -976,7 +987,7 @@ test("students mark their own attendance only while the professor's session is o
   const stolen = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: outsider.token,
-    body: { code: "SC401A", rollNumber: "MFTEST0001" },
+    body: { code: soft.code, rollNumber: "MFTEST0001" },
   });
   assert.equal(stolen.response.status, 200);
   assert.equal(stolen.body.existing, true);
@@ -1032,15 +1043,207 @@ test("students mark their own attendance only while the professor's session is o
   assert.deepEqual(noneOpen.body.sessions, []);
 });
 
-test("production stays healthy and usable when course env vars are unset", async (t) => {
+test("professors sign up from department subdomains, students do not", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const departmentProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      name: "Department Professor",
+      email: "dkpra@mech.iitkgp.ac.in",
+      password: "professor-password",
+    },
+  });
+  assert.equal(departmentProfessor.response.status, 201);
+
+  const plainProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      name: "Institute Professor",
+      email: "someone@iitkgp.ac.in",
+      password: "professor-password",
+    },
+  });
+  assert.equal(plainProfessor.response.status, 201);
+
+  // A student address may not register as faculty.
+  const studentAsProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      name: "Not A Professor",
+      email: "student@kgpian.iitkgp.ac.in",
+      password: "professor-password",
+    },
+  });
+  assert.equal(studentAsProfessor.response.status, 400);
+  assert.match(studentAsProfessor.body.error, /iitkgp\.ac\.in email/i);
+
+  const outsider = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "faculty",
+      name: "Outsider",
+      email: "someone@example.com",
+      password: "professor-password",
+    },
+  });
+  assert.equal(outsider.response.status, 400);
+});
+
+test("passwords can be changed while signed in and reset by email", async (t) => {
+  let sentCode = "";
+  const testServer = await createTestServer({
+    env: { FACULTY_SIGNUP_CODE: "" },
+    mailer: {
+      configured: true,
+      provider: "smtp",
+      async sendVerification({ code }) {
+        sentCode = code;
+        return { delivered: true };
+      },
+      async sendPasswordReset({ code }) {
+        sentCode = code;
+        return { delivered: true };
+      },
+    },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Password Student",
+    email: "password-student@kgpian.iitkgp.ac.in",
+    password: "first-password",
+  });
+
+  const wrongCurrent = await request(testServer.baseUrl, "/api/auth/password", {
+    method: "POST",
+    token: student.token,
+    body: { currentPassword: "not-the-password", newPassword: "second-password" },
+  });
+  assert.equal(wrongCurrent.response.status, 403);
+
+  const tooShort = await request(testServer.baseUrl, "/api/auth/password", {
+    method: "POST",
+    token: student.token,
+    body: { currentPassword: "first-password", newPassword: "short" },
+  });
+  assert.equal(tooShort.response.status, 400);
+
+  const changed = await request(testServer.baseUrl, "/api/auth/password", {
+    method: "POST",
+    token: student.token,
+    body: { currentPassword: "first-password", newPassword: "second-password" },
+  });
+  assert.equal(changed.response.status, 200);
+
+  const oldPassword = await request(testServer.baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: {
+      email: "password-student@kgpian.iitkgp.ac.in",
+      password: "first-password",
+      role: "student",
+    },
+  });
+  assert.equal(oldPassword.response.status, 401);
+
+  // The session that made the change keeps working.
+  const stillSignedIn = await request(testServer.baseUrl, "/api/me", {
+    token: student.token,
+  });
+  assert.equal(stillSignedIn.response.status, 200);
+
+  // An unknown address is answered exactly like a known one.
+  const unknown = await request(testServer.baseUrl, "/api/auth/password/forgot", {
+    method: "POST",
+    body: { email: "nobody@kgpian.iitkgp.ac.in" },
+  });
+  assert.equal(unknown.response.status, 202);
+
+  const requested = await request(testServer.baseUrl, "/api/auth/password/forgot", {
+    method: "POST",
+    body: { email: "password-student@kgpian.iitkgp.ac.in" },
+  });
+  assert.equal(requested.response.status, 202);
+  assert.equal("code" in requested.body, false);
+  assert.match(sentCode, /^\d{6}$/);
+
+  const wrongCode = await request(testServer.baseUrl, "/api/auth/password/reset", {
+    method: "POST",
+    body: {
+      email: "password-student@kgpian.iitkgp.ac.in",
+      code: "000000",
+      newPassword: "third-password",
+    },
+  });
+  assert.equal(wrongCode.response.status, 400);
+
+  const reset = await request(testServer.baseUrl, "/api/auth/password/reset", {
+    method: "POST",
+    body: {
+      email: "password-student@kgpian.iitkgp.ac.in",
+      code: sentCode,
+      newPassword: "third-password",
+    },
+  });
+  assert.equal(reset.response.status, 200);
+
+  const signedIn = await request(testServer.baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: {
+      email: "password-student@kgpian.iitkgp.ac.in",
+      password: "third-password",
+      role: "student",
+    },
+  });
+  assert.equal(signedIn.response.status, 200);
+
+  // The reset code is single use and every old session is gone.
+  const reused = await request(testServer.baseUrl, "/api/auth/password/reset", {
+    method: "POST",
+    body: {
+      email: "password-student@kgpian.iitkgp.ac.in",
+      code: sentCode,
+      newPassword: "fourth-password",
+    },
+  });
+  assert.equal(reused.response.status, 400);
+  const revoked = await request(testServer.baseUrl, "/api/me", { token: student.token });
+  assert.equal(revoked.response.status, 401);
+});
+
+test("password reset says so plainly when email delivery is off", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const forgot = await request(testServer.baseUrl, "/api/auth/password/forgot", {
+    method: "POST",
+    body: { email: "anyone@kgpian.iitkgp.ac.in" },
+  });
+  assert.equal(forgot.response.status, 503);
+  assert.match(forgot.body.error, /unavailable/i);
+});
+
+test("production stays healthy with no configuration and no courses", async (t) => {
   const testServer = await createTestServer({
     env: {
       NODE_ENV: "production",
       ALLOW_DEV_VERIFICATION_CODE: "false",
-      COURSE_JOIN_CODES_JSON: "",
-      COURSE_OWNER_EMAILS_JSON: "",
-      COURSE_ROSTERS_JSON: "",
-      COURSE_ROSTERS_PATH: path.join(os.tmpdir(), "campuspulse-missing-rosters.json"),
+      FACULTY_SIGNUP_CODE: "",
+      TA_SIGNUP_CODE: "",
     },
   });
   t.after(async () => {
@@ -1051,7 +1254,6 @@ test("production stays healthy and usable when course env vars are unset", async
   const health = await request(testServer.baseUrl, "/api/health");
   assert.equal(health.response.status, 200);
   assert.equal(health.body.ok, true);
-  assert.deepEqual(health.body.lockedCourses, ["soft401", "kbs60353"]);
 
   const created = await request(testServer.baseUrl, "/api/auth/signup", {
     method: "POST",
@@ -1064,12 +1266,11 @@ test("production stays healthy and usable when course env vars are unset", async
   });
   assert.equal(created.response.status, 201);
 
-  const joined = await request(testServer.baseUrl, "/api/courses/join", {
-    method: "POST",
+  const bootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
     token: created.body.token,
-    body: { code: "SC401A" },
   });
-  assert.equal(joined.response.status, 404);
+  assert.deepEqual(bootstrap.body.courses, []);
+  assert.deepEqual(bootstrap.body.enrolledCourseIds, []);
 });
 
 test("production signup sends the verification code through the configured mailer", async (t) => {
@@ -1144,161 +1345,5 @@ test("faculty signup ignores legacy invitations while TA still requires one", as
   assert.equal(uninvitedTA.response.status, 403);
 });
 
-test("roster seed and legacy normalization preserve exact course identities", () => {
-  const seeded = initialData(TEST_ROSTER_ENV);
-  const softStudents = seeded.courseStudents.filter(
-    (student) => student.courseId === "soft401",
-  );
-  const kbsStudents = seeded.courseStudents.filter(
-    (student) => student.courseId === "kbs60353",
-  );
-  assert.equal(softStudents.length, 310);
-  assert.equal(kbsStudents.length, 22);
-  assert.equal(new Set(seeded.courseStudents.map((student) => student.rollNumber)).size, 332);
-  for (const students of [softStudents, kbsStudents]) {
-    assert.deepEqual(
-      students.map((student) => student.serial),
-      Array.from({ length: students.length }, (_, index) => index + 1),
-    );
-  }
 
-  const legacy = normalizeData({
-    users: [{ id: "existing-user", name: "Soft Student 001" }],
-    courses: [
-      {
-        id: "soft401",
-        name: "Soft Computing",
-        courseCode: "CSE 401",
-        students: 42,
-      },
-    ],
-    attendanceSessions: [
-      {
-        id: "legacy-attendance",
-        courseId: "soft401",
-        status: "open",
-        present: [
-          { userId: "existing-user", checkedInAt: "2026-07-30T09:00:00.000Z" },
-        ],
-      },
-    ],
-  }, TEST_ROSTER_ENV);
-  assert.deepEqual(legacy.users, [
-    { id: "existing-user", name: "Soft Student 001" },
-  ]);
-  assert.equal(legacy.courses[0].courseCode, "MF41601");
-  assert.equal(legacy.courses[0].students, 310);
-  assert.equal(legacy.courses[1].courseCode, "ME60353");
-  assert.equal(legacy.courseStudents.length, 332);
-  assert.equal(legacy.attendanceSessions[0].records.length, 310);
-  assert.equal(legacy.attendanceSessions[0].records[0].rollNumber, "MFTEST0001");
-  assert.equal(legacy.attendanceSessions[0].records[0].present, true);
 
-  const noRosterEnv = {
-    COURSE_ROSTERS_PATH: path.join(os.tmpdir(), "campuspulse-missing-roster.json"),
-  };
-  const freshWithoutSecret = initialData(noRosterEnv);
-  assert.equal(freshWithoutSecret.courseStudents.length, 0);
-  assert.deepEqual(
-    freshWithoutSecret.courses.map((course) => course.students),
-    [310, 22],
-  );
-  const preservedWithoutSecret = normalizeData(
-    { courseStudents: seeded.courseStudents },
-    noRosterEnv,
-  );
-  assert.equal(preservedWithoutSecret.courseStudents.length, 332);
-
-  const deferredLegacy = normalizeData(
-    {
-      users: legacy.users,
-      attendanceSessions: [
-        {
-          id: "deferred-legacy-attendance",
-          courseId: "soft401",
-          status: "closed",
-          present: [
-            { userId: "existing-user", checkedInAt: "2026-07-30T09:00:00.000Z" },
-          ],
-        },
-      ],
-    },
-    noRosterEnv,
-  );
-  assert.equal(deferredLegacy.attendanceSessions[0].records, undefined);
-  const restoredDeferredLegacy = normalizeData(deferredLegacy, TEST_ROSTER_ENV);
-  assert.equal(restoredDeferredLegacy.attendanceSessions[0].records.length, 310);
-  assert.equal(restoredDeferredLegacy.attendanceSessions[0].records[0].present, true);
-
-  const ownerUploadedRoster = normalizeData(
-    {
-      courses: [
-        {
-          id: "soft401",
-          name: "Soft Computing",
-          courseCode: "MF41601",
-          students: 2,
-          ownerId: "owner-user",
-          rosterSource: "owner-upload",
-        },
-      ],
-      courseStudents: [
-        {
-          courseId: "soft401",
-          serial: 1,
-          rollNumber: "OWNER001",
-          name: "Owner Uploaded One",
-        },
-        {
-          courseId: "soft401",
-          serial: 2,
-          rollNumber: "OWNER002",
-          name: "Owner Uploaded Two",
-        },
-      ],
-    },
-    TEST_ROSTER_ENV,
-  );
-  assert.equal(ownerUploadedRoster.courses[0].ownerId, "owner-user");
-  assert.equal(ownerUploadedRoster.courses[0].students, 2);
-  assert.deepEqual(
-    ownerUploadedRoster.courseStudents
-      .filter((student) => student.courseId === "soft401")
-      .map((student) => student.rollNumber),
-    ["OWNER001", "OWNER002"],
-  );
-});
-
-test("production course loading stays available when join codes are incomplete", () => {
-  const productionWithoutCodes = initialData({
-    ...TEST_ROSTER_ENV,
-    NODE_ENV: "production",
-    COURSE_JOIN_CODES_JSON: JSON.stringify({ kbs60353: "KB60353-PRIVATE" }),
-  });
-  const softCourse = productionWithoutCodes.courses.find(
-    (course) => course.id === "soft401",
-  );
-  const kbsCourse = productionWithoutCodes.courses.find(
-    (course) => course.id === "kbs60353",
-  );
-
-  assert.match(softCourse.code, /^LOCKED-[A-F0-9]{16}$/);
-  assert.notEqual(softCourse.code, "SC401A");
-  assert.equal(kbsCourse.code, "KB60353-PRIVATE");
-});
-
-test("a malformed configured join code locks the course instead of failing", () => {
-  const productionWithBadCode = initialData({
-    ...TEST_ROSTER_ENV,
-    NODE_ENV: "production",
-    COURSE_JOIN_CODES_JSON: JSON.stringify({
-      soft401: "no",
-      kbs60353: "KBS_UNDERSCORE",
-    }),
-  });
-
-  for (const courseId of ["soft401", "kbs60353"]) {
-    const course = productionWithBadCode.courses.find((item) => item.id === courseId);
-    assert.match(course.code, /^LOCKED-[A-F0-9]{16}$/);
-  }
-});
