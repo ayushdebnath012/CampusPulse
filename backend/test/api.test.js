@@ -667,6 +667,46 @@ test("signup creates and signs in an account without email delivery or OTP", asy
   assert.equal(session.body.user.email, "password-only@kgpian.iitkgp.ac.in");
 });
 
+test("production stays healthy and usable when course env vars are unset", async (t) => {
+  const testServer = await createTestServer({
+    env: {
+      NODE_ENV: "production",
+      ALLOW_DEV_VERIFICATION_CODE: "false",
+      COURSE_JOIN_CODES_JSON: "",
+      COURSE_OWNER_EMAILS_JSON: "",
+      COURSE_ROSTERS_JSON: "",
+      COURSE_ROSTERS_PATH: path.join(os.tmpdir(), "campuspulse-missing-rosters.json"),
+    },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const health = await request(testServer.baseUrl, "/api/health");
+  assert.equal(health.response.status, 200);
+  assert.equal(health.body.ok, true);
+  assert.ok(health.body.configurationWarnings.includes("COURSE_JOIN_CODES_JSON"));
+
+  const created = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "student",
+      name: "Unconfigured Student",
+      email: "unconfigured@kgpian.iitkgp.ac.in",
+      password: "student-password",
+    },
+  });
+  assert.equal(created.response.status, 201);
+
+  const joined = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: created.body.token,
+    body: { code: "SC401A" },
+  });
+  assert.equal(joined.response.status, 404);
+});
+
 test("production signup sends the verification code through the configured mailer", async (t) => {
   let sentMessage;
   const testServer = await createTestServer({
@@ -869,4 +909,22 @@ test("roster seed and legacy normalization preserve exact course identities", ()
       .map((student) => student.rollNumber),
     ["OWNER001", "OWNER002"],
   );
+});
+
+test("production course loading stays available when join codes are incomplete", () => {
+  const productionWithoutCodes = initialData({
+    ...TEST_ROSTER_ENV,
+    NODE_ENV: "production",
+    COURSE_JOIN_CODES_JSON: JSON.stringify({ kbs60353: "KB60353-PRIVATE" }),
+  });
+  const softCourse = productionWithoutCodes.courses.find(
+    (course) => course.id === "soft401",
+  );
+  const kbsCourse = productionWithoutCodes.courses.find(
+    (course) => course.id === "kbs60353",
+  );
+
+  assert.match(softCourse.code, /^LOCKED-[A-F0-9]{16}$/);
+  assert.notEqual(softCourse.code, "SC401A");
+  assert.equal(kbsCourse.code, "KB60353-PRIVATE");
 });

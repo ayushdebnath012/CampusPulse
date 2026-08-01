@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -37,6 +38,18 @@ function configuredJoinCodes(env = process.env) {
   );
 }
 
+const lockedJoinCodes = new Map();
+
+function lockedJoinCode(courseId) {
+  if (!lockedJoinCodes.has(courseId)) {
+    lockedJoinCodes.set(
+      courseId,
+      `LOCKED-${crypto.randomBytes(8).toString("hex").toUpperCase()}`,
+    );
+  }
+  return lockedJoinCodes.get(courseId);
+}
+
 function loadSourceRosters(env = process.env) {
   if (env.COURSE_ROSTERS_JSON_BASE64) {
     return JSON.parse(
@@ -66,10 +79,12 @@ function buildCourseData(env = process.env) {
   for (const [courseCode, config] of Object.entries(COURSE_CONFIG)) {
     const source = sourceRosters.find((item) => item.courseCode === courseCode);
     const configuredCode = joinCodes[config.id] || joinCodes[config.courseCode];
-    if (String(env.NODE_ENV || "").toLowerCase() === "production" && !configuredCode) {
-      throw new Error(`COURSE_JOIN_CODES_JSON is missing ${config.id}`);
-    }
-    const joinCode = configuredCode || config.code;
+    const production = String(env.NODE_ENV || "").toLowerCase() === "production";
+    // An unconfigured course must never fall back to its published default code in
+    // production, but it must not take the whole API down either: lock it with a
+    // per-process random code until COURSE_JOIN_CODES_JSON is set.
+    const joinCode =
+      configuredCode || (production ? lockedJoinCode(config.id) : config.code);
     if (!/^[A-Z0-9-]{6,32}$/.test(joinCode)) {
       throw new Error(`Invalid join code configured for ${config.id}`);
     }
