@@ -131,6 +131,7 @@ let activeAttendance = null;
 let openAttendance = [];
 let openAttendanceTimer = null;
 let enrolledStudents = [];
+let quizDrafts = [];
 let passwordResetEmail = "";
 // Reset by email is only offered when the server can actually send one.
 let emailDeliveryAvailable = false;
@@ -386,6 +387,7 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearInterval(openAttendanceTimer);
   openAttendance = [];
   enrolledStudents = [];
+  quizDrafts = [];
   courseRosters = new Map();
   courseMaterials = new Map();
   activeAttendance = null;
@@ -736,6 +738,11 @@ function navigate(route) {
   updateManager?.applyStagedUpdate?.();
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
+  if (route === "quizzes" && canPublishQuiz()) {
+    refreshQuizDrafts(state.selectedCourseId).then(() => {
+      if (state.route === "quizzes" && !state.quizPublished) renderQuiz();
+    });
+  }
 }
 
 function render() {
@@ -1673,9 +1680,19 @@ function renderQuiz() {
           ${questionBlock(1)}
           <button class="add-question" data-action="add-question">${icon("i-plus")} Add another question</button>
         </div>
-        <div class="setup-actions"><button class="btn" data-route-link="dashboard">Save draft</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
+        <div class="setup-actions"><button class="btn" type="button" data-action="save-quiz-draft">${icon("i-check")} Save for later</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
       </article>
       <aside class="card page-card quiz-settings">
+        ${quizDrafts.length ? `<div class="saved-quizzes">
+          <div class="section-head"><h3>Saved for later</h3><span class="badge purple">${quizDrafts.length}</span></div>
+          ${quizDrafts.map(draft => `<div class="saved-quiz">
+            <div><strong>${escapeHtml(draft.title || "Saved quiz")}</strong><span>${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${escapeHtml(draft.classLabel)}` : ""}</span></div>
+            <div class="saved-quiz-actions">
+              <button class="btn btn-primary" type="button" data-action="publish-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">${icon("i-send")} Publish</button>
+              <button class="text-btn danger" type="button" data-action="delete-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">Delete</button>
+            </div>
+          </div>`).join("")}
+        </div>` : ""}
         <div class="section-head"><h3>Quiz settings</h3></div>
         <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
         <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" />
@@ -1735,6 +1752,33 @@ function scheduledClassLabel(item, course) {
   return [item.day, time, code].filter(Boolean).join(" · ") + extra;
 }
 
+function readQuizBuilder() {
+  return [...document.querySelectorAll("#quizBuilder .question-card")].map(card => {
+    const options = [...card.querySelectorAll(".option-input input[type='text']")].map(input => input.value.trim());
+    const selected = [...card.querySelectorAll(".option-input input[type='radio']")].findIndex(input => input.checked);
+    const image = card.querySelector(".question-image img")?.dataset.image || "";
+    return {
+      text: card.querySelector(".question-top > input")?.value.trim() || (image ? "" : "Question"),
+      options,
+      answer: Math.max(0, selected),
+      ...(image ? { image } : {})
+    };
+  });
+}
+
+async function refreshQuizDrafts(courseId) {
+  if (!backendConfigured() || !apiToken || !courseId) {
+    quizDrafts = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest(`/api/quizzes/drafts?courseId=${encodeURIComponent(courseId)}`);
+    quizDrafts = Array.isArray(payload.drafts) ? payload.drafts : [];
+  } catch {
+    quizDrafts = [];
+  }
+}
+
 function quizClassSelection() {
   const select = document.querySelector("#quizClassSelect");
   const option = select?.selectedOptions?.[0];
@@ -1750,7 +1794,7 @@ function quizClassSelection() {
 
 function questionBlock(number, question = "", options = ["", "", "", ""], answer = 0) {
   return `<div class="question-card">
-    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" type="button" data-action="attach-question-image" aria-label="Attach an image to question ${number}">${icon("i-upload")}</button></div>
+    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" type="button" data-action="attach-question-image" aria-label="Attach an image to question ${number}">${icon("i-upload")}</button><button class="icon-btn danger" type="button" data-action="remove-question" aria-label="Delete question ${number}">${icon("i-close")}</button></div>
     <div class="question-image" hidden><img alt="Question ${number} image" /><button class="text-btn danger" type="button" data-action="remove-question-image">Remove image</button></div>
     <input class="question-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
     <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
@@ -3344,6 +3388,24 @@ document.addEventListener("click", async event => {
     await refreshOpenAttendance({ rerender: false });
     return render();
   }
+  if (action === "remove-question") {
+    const card = event.target.closest(".question-card");
+    const builder = document.querySelector("#quizBuilder");
+    if (!card || !builder) return;
+    if (builder.querySelectorAll(".question-card").length <= 1) {
+      return toast("A quiz needs at least one question", "error");
+    }
+    card.remove();
+    // Renumber what is left so the badges stay in order.
+    builder.querySelectorAll(".question-card").forEach((item, index) => {
+      const badge = item.querySelector(".q-number");
+      if (badge) badge.textContent = index + 1;
+      item.querySelectorAll(".option-input input[type='radio']").forEach(radio => {
+        radio.name = `q${index + 1}`;
+      });
+    });
+    return;
+  }
   if (action === "attach-question-image") {
     const card = event.target.closest(".question-card");
     return card?.querySelector(".question-image-file")?.click();
@@ -3365,21 +3427,65 @@ document.addEventListener("click", async event => {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1));
   }
+  if (action === "save-quiz-draft") {
+    const course = selectedCourse();
+    if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
+    if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
+    try {
+      await apiRequest("/api/quizzes", {
+        method: "POST",
+        body: {
+          courseId: course.id,
+          status: "draft",
+          title: document.querySelector("#quizTitle")?.value || "Saved quiz",
+          ...quizClassSelection(),
+          questions: readQuizBuilder()
+        }
+      });
+      await refreshQuizDrafts(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not save the quiz", "error");
+    }
+    renderQuiz();
+    return toast("Quiz saved. Publish it when the class starts.");
+  }
+  if (action === "publish-draft-quiz") {
+    const course = selectedCourse();
+    const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
+    if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
+    try {
+      const result = await apiRequest(`/api/quizzes/${encodeURIComponent(quizId)}/publish`, {
+        method: "POST",
+        body: {}
+      });
+      applyQuizSnapshot(result.quiz);
+      await refreshQuizDrafts(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not publish that quiz", "error");
+    }
+    persist();
+    renderLiveQuiz();
+    return toast(`Quiz published to ${course.name}`);
+  }
+  if (action === "delete-draft-quiz") {
+    const course = selectedCourse();
+    const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
+    if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
+    if (!window.confirm("Delete this saved quiz?")) return;
+    try {
+      await apiRequest(`/api/quizzes/${encodeURIComponent(quizId)}`, { method: "DELETE" });
+      await refreshQuizDrafts(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not delete that quiz", "error");
+    }
+    renderQuiz();
+    return toast("Saved quiz deleted");
+  }
   if (action === "publish-quiz") {
     const course = selectedCourse();
     if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
     if (backendConfigured()) {
-      const questions = [...document.querySelectorAll("#quizBuilder .question-card")].map((card) => {
-        const options = [...card.querySelectorAll(".option-input input[type='text']")].map((input) => input.value.trim());
-        const selected = [...card.querySelectorAll(".option-input input[type='radio']")].findIndex((input) => input.checked);
-        const image = card.querySelector(".question-image img")?.dataset.image || "";
-        return {
-          text: card.querySelector(".question-top > input")?.value.trim() || (image ? "" : "Question"),
-          options,
-          answer: Math.max(0, selected),
-          ...(image ? { image } : {})
-        };
-      });
+      const questions = readQuizBuilder();
       try {
         const result = await apiRequest("/api/quizzes", {
           method: "POST",

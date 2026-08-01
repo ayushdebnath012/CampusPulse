@@ -1733,6 +1733,116 @@ test("a quiz can carry image questions and name the class it belongs to", async 
   assert.equal("answer" in seen.body.quiz.questions[0], false);
 });
 
+test("a quiz can be saved for a class ahead of time and published later", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Draft Professor",
+    email: "draft-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [{ rollNumber: "23ME10001", name: "Draft Student" }],
+  });
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Draft Student",
+    email: "draft-student@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10001",
+  });
+  await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code },
+  });
+
+  const saved = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      status: "draft",
+      title: "Week 4 check",
+      questions: [{ text: "Ready?", options: ["Yes", "No"], answer: 0 }],
+    },
+  });
+  assert.equal(saved.response.status, 201);
+  assert.equal(saved.body.quiz.status, "draft");
+
+  // A saved quiz is invisible to students until it is published.
+  const studentBefore = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.equal(studentBefore.body.quiz, null);
+  // And it does not count towards the published quiz tally.
+  const statsBefore = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: professor.token,
+  });
+  assert.equal(statsBefore.body.stats.quizzes, 0);
+
+  const drafts = await request(
+    testServer.baseUrl,
+    `/api/quizzes/drafts?courseId=${course.id}`,
+    { token: professor.token },
+  );
+  assert.equal(drafts.body.drafts.length, 1);
+
+  // Students may not read the course's drafts.
+  const denied = await request(testServer.baseUrl, "/api/quizzes/drafts", {
+    token: student.token,
+  });
+  assert.equal(denied.response.status, 403);
+
+  const published = await request(
+    testServer.baseUrl,
+    `/api/quizzes/${saved.body.quiz.id}/publish`,
+    { method: "POST", token: professor.token, body: {} },
+  );
+  assert.equal(published.response.status, 200);
+  assert.equal(published.body.quiz.status, "open");
+
+  const studentAfter = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.equal(studentAfter.body.quiz.id, saved.body.quiz.id);
+  assert.equal(studentAfter.body.quiz.title, "Week 4 check");
+
+  // Publishing twice is refused, since it is no longer a draft.
+  const again = await request(
+    testServer.baseUrl,
+    `/api/quizzes/${saved.body.quiz.id}/publish`,
+    { method: "POST", token: professor.token, body: {} },
+  );
+  assert.equal(again.response.status, 404);
+
+  // A second draft can be removed without touching the live quiz.
+  const spare = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      status: "draft",
+      title: "Spare",
+      questions: [{ text: "Spare?", options: ["A", "B"], answer: 1 }],
+    },
+  });
+  const removed = await request(testServer.baseUrl, `/api/quizzes/${spare.body.quiz.id}`, {
+    method: "DELETE",
+    token: professor.token,
+  });
+  assert.equal(removed.response.status, 204);
+  const stillLive = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.equal(stillLive.body.quiz.id, saved.body.quiz.id);
+});
+
 test("professors sign up from department subdomains, students do not", async (t) => {
   const overrideEmail = "profile-override@mech.iitkgp.ac.in";
   const testServer = await createTestServer({

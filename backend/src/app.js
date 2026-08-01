@@ -121,7 +121,9 @@ function workspaceStats(database, user, courses) {
     ).length,
     classesCompleted: closed.length,
     averageAttendance: possible ? Math.round((attended / possible) * 1000) / 10 : 0,
-    quizzes: database.quizzes.filter((quiz) => courseIds.has(quiz.courseId)).length,
+    quizzes: database.quizzes.filter(
+      (quiz) => courseIds.has(quiz.courseId) && quiz.status !== "draft",
+    ).length,
   };
 }
 
@@ -2031,11 +2033,13 @@ function createApp(options = {}) {
     async (request, response, next) => {
       try {
         const questions = normalizeQuizQuestions(request.body.questions);
+        const asDraft = request.body.status === "draft";
         const quiz = await store.update((database) => {
           const courseId = String(request.body.courseId || "").trim();
           requireCourse(database, request.user, courseId, "run");
+          // A draft disturbs nothing that is already running.
           database.quizzes.forEach((item) => {
-            if (item.status === "open" && item.courseId === courseId) {
+            if (!asDraft && item.status === "open" && item.courseId === courseId) {
               item.status = "closed";
               item.closedAt = new Date().toISOString();
               item.closedBy = request.user.id;
@@ -2067,7 +2071,7 @@ function createApp(options = {}) {
               ? { classLabel: String(request.body.classLabel).trim().slice(0, 120) }
               : {}),
             questions,
-            status: "open",
+            status: asDraft ? "draft" : "open",
             createdBy: request.user.id,
             createdAt: new Date().toISOString(),
             responses: [],
@@ -2076,6 +2080,93 @@ function createApp(options = {}) {
           return created;
         });
         response.status(201).json({ quiz });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Drafts belong to the course team; students never see them.
+  app.get(
+    "/api/quizzes/drafts",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courseId = String(request.query.courseId || "").trim();
+        if (courseId) requireCourse(data, request.user, courseId, "run");
+        const accessibleIds = new Set(
+          accessibleCourses(data, request.user).map((course) => course.id),
+        );
+        const drafts = data.quizzes.filter(
+          (item) =>
+            item.status === "draft" &&
+            accessibleIds.has(item.courseId) &&
+            (!courseId || item.courseId === courseId),
+        );
+        response.json({ drafts });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/quizzes/:id/publish",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const quiz = await store.update((database) => {
+          const draft = database.quizzes.find(
+            (item) => item.id === request.params.id && item.status === "draft",
+          );
+          if (!draft) {
+            const error = new Error("That draft quiz no longer exists");
+            error.status = 404;
+            throw error;
+          }
+          requireCourse(database, request.user, draft.courseId, "run");
+          database.quizzes.forEach((item) => {
+            if (item.status === "open" && item.courseId === draft.courseId) {
+              item.status = "closed";
+              item.closedAt = new Date().toISOString();
+              item.closedBy = request.user.id;
+            }
+          });
+          draft.status = "open";
+          draft.publishedAt = new Date().toISOString();
+          draft.publishedBy = request.user.id;
+          return draft;
+        });
+        response.json({ quiz });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/quizzes/:id",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        await store.update((database) => {
+          const draft = database.quizzes.find(
+            (item) => item.id === request.params.id && item.status === "draft",
+          );
+          if (!draft) {
+            const error = new Error("That draft quiz no longer exists");
+            error.status = 404;
+            throw error;
+          }
+          requireCourse(database, request.user, draft.courseId, "run");
+          database.quizzes = database.quizzes.filter((item) => item.id !== draft.id);
+          return null;
+        });
+        response.status(204).end();
       } catch (error) {
         next(error);
       }
