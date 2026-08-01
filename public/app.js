@@ -1723,11 +1723,13 @@ function renderClasses() {
   if (state.userRole === "student") return renderStudentClasses();
   if (state.userRole === "ta") return renderTAClasses();
   setHeader("My courses", "PROFESSOR WORKSPACE", false);
-  const course = selectedCourse();
+  const openCourse = selectedCourse();
   view.innerHTML = `
     <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Create courses and share their private join codes. Rosters and files now have dedicated tabs.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
-      <div class="course-grid">${course ? facultyCourseCard(course) : `<div class="empty-state"><div><p>No course created yet.</p></div></div>`}</div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Every course you own. Select one to point the rest of the workspace at it.</p></div><div class="setup-actions"><span class="badge purple">${state.courses.length} ${state.courses.length === 1 ? "course" : "courses"}</span><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div></div>
+      <div class="course-grid">${state.courses.length
+        ? state.courses.map(item => facultyCourseCard(item, item.id === openCourse?.id)).join("")
+        : `<div class="empty-state"><div><p>No course created yet.</p></div></div>`}</div>
     </article>
     ${renderTeachingAssistantsSection()}`;
 }
@@ -1752,9 +1754,13 @@ function renderTeachingAssistantsSection() {
   </article>`;
 }
 
-function facultyCourseCard(course) {
-  return `<article class="course-card">
-    <div class="course-accent"></div><h3>${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+function facultyCourseCard(course, isOpen = false) {
+  return `<article class="course-card ${isOpen ? "is-open-course" : ""}">
+    <div class="course-accent"></div>
+    <div class="course-card-head"><h3>${escapeHtml(course.name)}</h3>${isOpen
+      ? `<span class="badge green">Open</span>`
+      : `<button class="text-btn" type="button" data-action="select-course" data-course-id="${escapeHtml(course.id)}">Open</button>`}</div>
+    <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
     <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
     <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} No official roster yet` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><span>${Number(course.materialCount) || 0} shared files</span></div>
   </article>`;
@@ -1922,16 +1928,21 @@ function renderTAClasses() {
         <form class="join-code" id="joinForm"><div class="join-code-field"><label for="taJoinCode">Private course code</label><input id="taJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
       </article>
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Selected TA course</h2><p class="stat-label">Use the course selector above to change rosters, materials, attendance, quizzes, and schedule together.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
-        <div class="course-grid">${course ? taCourseCard(course) : `<div class="empty-state"><div><p>No course joined yet.</p></div></div>`}</div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you assist</h2><p class="stat-label">Select a course to point rosters, materials, attendance, quizzes, and schedule at it.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
+        <div class="course-grid">${state.courses.length
+          ? state.courses.map(item => taCourseCard(item, item.id === course?.id)).join("")
+          : `<div class="empty-state"><div><p>No course joined yet.</p></div></div>`}</div>
       </article>
       ${renderTeachingAssistantsSection()}
     </div>`;
 }
 
-function taCourseCard(course) {
-  return `<article class="course-card">
-    <div class="course-accent"></div><span class="badge purple">Teaching assistant</span>
+function taCourseCard(course, isOpen = false) {
+  return `<article class="course-card ${isOpen ? "is-open-course" : ""}">
+    <div class="course-accent"></div>
+    <div class="course-card-head"><span class="badge purple">Teaching assistant</span>${isOpen
+      ? `<span class="badge green">Open</span>`
+      : `<button class="text-btn" type="button" data-action="select-course" data-course-id="${escapeHtml(course.id)}">Open</button>`}</div>
     <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
     <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button></div>
   </article>`;
@@ -3115,6 +3126,17 @@ document.addEventListener("click", async event => {
       ])
     );
     return toast(`${exportStudents.length} ${course.courseCode} students exported`);
+  }
+  if (action === "select-course") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    if (courseId === state.selectedCourseId) return;
+    try {
+      await switchCourseContext(courseId);
+    } catch (error) {
+      return toast(error.message || "Could not switch courses", "error");
+    }
+    syncCourseSwitcher();
+    return;
   }
   if (action === "choose-timetable-upload") {
     return document.querySelector("#timetableFile")?.click();

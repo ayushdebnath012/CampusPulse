@@ -601,3 +601,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   .schedule-toolbar { flex-direction: column; align-items: stretch; }
   .schedule-toolbar .setup-actions .btn { width: 100%; }
 }
+
+.course-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.course-card-head h3 { margin: 0; }
+.course-card.is-open-course { border-color: #c9c6f4; box-shadow: 0 10px 28px rgba(91,91,214,.12); }
+.course-card.is-open-course .course-accent { background: var(--primary); }
