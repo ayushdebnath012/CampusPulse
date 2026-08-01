@@ -1190,6 +1190,119 @@ function createApp(options = {}) {
     },
   );
 
+  app.patch(
+    "/api/courses/:id",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const course = await store.update((database) => {
+          const existing = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const name = String(request.body.name ?? existing.name)
+            .trim()
+            .replace(/\s+/g, " ");
+          const courseCode = String(request.body.courseCode ?? existing.courseCode)
+            .trim()
+            .toUpperCase()
+            .replace(/\s+/g, " ");
+          if (
+            name.length < 2 ||
+            name.length > 120 ||
+            courseCode.length < 2 ||
+            courseCode.length > 30
+          ) {
+            const error = new Error("Enter a valid course name and code");
+            error.status = 400;
+            throw error;
+          }
+          if (
+            database.courses.some(
+              (item) =>
+                item.id !== existing.id &&
+                String(item.courseCode || "").toUpperCase() === courseCode,
+            )
+          ) {
+            const error = new Error("A course with this code already exists");
+            error.status = 409;
+            throw error;
+          }
+          existing.name = name;
+          existing.courseCode = courseCode;
+          existing.section = String(request.body.section ?? existing.section)
+            .trim()
+            .slice(0, 80);
+          existing.room =
+            String(request.body.room ?? existing.room).trim().slice(0, 80) ||
+            "Room TBA";
+          // The join code is deliberately untouched: students and TAs have it.
+          return publicCourse(database, request.user, existing);
+        });
+        response.json({ course });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/courses/:id",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const removed = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const courseId = course.id;
+          const summary = {
+            id: courseId,
+            courseCode: course.courseCode,
+            students: database.courseStudents.filter(
+              (item) => item.courseId === courseId,
+            ).length,
+            enrolments: database.enrollments.filter(
+              (item) => item.courseId === courseId,
+            ).length,
+          };
+          // A course takes its roll list, enrolments, files, timetable,
+          // attendance history and quizzes with it.
+          database.courses = database.courses.filter((item) => item.id !== courseId);
+          database.courseStudents = database.courseStudents.filter(
+            (item) => item.courseId !== courseId,
+          );
+          database.enrollments = database.enrollments.filter(
+            (item) => item.courseId !== courseId,
+          );
+          database.courseMaterials = database.courseMaterials.filter(
+            (item) => item.courseId !== courseId,
+          );
+          database.schedule = database.schedule.filter(
+            (item) => item.courseId !== courseId,
+          );
+          database.attendanceSessions = database.attendanceSessions.filter(
+            (item) => item.courseId !== courseId,
+          );
+          database.quizzes = database.quizzes.filter(
+            (item) => item.courseId !== courseId,
+          );
+          return summary;
+        });
+        response.json({ removed });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.put(
     "/api/courses/:id/schedule",
     authenticate,

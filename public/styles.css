@@ -614,3 +614,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   right: auto;
   width: calc((100% - 14px) / var(--event-columns) - 3px);
 }
+
+.course-manage { display: flex; gap: 14px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.course-manage .text-btn { font-size: 10px; }

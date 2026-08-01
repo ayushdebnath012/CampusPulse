@@ -1528,6 +1528,113 @@ test("course teams share materials only with their enrolled course", async (t) =
   assert.deepEqual(afterRemoval.body.materials, []);
 });
 
+test("editing a course keeps its join code, and deleting one clears its data", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Editing Professor",
+    email: "editing-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [{ rollNumber: "23ME10001", name: "Enrolled Student" }],
+  });
+  const other = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Second Course",
+    courseCode: "ME60353",
+    students: [],
+  });
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Enrolled Student",
+    email: "enrolled@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10001",
+  });
+  await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code },
+  });
+
+  const updated = await request(testServer.baseUrl, `/api/courses/${course.id}`, {
+    method: "PATCH",
+    token: professor.token,
+    body: {
+      name: "Soft Computing Renamed",
+      courseCode: "MF41601A",
+      section: "Autumn 2027-2028",
+      room: "NR305",
+    },
+  });
+  assert.equal(updated.response.status, 200);
+  assert.equal(updated.body.course.name, "Soft Computing Renamed");
+  assert.equal(updated.body.course.courseCode, "MF41601A");
+  assert.equal(updated.body.course.room, "NR305");
+  // The join code must survive an edit so nobody has to rejoin.
+  assert.equal(updated.body.course.code, course.code);
+
+  // The roll list and enrolment stay attached across the rename.
+  const roster = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
+    token: professor.token,
+  });
+  assert.equal(roster.body.students.length, 1);
+  const stillJoined = await request(testServer.baseUrl, "/api/bootstrap", {
+    token: student.token,
+  });
+  assert.deepEqual(stillJoined.body.enrolledCourseIds, [course.id]);
+
+  const clash = await request(testServer.baseUrl, `/api/courses/${course.id}`, {
+    method: "PATCH",
+    token: professor.token,
+    body: { courseCode: other.courseCode },
+  });
+  assert.equal(clash.response.status, 409);
+
+  // Another professor can neither edit nor delete it.
+  const outsider = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Outsider Professor",
+    email: "outsider-professor@iitkgp.ac.in",
+    password: "professor-password",
+  });
+  for (const method of ["PATCH", "DELETE"]) {
+    const denied = await request(testServer.baseUrl, `/api/courses/${course.id}`, {
+      method,
+      token: outsider.token,
+      ...(method === "PATCH" ? { body: { name: "Hijacked" } } : {}),
+    });
+    assert.equal(denied.response.status, 403);
+  }
+
+  const deleted = await request(testServer.baseUrl, `/api/courses/${course.id}`, {
+    method: "DELETE",
+    token: professor.token,
+  });
+  assert.equal(deleted.response.status, 200);
+  assert.equal(deleted.body.removed.students, 1);
+  assert.equal(deleted.body.removed.enrolments, 1);
+
+  const after = await testServer.store.read();
+  assert.equal(after.courses.some((item) => item.id === course.id), false);
+  assert.equal(after.courseStudents.some((item) => item.courseId === course.id), false);
+  assert.equal(after.enrollments.some((item) => item.courseId === course.id), false);
+  // The professor's other course is untouched.
+  assert.equal(after.courses.length, 1);
+  assert.equal(after.courses[0].id, other.id);
+
+  const gone = await request(testServer.baseUrl, `/api/courses/${course.id}`, {
+    method: "DELETE",
+    token: professor.token,
+  });
+  assert.equal(gone.response.status, 404);
+});
+
 test("professors sign up from department subdomains, students do not", async (t) => {
   const overrideEmail = "profile-override@mech.iitkgp.ac.in";
   const testServer = await createTestServer({

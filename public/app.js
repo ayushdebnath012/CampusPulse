@@ -1813,6 +1813,10 @@ function facultyCourseCard(course, isOpen = false) {
     <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
     <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
     <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} No official roster yet` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><span>${Number(course.materialCount) || 0} shared files</span></div>
+    <div class="course-manage">
+      <button class="text-btn" type="button" data-action="edit-course" data-course-id="${escapeHtml(course.id)}">Edit details</button>
+      <button class="text-btn danger" type="button" data-action="delete-course" data-course-id="${escapeHtml(course.id)}">Delete course</button>
+    </div>
   </article>`;
 }
 
@@ -2017,20 +2021,21 @@ function renderStudentClasses() {
     </div>`;
 }
 
-function openCourseModal() {
+function openCourseModal(course = null) {
   modalReturnFocus = document.activeElement;
+  const editing = Boolean(course);
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
-      <form class="modal" id="courseForm" role="dialog" aria-modal="true" aria-labelledby="courseModalTitle" aria-describedby="courseModalDescription">
-        <div class="modal-head"><div><h2 id="courseModalTitle">Add a new course</h2><p id="courseModalDescription">Students will use the generated code to enroll.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+      <form class="modal" id="courseForm" role="dialog" aria-modal="true" aria-labelledby="courseModalTitle" aria-describedby="courseModalDescription" ${editing ? `data-course-id="${escapeHtml(course.id)}"` : ""}>
+        <div class="modal-head"><div><h2 id="courseModalTitle">${editing ? "Edit course details" : "Add a new course"}</h2><p id="courseModalDescription">${editing ? "The join code stays the same, so nobody has to rejoin." : "Students will use the generated code to enroll."}</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
         <div class="field-grid">
-          <div class="field full"><label for="courseName">Course name</label><input id="courseName" name="name" placeholder="e.g. Computer Networks" required /></div>
-          <div class="field"><label for="courseCode">Course code</label><input id="courseCode" name="courseCode" placeholder="CSE 308" required /></div>
-          <div class="field"><label for="section">Section</label><input id="section" name="section" placeholder="Section A" required /></div>
-          <div class="field"><label for="room">Classroom</label><input id="room" name="room" placeholder="Room 205" required /></div>
-          <div class="field full"><p class="stat-label">After creation, use the Students tab to upload the official Excel, PDF, CSV, or JSON roster. The Materials tab holds course files.</p></div>
+          <div class="field full"><label for="courseName">Course name</label><input id="courseName" name="name" placeholder="e.g. Computer Networks" value="${editing ? escapeHtml(course.name) : ""}" required /></div>
+          <div class="field"><label for="courseCode">Course code</label><input id="courseCode" name="courseCode" placeholder="CSE 308" value="${editing ? escapeHtml(course.courseCode) : ""}" required /></div>
+          <div class="field"><label for="section">Section</label><input id="section" name="section" placeholder="Section A" value="${editing ? escapeHtml(course.section) : ""}" required /></div>
+          <div class="field"><label for="room">Classroom</label><input id="room" name="room" placeholder="Room 205" value="${editing ? escapeHtml(course.room) : ""}" required /></div>
+          <div class="field full"><p class="stat-label">${editing ? `Join code <strong>${escapeHtml(course.code || "")}</strong> is unchanged by this edit. Rosters, files, attendance and quizzes all stay attached.` : "After creation, use the Students tab to upload the official Excel, PDF, CSV, or JSON roster. The Materials tab holds course files."}</p></div>
         </div>
-        <div class="setup-actions"><button type="button" class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary">${icon("i-plus")} Create course</button></div>
+        <div class="setup-actions"><button type="button" class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary">${icon(editing ? "i-check" : "i-plus")} ${editing ? "Save changes" : "Create course"}</button></div>
       </form>
     </div>`;
   setTimeout(() => document.querySelector("#courseName")?.focus(), 0);
@@ -2865,6 +2870,40 @@ document.addEventListener("click", async event => {
     }
   }
 
+  if (action === "edit-course") {
+    if (state.userRole !== "faculty") return toast("Only professors can edit courses", "error");
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    const target = state.courses.find(item => item.id === courseId);
+    if (!target) return toast("Course not found", "error");
+    return openCourseModal(target);
+  }
+  if (action === "delete-course") {
+    if (state.userRole !== "faculty") return toast("Only professors can delete courses", "error");
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    const target = state.courses.find(item => item.id === courseId);
+    if (!target) return toast("Course not found", "error");
+    const confirmed = window.confirm(
+      `Delete ${target.courseCode} — ${target.name}?
+
+`
+      + `This removes its roll list, enrolments, shared files, timetable, attendance history and quizzes. `
+      + `Students and TAs lose access. This cannot be undone.`
+    );
+    if (!confirmed) return;
+    try {
+      await apiRequest(`/api/courses/${encodeURIComponent(courseId)}`, { method: "DELETE" });
+    } catch (error) {
+      return toast(error.message || "Could not delete the course", "error");
+    }
+    if (state.selectedCourseId === courseId) state.selectedCourseId = "";
+    if (managedCourseId === courseId) managedCourseId = "";
+    if (materialsCourseId === courseId) materialsCourseId = "";
+    await syncBackendState();
+    persist();
+    syncCourseSwitcher();
+    renderClasses();
+    return toast(`${target.courseCode} deleted`);
+  }
   if (action === "open-course-modal") {
     if (state.userRole !== "faculty") return toast("Only professors can create courses", "error");
     openCourseModal();
@@ -3592,29 +3631,41 @@ document.addEventListener("submit", async event => {
     if (state.userRole !== "faculty") return toast("Only professors can create courses", "error");
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
     const data = Object.fromEntries(new FormData(event.target));
+    const editingId = event.target.dataset.courseId || "";
+    const body = {
+      name: data.name,
+      courseCode: data.courseCode,
+      section: data.section,
+      room: data.room
+    };
     let result;
     try {
-      result = await apiRequest("/api/courses", {
-        method: "POST",
-        body: {
-          name: data.name,
-          courseCode: data.courseCode,
-          section: data.section,
-          room: data.room
-        }
-      });
+      result = editingId
+        ? await apiRequest(`/api/courses/${encodeURIComponent(editingId)}`, {
+            method: "PATCH",
+            body
+          })
+        : await apiRequest("/api/courses", { method: "POST", body });
       await syncBackendState();
       await switchCourseContext(result.course.id, {
         renderView: false,
         notify: false,
       });
     } catch (error) {
-      return toast(error.message || "Could not create the course", "error");
+      return toast(
+        error.message || (editingId ? "Could not update the course" : "Could not create the course"),
+        "error"
+      );
     }
     persist();
     closeModal();
     renderClasses();
-    toast(`${result.course.name} created · Code ${result.course.code}`);
+    syncCourseSwitcher();
+    toast(
+      editingId
+        ? `${result.course.name} updated · Code ${result.course.code} unchanged`
+        : `${result.course.name} created · Code ${result.course.code}`
+    );
   }
   if (event.target.id === "addClassForm") {
     const course = selectedCourse();
