@@ -630,3 +630,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .saved-quiz-actions .btn { min-height: 34px; padding: 0 12px; font-size: 11px; }
 .icon-btn.danger { color: var(--red); }
 .icon-btn.danger:hover { background: var(--red-soft); }
+
+.back-nav-btn { flex: 0 0 auto; border: 1px solid var(--line); background: white; }
+.back-nav-btn:hover { color: var(--primary); border-color: #cccced; }

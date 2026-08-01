@@ -574,6 +574,7 @@ function roleDisplayName(role = state.userRole, name = state.accountName) {
 }
 
 function showApp() {
+  syncBackButton();
   authRoot.hidden = true;
   authRoot.innerHTML = "";
   appShell.hidden = false;
@@ -716,6 +717,36 @@ function setHeader(title, eyebrow, showQuick = true) {
   }
 }
 
+const backNav = document.querySelector("#backNav");
+
+function syncBackButton() {
+  if (!backNav) return;
+  // The dashboard is the root of the app, so there is nothing behind it.
+  backNav.hidden = !state.authenticated || state.route === "dashboard";
+}
+
+function goBack() {
+  if (state.route === "dashboard") return;
+  const stepped = history.state?.campusRoute;
+  if (stepped) {
+    history.back();
+    return;
+  }
+  navigate("dashboard");
+}
+
+backNav?.addEventListener("click", goBack);
+
+window.addEventListener("popstate", event => {
+  if (!state.authenticated) return;
+  const route = event.state?.campusRoute || "dashboard";
+  if (route === state.route) {
+    syncBackButton();
+    return;
+  }
+  navigate(route, { fromHistory: true });
+});
+
 function setNavigationState(route) {
   document.querySelectorAll(".nav-item").forEach(btn => {
     const active = btn.dataset.route === route;
@@ -725,7 +756,16 @@ function setNavigationState(route) {
   });
 }
 
-function navigate(route) {
+// Browser history drives Back, so the Android hardware button and the topbar
+// arrow both retrace the same trail.
+function navigate(route, { fromHistory = false } = {}) {
+  if (!fromHistory && state.route !== route) {
+    try {
+      history.pushState({ campusRoute: route }, "");
+    } catch {
+      // A blocked history API must never stop navigation.
+    }
+  }
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
   if (route === "students") managedCourseId = "";
@@ -736,6 +776,7 @@ function navigate(route) {
   window.scrollTo({ top: 0, behavior: "smooth" });
   pageTitle.focus({ preventScroll: true });
   updateManager?.applyStagedUpdate?.();
+  syncBackButton();
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
   if (route === "quizzes" && canPublishQuiz()) {
