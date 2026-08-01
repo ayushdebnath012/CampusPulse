@@ -92,6 +92,7 @@ let activeAttendance = null;
 // in so the card appears as soon as the professor starts attendance.
 let openAttendance = [];
 let openAttendanceTimer = null;
+let enrolledStudents = [];
 let passwordResetEmail = "";
 // Reset by email is only offered when the server can actually send one.
 let emailDeliveryAvailable = false;
@@ -317,6 +318,7 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearTimeout(quizTimer);
   clearInterval(openAttendanceTimer);
   openAttendance = [];
+  enrolledStudents = [];
   courseRosters = new Map();
   activeAttendance = null;
   managedCourseId = "";
@@ -495,6 +497,19 @@ function canSelfMarkAttendance() {
   return state.userRole === "student" || state.userRole === "ta";
 }
 
+async function refreshEnrolledStudents() {
+  if (!backendConfigured() || !apiToken || state.userRole === "student") {
+    enrolledStudents = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest("/api/students");
+    enrolledStudents = Array.isArray(payload.students) ? payload.students : [];
+  } catch {
+    enrolledStudents = [];
+  }
+}
+
 async function refreshOpenAttendance({ rerender = true } = {}) {
   if (!backendConfigured() || !apiToken || !canSelfMarkAttendance()) {
     openAttendance = [];
@@ -537,6 +552,7 @@ async function syncBackendState() {
   applyQuizSnapshot(payload.quiz);
   persist();
   await refreshOpenAttendance({ rerender: false });
+  await refreshEnrolledStudents();
   startOpenAttendancePolling();
 }
 
@@ -588,6 +604,8 @@ function setHeader(title, eyebrow, showQuick = true) {
   if (menuAvatar) menuAvatar.textContent = profile.initials;
   if (menuName) menuName.textContent = profileName.textContent;
   if (menuMeta) menuMeta.textContent = state.authEmail || profile.meta;
+  const studentsNav = document.querySelector("#studentsNav");
+  if (studentsNav) studentsNav.style.display = state.userRole === "student" ? "none" : "";
   if (attendanceNav) {
     attendanceNav.style.display = state.courses.some(canRunAttendance) ? "" : "none";
   }
@@ -613,6 +631,7 @@ function navigate(route) {
   pageTitle.focus({ preventScroll: true });
   updateManager?.applyStagedUpdate?.();
   if (route === "dashboard") refreshOpenAttendance();
+  if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
 }
 
 function render() {
@@ -621,6 +640,7 @@ function render() {
   if (state.route === "schedule") return renderSchedule();
   if (state.route === "attendance") return renderAttendance();
   if (state.route === "quizzes") return renderQuiz();
+  if (state.route === "students") return renderStudents();
   return renderPlaceholder(state.route);
 }
 
@@ -1366,8 +1386,7 @@ function renderClasses() {
     <article class="card page-card">
       <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Only you can manage these courses, join codes, and official rosters.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
       <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
-    </article>
-    ${weeklySchedule()}`;
+    </article>`;
 }
 
 function facultyCourseCard(course) {
@@ -1467,27 +1486,7 @@ function renderStudentClasses() {
       </form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
     </article>
-    ${weeklySchedule()}
     </div>`;
-}
-
-function weeklySchedule() {
-  const course = selectedCourse();
-  if (!course) return "";
-  const configured = state.backendSchedule.filter(item => item.courseId === course.id);
-  const sessions = (configured.length ? configured : [{ day: "Class", start: "—", end: "—", topic: course.name, room: course.room }])
-    .map(item => [String(item.day || "Class").slice(0, 3).toUpperCase(), item.start || "—", item.end || "—", item.topic || course.name, item.room || course.room]);
-  return `<article class="card page-card">
-    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly schedule</h2><p class="stat-label">${escapeHtml(course.name)} · ${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge purple">${icon("i-calendar")} ${sessions.length} sessions</span></div>
-    <div class="class-list">
-      ${sessions.map(([day, time, end, type, room]) => `<div class="class-row">
-        <div class="time">${escapeHtml(day)}<small>${escapeHtml(time)}</small></div>
-        <div class="course"><strong>${escapeHtml(type)}</strong><span>${escapeHtml(course.name)} · ${escapeHtml(room)}</span></div>
-        <span class="badge gray">${escapeHtml(time)} – ${escapeHtml(end)}</span>
-        ${canRunAttendance(course) ? `<button class="text-btn" data-route-link="attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button>` : `<span class="badge gray">Teaching-team attendance</span>`}
-      </div>`).join("")}
-    </div>
-  </article>`;
 }
 
 function openCourseModal() {
@@ -1524,6 +1523,48 @@ function renderPlaceholder(route) {
   }[route] || ["Coming soon", "This workspace is ready for its next module.", "i-grid"];
   setHeader(config[0], "CAMPUSPULSE");
   view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon(config[2])}</span><h2>${config[0]}</h2><p>${config[1]}</p><button class="btn btn-primary" data-route-link="dashboard">Back to overview</button></div></article>`;
+}
+
+// Everyone who signed up and joined, as opposed to the uploaded roll list.
+function renderStudents() {
+  if (state.userRole === "student") return navigate("dashboard");
+  setHeader("Students", state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE", false);
+  const enrolled = enrolledStudents;
+  const byCourse = new Map();
+  for (const student of enrolled) {
+    if (!byCourse.has(student.courseId)) byCourse.set(student.courseId, []);
+    byCourse.get(student.courseId).push(student);
+  }
+  view.innerHTML = `
+    <div class="page-grid roster-grid">
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled students</h2><p class="stat-label">Accounts that joined with a roll number from your roll list</p></div><span class="badge ${enrolled.length ? "green" : "amber"}">${enrolled.length} enrolled</span></div>
+        ${enrolled.length ? [...byCourse.entries()].map(([courseId, students]) => {
+          const course = state.courses.find(item => item.id === courseId);
+          return `<div style="margin-top:18px">
+            <div class="section-head"><h3>${escapeHtml(course ? `${course.courseCode} · ${course.name}` : courseId)}</h3><span class="badge purple">${students.length}</span></div>
+            <div class="roster-scroll">
+              <table class="roster-table">
+                <thead><tr><th>Roll No</th><th>Name</th><th>Email</th><th>Role</th></tr></thead>
+                <tbody>${students.map(student => `<tr>
+                  <td class="roster-roll">${escapeHtml(student.rollNumber || "—")}</td>
+                  <td>${escapeHtml(student.name)}</td>
+                  <td>${escapeHtml(student.email)}</td>
+                  <td>${escapeHtml(student.role === "ta" ? "TA" : "Student")}</td>
+                </tr>`).join("")}</tbody>
+              </table>
+            </div>
+          </div>`;
+        }).join("") : `<p class="stat-label" style="padding:14px 2px">Nobody has joined yet. Share a course join code — students enter it with their roll number.</p>`}
+      </article>
+      <aside class="card page-card">
+        <div class="section-head"><h3>Roll list vs enrolled</h3></div>
+        <div class="summary-list">
+          ${state.courses.map(course => `<div class="summary-item"><span>${escapeHtml(course.courseCode)}</span><strong>${(byCourse.get(course.id) || []).length} of ${Number(course.students) || 0}</strong></div>`).join("") || `<div class="summary-item"><span>No courses yet</span><strong>—</strong></div>`}
+        </div>
+        <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>The roll list is the official register you uploaded. This page shows who has actually created an account and joined.</span></div>
+      </aside>
+    </div>`;
 }
 
 function renderSettings() {

@@ -878,6 +878,48 @@ function createApp(options = {}) {
     }
   });
 
+  // Everyone who actually signed up and joined, as opposed to the roll list.
+  app.get(
+    "/api/students",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courses = accessibleCourses(data, request.user);
+        const byId = new Map(courses.map((course) => [course.id, course]));
+        const students = data.enrollments
+          .filter((item) => byId.has(item.courseId))
+          .map((item) => {
+            const user = data.users.find((person) => person.id === item.userId);
+            if (!user) return null;
+            const course = byId.get(item.courseId);
+            return {
+              userId: user.id,
+              name: user.name,
+              email: user.email,
+              role: item.courseRole || user.role,
+              rollNumber: item.rollNumber || "",
+              courseId: course.id,
+              courseCode: course.courseCode,
+              courseName: course.name,
+              joinedAt: item.joinedAt || null,
+            };
+          })
+          .filter(Boolean)
+          .sort(
+            (left, right) =>
+              left.courseCode.localeCompare(right.courseCode) ||
+              left.rollNumber.localeCompare(right.rollNumber) ||
+              left.name.localeCompare(right.name),
+          );
+        response.json({ students });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.get("/api/courses", authenticate, async (request, response, next) => {
     try {
       const data = await store.read();

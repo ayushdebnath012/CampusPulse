@@ -1156,6 +1156,84 @@ test("a professor adds and removes students and sets the weekly timetable", asyn
   assert.equal(badDay.response.status, 400);
 });
 
+test("the students list shows who joined, and only to the course team", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "List Professor",
+    email: "list-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [
+      { rollNumber: "23ME10001", name: "Joined Student" },
+      { rollNumber: "23ME10002", name: "Never Joined" },
+    ],
+  });
+
+  const empty = await request(testServer.baseUrl, "/api/students", {
+    token: professor.token,
+  });
+  assert.equal(empty.response.status, 200);
+  assert.deepEqual(empty.body.students, []);
+
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Joined Student",
+    email: "joined@kgpian.iitkgp.ac.in",
+    password: "student-password",
+  });
+  await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code, rollNumber: "23ME10001" },
+  });
+
+  const listed = await request(testServer.baseUrl, "/api/students", {
+    token: professor.token,
+  });
+  assert.equal(listed.body.students.length, 1);
+  assert.deepEqual(
+    {
+      rollNumber: listed.body.students[0].rollNumber,
+      name: listed.body.students[0].name,
+      email: listed.body.students[0].email,
+      courseId: listed.body.students[0].courseId,
+      role: listed.body.students[0].role,
+    },
+    {
+      rollNumber: "23ME10001",
+      name: "Joined Student",
+      email: "joined@kgpian.iitkgp.ac.in",
+      courseId: course.id,
+      role: "student",
+    },
+  );
+
+  // Students cannot read the list of their classmates.
+  const denied = await request(testServer.baseUrl, "/api/students", {
+    token: student.token,
+  });
+  assert.equal(denied.response.status, 403);
+
+  // Another professor sees nothing from this course.
+  const outsider = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Other Professor",
+    email: "other-professor@iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const otherView = await request(testServer.baseUrl, "/api/students", {
+    token: outsider.token,
+  });
+  assert.deepEqual(otherView.body.students, []);
+});
+
 test("professors sign up from department subdomains, students do not", async (t) => {
   const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
   t.after(async () => {

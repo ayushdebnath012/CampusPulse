@@ -12,7 +12,7 @@
       content="CampusPulse helps professors manage private courses and official rosters while teaching teams run attendance and quick quizzes."
     />
     <title>CampusPulse — Classroom operations, simplified</title>
-    <link rel="stylesheet" href="styles.css?v=23" />
+    <link rel="stylesheet" href="styles.css?v=24" />
   </head>
   <body>
     <svg class="svg-defs" aria-hidden="true">
@@ -53,16 +53,12 @@
           <button class="nav-item active" data-route="dashboard" aria-label="Overview" aria-current="page"><svg><use href="#i-grid"/></svg><span>Overview</span></button>
           <button class="nav-item" data-route="schedule" aria-label="Schedule"><svg><use href="#i-calendar"/></svg><span>Schedule</span></button>
           <button class="nav-item" data-route="classes" aria-label="Courses"><svg><use href="#i-users"/></svg><span>Courses</span></button>
+          <button class="nav-item" id="studentsNav" data-route="students" aria-label="Students"><svg><use href="#i-users"/></svg><span>Students</span></button>
           <button class="nav-item" id="attendanceNav" data-route="attendance" aria-label="Attendance"><svg><use href="#i-users"/></svg><span>Attendance</span></button>
           <button class="nav-item" data-route="quizzes" aria-label="Quizzes"><svg><use href="#i-quiz"/></svg><span>Quizzes</span></button>
         </nav>
 
         <div class="side-bottom">
-          <div class="mini-tip">
-            <span class="tip-icon">✦</span>
-            <strong>Pro tip</strong>
-            <p>Open the official roster before class.</p>
-          </div>
           <button class="nav-item" data-route="settings" aria-label="Settings"><svg><use href="#i-settings"/></svg><span>Settings</span></button>
           <div class="user-card">
             <div class="avatar" id="profileAvatar">FD</div>
@@ -117,7 +113,7 @@
       <button class="btn btn-primary" type="button" data-action="restart-to-update">Restart now</button>
     </aside>
      <script src="config.js?v=13"></script>
-     <script src="update-manager.js?v=23"></script>
-     <script src="app.js?v=23"></script>
+     <script src="update-manager.js?v=24"></script>
+     <script src="app.js?v=24"></script>
   </body>
 </html>
