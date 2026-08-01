@@ -319,6 +319,9 @@ function createApp(options = {}) {
       if (production && !data.courseStudents.length) {
         warnings.push("COURSE_ROSTERS_JSON_BASE64");
       }
+      const lockedCourses = data.courses
+        .filter((course) => String(course.code || "").startsWith("LOCKED-"))
+        .map((course) => course.id);
       response.json({
         ok: true,
         service: "campuspulse-api",
@@ -327,6 +330,7 @@ function createApp(options = {}) {
         emailDelivery:
           mailer.provider || (mailer.configured ? "configured" : "disabled"),
         ...(warnings.length ? { configurationWarnings: warnings } : {}),
+        ...(lockedCourses.length ? { lockedCourses } : {}),
       });
     } catch (error) {
       next(error);

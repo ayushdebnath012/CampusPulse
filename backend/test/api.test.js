@@ -928,3 +928,19 @@ test("production course loading stays available when join codes are incomplete",
   assert.notEqual(softCourse.code, "SC401A");
   assert.equal(kbsCourse.code, "KB60353-PRIVATE");
 });
+
+test("a malformed configured join code locks the course instead of failing", () => {
+  const productionWithBadCode = initialData({
+    ...TEST_ROSTER_ENV,
+    NODE_ENV: "production",
+    COURSE_JOIN_CODES_JSON: JSON.stringify({
+      soft401: "no",
+      kbs60353: "KBS_UNDERSCORE",
+    }),
+  });
+
+  for (const courseId of ["soft401", "kbs60353"]) {
+    const course = productionWithBadCode.courses.find((item) => item.id === courseId);
+    assert.match(course.code, /^LOCKED-[A-F0-9]{16}$/);
+  }
+});

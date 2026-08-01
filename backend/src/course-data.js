@@ -83,11 +83,10 @@ function buildCourseData(env = process.env) {
     // An unconfigured course must never fall back to its published default code in
     // production, but it must not take the whole API down either: lock it with a
     // per-process random code until COURSE_JOIN_CODES_JSON is set.
+    const usableCode =
+      configuredCode && /^[A-Z0-9-]{6,32}$/.test(configuredCode) ? configuredCode : null;
     const joinCode =
-      configuredCode || (production ? lockedJoinCode(config.id) : config.code);
-    if (!/^[A-Z0-9-]{6,32}$/.test(joinCode)) {
-      throw new Error(`Invalid join code configured for ${config.id}`);
-    }
+      usableCode || (production ? lockedJoinCode(config.id) : config.code);
     if (source && source.students.length !== source.studentCount) {
       throw new Error(`Roster count mismatch for ${source.courseCode}`);
     }
