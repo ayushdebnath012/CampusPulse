@@ -113,6 +113,38 @@ const profileMeta = document.querySelector("#profileMeta");
 const updateBanner = document.querySelector("#updateBanner");
 const updateBannerMessage = document.querySelector("#updateBannerMessage");
 const updateManager = window.CAMPUSPULSE_UPDATES || null;
+const appMenu = document.querySelector("#appMenu");
+const menuScrim = document.querySelector("#menuScrim");
+const menuToggle = document.querySelector("#menuToggle");
+const menuAvatar = document.querySelector("#menuAvatar");
+const menuName = document.querySelector("#menuName");
+const menuMeta = document.querySelector("#menuMeta");
+
+function setMenuOpen(open) {
+  if (!appMenu) return;
+  appMenu.classList.toggle("open", open);
+  appMenu.setAttribute("aria-hidden", open ? "false" : "true");
+  menuScrim?.classList.toggle("open", open);
+  menuToggle?.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) appMenu.querySelector(".app-menu-item")?.focus();
+  else if (document.activeElement && appMenu.contains(document.activeElement)) {
+    menuToggle?.focus();
+  }
+}
+
+function closeMenu() {
+  setMenuOpen(false);
+}
+
+menuToggle?.addEventListener("click", () => setMenuOpen(!appMenu.classList.contains("open")));
+menuScrim?.addEventListener("click", closeMenu);
+document.querySelector("#menuClose")?.addEventListener("click", closeMenu);
+appMenu?.addEventListener("click", event => {
+  if (event.target.closest(".app-menu-item")) closeMenu();
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && appMenu?.classList.contains("open")) closeMenu();
+});
 
 function updateStatusLabel(status) {
   return {
@@ -316,6 +348,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
   courseRosters = new Map();
   activeAttendance = null;
   managedCourseId = "";
+  closeMenu();
   if (view) view.innerHTML = "";
   selectedLoginRole = loginProfiles[role] ? role : "faculty";
   authMode = mode === "login" ? "login" : "signup";
@@ -513,6 +546,9 @@ function setHeader(title, eyebrow, showQuick = true) {
   profileAvatar.textContent = profile.initials;
   profileName.textContent = roleDisplayName(state.userRole, state.accountName || profile.name);
   profileMeta.textContent = profile.meta;
+  if (menuAvatar) menuAvatar.textContent = profile.initials;
+  if (menuName) menuName.textContent = profileName.textContent;
+  if (menuMeta) menuMeta.textContent = state.authEmail || profile.meta;
   if (attendanceNav) {
     attendanceNav.style.display = state.courses.some(canRunAttendance) ? "" : "none";
   }

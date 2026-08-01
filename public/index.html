@@ -12,7 +12,7 @@
       content="CampusPulse helps professors manage private courses and official rosters while teaching teams run attendance and quick quizzes."
     />
     <title>CampusPulse — Classroom operations, simplified</title>
-    <link rel="stylesheet" href="styles.css?v=15" />
+    <link rel="stylesheet" href="styles.css?v=16" />
   </head>
   <body>
     <svg class="svg-defs" aria-hidden="true">
@@ -35,6 +35,8 @@
       <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
       <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
       <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M5 19h14"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-logout" viewBox="0 0 24 24"><path d="M15 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3M10 8l-4 4 4 4M6 12h11"/></symbol>
     </svg>
 
     <section id="authRoot" class="auth-root" aria-live="polite"></section>
@@ -71,9 +73,12 @@
 
       <main class="main">
         <header class="topbar">
-          <div>
-            <p class="eyebrow" id="pageEyebrow">THURSDAY, 30 JULY</p>
-            <h1 id="pageTitle" tabindex="-1">Good morning, Faculty</h1>
+          <div class="topbar-lead">
+            <button class="icon-btn menu-btn" id="menuToggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="appMenu"><svg><use href="#i-menu"/></svg></button>
+            <div>
+              <p class="eyebrow" id="pageEyebrow">THURSDAY, 30 JULY</p>
+              <h1 id="pageTitle" tabindex="-1">Good morning, Faculty</h1>
+            </div>
           </div>
           <div class="top-actions">
             <button class="role-switch" id="roleSwitch" aria-label="Switch account"><span id="roleLabel">Faculty view</span><span class="role-swap">⇄</span></button>
@@ -84,6 +89,22 @@
 
         <section id="view" class="view"></section>
       </main>
+
+      <div class="menu-scrim" id="menuScrim"></div>
+      <aside class="app-menu" id="appMenu" aria-label="Account menu" aria-hidden="true">
+        <div class="app-menu-head">
+          <div class="avatar" id="menuAvatar">FD</div>
+          <div>
+            <strong id="menuName">Faculty Demo</strong>
+            <span id="menuMeta">Instructor · CSE</span>
+          </div>
+          <button class="icon-btn" id="menuClose" type="button" aria-label="Close menu"><svg><use href="#i-close"/></svg></button>
+        </div>
+        <nav class="app-menu-nav" aria-label="Account options">
+          <button class="app-menu-item" type="button" data-route-link="settings"><svg><use href="#i-settings"/></svg><span>Settings</span></button>
+          <button class="app-menu-item danger" type="button" data-action="logout"><svg><use href="#i-logout"/></svg><span>Sign out</span></button>
+        </nav>
+      </aside>
     </div>
 
     <div id="toastRegion" class="toast-region" aria-live="assertive"></div>
@@ -97,6 +118,6 @@
     </aside>
      <script src="config.js?v=13"></script>
      <script src="update-manager.js?v=15"></script>
-     <script src="app.js?v=15"></script>
+     <script src="app.js?v=16"></script>
   </body>
 </html>
