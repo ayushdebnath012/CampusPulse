@@ -2416,8 +2416,20 @@ function createApp(options = {}) {
             classLabel: quiz.classLabel || "",
             quizDate: quiz.quizDate || "",
             total,
-            // The team may see the answer key alongside the marks.
-            questions: quiz.questions,
+            // The team sees the key plus how the class split across options.
+            questions: quiz.questions.map((question, index) => {
+              const picks = quiz.responses.map((item) => item.answers?.[index]);
+              const answered = picks.filter((pick) => Number.isInteger(pick)).length;
+              return {
+                ...question,
+                answered,
+                optionCounts: question.options.map(
+                  (_option, optionIndex) =>
+                    picks.filter((pick) => pick === optionIndex).length,
+                ),
+                correctCount: picks.filter((pick) => pick === question.answer).length,
+              };
+            }),
             publishedAt: quiz.publishedAt || quiz.createdAt,
             closedAt: quiz.closedAt || null,
           },

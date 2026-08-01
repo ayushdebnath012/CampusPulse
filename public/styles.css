@@ -687,3 +687,16 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .option-input:has(input[type="radio"]:checked) input[type="text"] { background: transparent; }
 
 .roster-table tr.is-open-row td { background: var(--primary-soft); }
+
+.review-option { position: relative; overflow: hidden; }
+.option-bar {
+  position: absolute; inset: 0 auto 0 0; width: var(--share, 0%);
+  background: #eceafd; z-index: 0;
+}
+.review-option.is-correct .option-bar { background: #d9f2e7; }
+.review-option .review-mark,
+.review-option .option-text,
+.review-option .option-share { position: relative; z-index: 1; }
+.option-text { flex: 1 1 auto; min-width: 0; }
+.option-share { color: var(--muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
+.review-option.is-correct .option-share { color: #087b59; }

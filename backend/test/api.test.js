@@ -2001,9 +2001,15 @@ test("quiz results list every rostered student with their marks", async (t) => {
     assert.equal(rejected.response.status, 400);
   }
 
-  // The team sees the answer key alongside the marks.
+  // The team sees the answer key and how the class split across options.
   assert.equal(results.body.quiz.questions.length, 2);
   assert.equal(results.body.quiz.questions[0].answer, 0);
+  // One student answered [0, 0]: right on the first, wrong on the second.
+  assert.deepEqual(results.body.quiz.questions[0].optionCounts, [1, 0]);
+  assert.equal(results.body.quiz.questions[0].correctCount, 1);
+  assert.equal(results.body.quiz.questions[0].answered, 1);
+  assert.deepEqual(results.body.quiz.questions[1].optionCounts, [1, 0]);
+  assert.equal(results.body.quiz.questions[1].correctCount, 0);
 
   // A finished quiz can be removed along with its marks.
   const dropped = await request(testServer.baseUrl, `/api/quizzes/${quizId}`, {

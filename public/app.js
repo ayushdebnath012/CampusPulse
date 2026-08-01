@@ -824,6 +824,7 @@ function render() {
   if (state.route === "students") return renderStudents();
   if (state.route === "notices") return renderNotices();
   if (state.route === "quizmarks") return renderQuizMarks();
+  if (state.route === "quizquestions") return renderQuizQuestions();
   if (state.route === "materials") return renderMaterials();
   return renderPlaceholder(state.route);
 }
@@ -1912,7 +1913,12 @@ function formatQuizDate(value) {
 }
 
 function quizResultsPicker(selectedId = "") {
-  if (!quizHistory.length) return "";
+  if (!quizHistory.length) {
+    return `<label class="results-picker">
+      <span>Marks for</span>
+      <select class="select" disabled><option>No past quizzes yet</option></select>
+    </label>`;
+  }
   return `<label class="results-picker">
     <span>Marks for</span>
     <select class="select" id="quizResultsSelect">
@@ -2002,28 +2008,55 @@ function renderQuizMarks() {
         </table>
       </div>
     </article>` : `<article class="card page-card" style="margin-bottom:22px"><p class="stat-label">No quiz has run yet. Publish one from the Quizzes tab.</p></article>`}
-    ${quizQuestionsCard()}`;
+    ${quiz ? `<article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Questions</h2><p class="stat-label">See what was asked, the correct option, and how the class split.</p></div><button class="btn" type="button" data-action="open-quiz-questions">${icon("i-quiz")} View questions</button></div>
+    </article>` : ""}`;
 }
 
 
-function quizQuestionsCard() {
-  const questions = quizResults?.quiz?.questions || [];
-  if (!questions.length) return "";
-  return `<article class="card page-card">
-    <div class="section-head"><div><h2 style="margin:0 0 5px">Questions</h2><p class="stat-label">The correct option is marked. Students never receive it.</p></div><span class="badge gray">${questions.length}</span></div>
-    <div class="quiz-review">
-      ${questions.map((question, index) => `<div class="question-card">
-        <div class="question-top"><span class="q-number">${index + 1}</span><strong>${escapeHtml(question.text || "Image question")}</strong></div>
-        ${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${index + 1} image" />` : ""}
-        <div class="options">
-          ${(question.options || []).map((option, optionIndex) => `<div class="option-input review-option ${optionIndex === question.answer ? "is-correct" : ""}">
-            <span class="review-mark">${optionIndex === question.answer ? icon("i-check") : ""}</span>
-            <span>${escapeHtml(option)}</span>
-          </div>`).join("")}
-        </div>
-      </div>`).join("")}
-    </div>
-  </article>`;
+function renderQuizQuestions() {
+  const course = selectedCourse();
+  const quiz = quizResults?.quiz;
+  if (!course || !quiz) return navigate("quizmarks");
+  const questions = quiz.questions || [];
+  setHeader(
+    `${quiz.title || "Past quiz"} · questions`,
+    `${course.courseCode} · ${formatQuizDate(quiz.quizDate || quiz.publishedAt) || "PAST QUIZ"}`,
+    false
+  );
+  view.innerHTML = `
+    <button class="back-btn" data-action="back-to-marks">${icon("i-back")} Back to marks</button>
+    <article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Questions</h2><p class="stat-label">${[
+        quiz.classLabel || quiz.day,
+        formatQuizDate(quiz.quizDate || quiz.publishedAt),
+        `${questions.length} question${questions.length === 1 ? "" : "s"}`
+      ].filter(Boolean).map(escapeHtml).join(" · ")}</p></div><span class="badge green">Answers shown</span></div>
+      <div class="quiz-review">
+        ${questions.length ? questions.map((question, index) => {
+          const answered = Number(question.answered) || 0;
+          const correctShare = answered ? Math.round((Number(question.correctCount) || 0) / answered * 100) : 0;
+          return `<div class="question-card">
+            <div class="question-top"><span class="q-number">${index + 1}</span><strong>${escapeHtml(question.text || "Image question")}</strong></div>
+            ${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${index + 1} image" />` : ""}
+            <p class="stat-label">${answered} answered · ${correctShare}% correct</p>
+            <div class="options">
+              ${(question.options || []).map((option, optionIndex) => {
+                const count = Number(question.optionCounts?.[optionIndex]) || 0;
+                const share = answered ? Math.round((count / answered) * 100) : 0;
+                const correct = optionIndex === question.answer;
+                return `<div class="option-input review-option ${correct ? "is-correct" : ""}">
+                  <span class="option-bar" style="--share:${share}%"></span>
+                  <span class="review-mark">${correct ? icon("i-check") : ""}</span>
+                  <span class="option-text">${escapeHtml(option)}</span>
+                  <span class="option-share">${share}% · ${count}</span>
+                </div>`;
+              }).join("")}
+            </div>
+          </div>`;
+        }).join("") : `<p class="stat-label">This quiz has no questions.</p>`}
+      </div>
+    </article>`;
 }
 
 function quizResultsCard() {
@@ -3859,6 +3892,13 @@ document.addEventListener("click", async event => {
     }
     renderNotices();
     return toast("Notice removed");
+  }
+  if (action === "open-quiz-questions") {
+    if (!quizResults) return toast("Choose a quiz first", "error");
+    return navigate("quizquestions");
+  }
+  if (action === "back-to-marks") {
+    return navigate("quizmarks");
   }
   if (action === "open-past-quizzes") {
     quizResults = null;
