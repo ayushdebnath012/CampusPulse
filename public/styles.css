@@ -392,11 +392,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .auth-demo-note { margin-top:20px; padding:12px 13px; border-radius:11px; background:#f7f7fc; }
 .auth-demo-note span { display:block; color:var(--primary); font-size:9px; font-weight:800; }
 .auth-demo-note p { margin:4px 0 0; color:var(--muted); font-size:9px; line-height:1.5; }
-.verification-copy { margin:25px 0 20px; color:var(--muted); font-size:11px; line-height:1.7; }
-.verification-copy strong { color:var(--ink); }
-.verification-code { height:58px !important; text-align:center; font-size:22px !important; font-weight:800; letter-spacing:.28em; }
-.verification-actions { display:flex; justify-content:space-between; margin-top:17px; }
-.code-note strong { color:var(--primary); font-size:11px; letter-spacing:.12em; }
 .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .field { display:flex; flex-direction:column; gap:7px; margin-bottom:13px; }
 .field.full { grid-column:1/-1; }

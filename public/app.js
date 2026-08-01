@@ -98,7 +98,6 @@ let managedCourseId = "";
 let modalReturnFocus = null;
 let selectedLoginRole = state.userRole || "faculty";
 let authMode = state.accounts.length ? "login" : "signup";
-let pendingSignup = null;
 const view = document.querySelector("#view");
 const authRoot = document.querySelector("#authRoot");
 const appShell = document.querySelector("#appShell");
@@ -418,44 +417,9 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
   setTimeout(() => document.querySelector(authMode === "signup" ? "#signupName" : "#loginEmail")?.focus(), 0);
 }
 
-function renderEmailVerification() {
-  if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
-  const profile = loginProfiles[pendingSignup.role];
-  appShell.hidden = true;
-  authRoot.hidden = false;
-  authRoot.innerHTML = `
-    <div class="auth-layout">
-      <section class="auth-story">
-        <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
-        <div class="auth-story-copy"><span class="auth-kicker">EMAIL CHECK</span><h1>Verify your campus identity.</h1><p>One final step keeps each classroom workspace tied to a verified institute account.</p></div>
-        <div class="auth-feature-row"><span>${icon("i-check")} Email verification</span><span>${icon("i-users")} ${profile.shortTitle} workspace</span></div>
-      </section>
-      <section class="auth-panel">
-        <div class="auth-card verification-card">
-          <div class="auth-heading"><span class="auth-icon">${icon("i-send")}</span><div><p>Verification sent</p><h2>Check your email</h2></div></div>
-          <p class="verification-copy">Enter the six-digit code sent to <strong>${maskEmail(pendingSignup.email)}</strong>.</p>
-          <form id="verificationForm" class="login-form verification-form">
-            <label for="verificationCode">Verification code</label>
-            <input id="verificationCode" name="code" class="verification-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
-            <button class="btn btn-primary auth-submit" type="submit">${icon("i-check")} Verify email</button>
-          </form>
-          <div class="verification-actions"><button type="button" class="text-btn" data-action="back-to-signup">Change details</button><button type="button" class="text-btn" data-action="resend-code">Resend code</button></div>
-          <div class="auth-demo-note code-note"><span>Email verification</span><p>Check your inbox and spam folder for the verification email. CampusPulse will never display the code on this page.</p></div>
-        </div>
-      </section>
-    </div>`;
-  setTimeout(() => document.querySelector("#verificationCode")?.focus(), 0);
-}
-
 function isCampusEmail(email = "") {
   const domain = email.trim().toLowerCase().split("@")[1] || "";
   return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
-}
-
-function maskEmail(email) {
-  const [local, domain] = email.split("@");
-  const visible = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2);
-  return `${visible}${"•".repeat(Math.max(3, local.length - visible.length))}@${domain}`;
 }
 
 async function credentialHash(email, password) {
@@ -1452,7 +1416,6 @@ document.addEventListener("click", async event => {
   if (authRole) return renderLogin(authRole.dataset.authRole, authMode);
   const authModeButton = event.target.closest("[data-auth-mode]");
   if (authModeButton) {
-    pendingSignup = null;
     return renderLogin(selectedLoginRole, authModeButton.dataset.authMode);
   }
   const switchButton = event.target.closest("[data-switch-role]");
@@ -1470,7 +1433,6 @@ document.addEventListener("click", async event => {
     state.authEmail = "";
     state.route = "dashboard";
     authMode = "login";
-    pendingSignup = null;
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
     modalReturnFocus = null;
@@ -1715,29 +1677,10 @@ document.addEventListener("click", async event => {
     state.authEmail = "";
     state.route = "dashboard";
     authMode = "login";
-    pendingSignup = null;
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
     modalReturnFocus = null;
     renderLogin(state.userRole);
-  }
-  if (action === "back-to-signup") {
-    const role = pendingSignup?.role || selectedLoginRole;
-    pendingSignup = null;
-    renderLogin(role, "signup");
-  }
-  if (action === "resend-code" && pendingSignup) {
-    try {
-      await apiRequest("/api/auth/signup/resend", {
-        method: "POST",
-        auth: false,
-        body: { email: pendingSignup.email }
-      });
-    } catch (error) {
-      return toast(error.message || "Could not resend the code", "error");
-    }
-    renderEmailVerification();
-    toast("A new verification email was requested");
   }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
@@ -1922,24 +1865,6 @@ document.addEventListener("submit", async event => {
       return toast(error.message || "Could not create the account", "error");
     }
     return toast("Account created and signed in");
-  }
-  if (event.target.id === "verificationForm") {
-    if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
-    const code = String(new FormData(event.target).get("code") || "").trim();
-    try {
-      await apiRequest("/api/auth/signup/verify", {
-        method: "POST",
-        auth: false,
-        body: { email: pendingSignup.email, code }
-      });
-      const role = pendingSignup.role;
-      pendingSignup = null;
-      authMode = "login";
-      renderLogin(role, "login");
-      return toast("Email verified. Sign in with your new credentials");
-    } catch (error) {
-      return toast(error.message || "Could not verify that email", "error");
-    }
   }
   if (event.target.id === "loginForm") {
     const data = Object.fromEntries(new FormData(event.target));
