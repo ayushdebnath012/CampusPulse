@@ -392,6 +392,14 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .auth-demo-note { margin-top:20px; padding:12px 13px; border-radius:11px; background:#f7f7fc; }
 .auth-demo-note span { display:block; color:var(--primary); font-size:9px; font-weight:800; }
 .auth-demo-note p { margin:4px 0 0; color:var(--muted); font-size:9px; line-height:1.5; }
+.attendance-call-stack { display:grid; gap:12px; margin-bottom:16px; }
+.attendance-call { padding:20px; border-color:#e0defa; box-shadow:0 10px 30px rgba(91,91,214,.10); }
+.attendance-call.is-marked { border-color:#cfe9d8; box-shadow:none; }
+.attendance-call-copy { margin:10px 0 0; color:var(--muted); font-size:11px; line-height:1.6; }
+.attendance-call-roll { margin:12px 0 0; color:var(--muted); font-size:11px; }
+.attendance-call-roll strong { color:var(--ink); letter-spacing:.04em; }
+.attendance-call-label { display:block; margin:14px 0 6px; font-size:10px; font-weight:750; }
+.attendance-call-submit { width:100%; margin-top:14px; }
 .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .field { display:flex; flex-direction:column; gap:7px; margin-bottom:13px; }
 .field.full { grid-column:1/-1; }

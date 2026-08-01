@@ -267,6 +267,8 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     assert.equal(restrictedCurrent.response.status, 403);
   }
 
+  // Students now mark themselves, but only with device signals in the documented
+  // shape; the legacy top-level flags carry no weight.
   const checkIn = await request(
     testServer.baseUrl,
     `/api/attendance/${attendanceId}/check-in`,
@@ -276,8 +278,8 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
       body: { wifi: true, bluetooth: true },
     },
   );
-  assert.equal(checkIn.response.status, 403);
-  assert.match(checkIn.body.error, /teaching team/i);
+  assert.equal(checkIn.response.status, 400);
+  assert.match(checkIn.body.error, /bluetooth/i);
 
   const taJoinedSoft = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
@@ -777,6 +779,148 @@ test("one-time account reset removes existing identities but preserves course da
 
   const repeated = await deleteExistingAccountsOnce(testServer.store);
   assert.deepEqual(repeated, { applied: false, deletedAccounts: 0 });
+});
+
+test("students mark their own attendance only while the professor's session is open", async (t) => {
+  const testServer = await createTestServer();
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Ayush Professor",
+    email: "professor@iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Ayush Student",
+    email: "student@kgpian.iitkgp.ac.in",
+    password: "student-password",
+  });
+  const outsider = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Other Student",
+    email: "outsider@kgpian.iitkgp.ac.in",
+    password: "outsider-password",
+  });
+  for (const token of [student.token, outsider.token]) {
+    const joined = await request(testServer.baseUrl, "/api/courses/join", {
+      method: "POST",
+      token,
+      body: { code: "SC401A" },
+    });
+    assert.equal(joined.response.status, 201);
+  }
+
+  const goodSignals = { wifi: true, bluetooth: true };
+
+  // Nothing to join before the professor starts the session.
+  const beforeOpen = await request(testServer.baseUrl, "/api/attendance/open", {
+    token: student.token,
+  });
+  assert.equal(beforeOpen.response.status, 200);
+  assert.deepEqual(beforeOpen.body.sessions, []);
+  const early = await request(testServer.baseUrl, "/api/attendance/attendance-missing/check-in", {
+    method: "POST",
+    token: student.token,
+    body: { rollNumber: "MFTEST0001", signals: goodSignals },
+  });
+  assert.equal(early.response.status, 404);
+
+  const started = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: "soft401" },
+  });
+  assert.equal(started.response.status, 201);
+  const sessionId = started.body.attendance.id;
+
+  const visible = await request(testServer.baseUrl, "/api/attendance/open", {
+    token: student.token,
+  });
+  assert.equal(visible.body.sessions.length, 1);
+  assert.equal(visible.body.sessions[0].id, sessionId);
+  assert.equal(visible.body.sessions[0].checkedIn, false);
+
+  // Wi-Fi and Bluetooth must both be reported before the roll number is read.
+  for (const signals of [{ wifi: false, bluetooth: true }, { wifi: true, bluetooth: false }, {}]) {
+    const blocked = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+      method: "POST",
+      token: student.token,
+      body: { rollNumber: "MFTEST0001", signals },
+    });
+    assert.equal(blocked.response.status, 400);
+  }
+
+  const wrongRoll = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token: student.token,
+    body: { rollNumber: "NOTONROSTER", signals: goodSignals },
+  });
+  assert.equal(wrongRoll.response.status, 400);
+
+  const checkedIn = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token: student.token,
+    body: { rollNumber: "MFTEST0001", signals: goodSignals },
+  });
+  assert.equal(checkedIn.response.status, 201);
+  assert.equal(checkedIn.body.checkedIn, true);
+  assert.equal(checkedIn.body.rollNumber, "MFTEST0001");
+  // The student payload must not carry the rest of the roster.
+  assert.equal("records" in checkedIn.body, false);
+
+  // A second account cannot claim a roll number already bound to someone else.
+  const stolen = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token: outsider.token,
+    body: { rollNumber: "MFTEST0001", signals: goodSignals },
+  });
+  assert.equal(stolen.response.status, 409);
+
+  // Once bound, the roll number no longer has to be supplied.
+  const repeat = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token: student.token,
+    body: { signals: goodSignals },
+  });
+  assert.equal(repeat.response.status, 201);
+  assert.equal(repeat.body.rollNumber, "MFTEST0001");
+
+  const professorView = await request(testServer.baseUrl, `/api/attendance/${sessionId}`, {
+    token: professor.token,
+  });
+  const marked = professorView.body.attendance.records.find(
+    (record) => record.rollNumber === "MFTEST0001",
+  );
+  assert.equal(marked.present, true);
+  assert.equal(marked.markedBy, student.user.id);
+  assert.equal(marked.markedVia, "student");
+
+  const studentStatus = await request(testServer.baseUrl, "/api/attendance/open", {
+    token: student.token,
+  });
+  assert.equal(studentStatus.body.sessions[0].checkedIn, true);
+
+  // Closing the session ends student self-marking.
+  const closed = await request(testServer.baseUrl, `/api/attendance/${sessionId}/close`, {
+    method: "POST",
+    token: professor.token,
+  });
+  assert.equal(closed.response.status, 200);
+  const afterClose = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token: student.token,
+    body: { signals: goodSignals },
+  });
+  assert.equal(afterClose.response.status, 404);
+  const noneOpen = await request(testServer.baseUrl, "/api/attendance/open", {
+    token: student.token,
+  });
+  assert.deepEqual(noneOpen.body.sessions, []);
 });
 
 test("production stays healthy and usable when course env vars are unset", async (t) => {

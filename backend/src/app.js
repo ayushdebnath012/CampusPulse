@@ -44,6 +44,23 @@ function courseRoster(database, courseId) {
     .sort((left, right) => left.serial - right.serial);
 }
 
+function boundRollNumber(database, user, courseId) {
+  const enrollment = database.enrollments.find(
+    (item) => item.userId === user.id && item.courseId === courseId,
+  );
+  return enrollment?.rollNumber || "";
+}
+
+// A student's own row in a session, found by the roll number bound to their
+// enrollment, falling back to a row they personally marked.
+function ownRecord(database, user, session) {
+  const rollNumber = boundRollNumber(database, user, session.courseId);
+  if (rollNumber) {
+    return session.records.find((item) => item.rollNumber === rollNumber) || null;
+  }
+  return session.records.find((item) => item.markedBy === user.id) || null;
+}
+
 function attendanceRecord(student) {
   return {
     serial: student.serial,
@@ -941,6 +958,44 @@ function createApp(options = {}) {
     },
   );
 
+  // Must stay ahead of "/api/attendance/:id" so "open" is not read as an id.
+  app.get(
+    "/api/attendance/open",
+    authenticate,
+    requireRoles("student", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const enrolledIds = new Set(
+          data.enrollments
+            .filter((item) => item.userId === request.user.id)
+            .map((item) => item.courseId),
+        );
+        const sessions = data.attendanceSessions.filter((session) => {
+          if (session.status !== "open" || !enrolledIds.has(session.courseId)) return false;
+          const course = data.courses.find((item) => item.id === session.courseId);
+          return Boolean(course) && hasValidCourseOwner(data, course);
+        });
+        response.json({
+          sessions: sessions.map((session) => {
+            const record = ownRecord(data, request.user, session);
+            return {
+              id: session.id,
+              courseId: session.courseId,
+              startedAt: session.startedAt,
+              rollNumber:
+                record?.rollNumber || boundRollNumber(data, request.user, session.courseId),
+              checkedIn: Boolean(record?.present),
+              markedAt: record?.present ? record.markedAt : null,
+            };
+          }),
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.get(
     "/api/attendance/:id",
     authenticate,
@@ -964,10 +1019,89 @@ function createApp(options = {}) {
   app.post(
     "/api/attendance/:id/check-in",
     authenticate,
-    (_request, response) =>
-      response
-        .status(403)
-        .json({ error: "Attendance is recorded by the course teaching team" }),
+    requireRoles("student", "ta"),
+    async (request, response, next) => {
+      try {
+        const signals = request.body.signals || {};
+        if (signals.wifi !== true || signals.bluetooth !== true) {
+          return response.status(400).json({
+            error: "Connect Wi‑Fi and turn on Bluetooth before marking attendance",
+          });
+        }
+        const submittedRoll = String(request.body.rollNumber || "")
+          .trim()
+          .toUpperCase();
+
+        const result = await store.update((database) => {
+          const session = database.attendanceSessions.find(
+            (item) => item.id === request.params.id && item.status === "open",
+          );
+          if (!session) {
+            const error = new Error("Attendance is not open for this course");
+            error.status = 404;
+            throw error;
+          }
+          const enrollment = database.enrollments.find(
+            (item) =>
+              item.userId === request.user.id && item.courseId === session.courseId,
+          );
+          if (!enrollment) {
+            const error = new Error("Join the course before marking attendance");
+            error.status = 403;
+            throw error;
+          }
+          const course = database.courses.find((item) => item.id === session.courseId);
+          if (!course || !hasValidCourseOwner(database, course)) {
+            const error = new Error("This course does not have an active professor");
+            error.status = 409;
+            throw error;
+          }
+
+          const alreadyBound = enrollment.rollNumber || "";
+          const rollNumber = alreadyBound || submittedRoll;
+          if (!rollNumber) {
+            const error = new Error("Enter your roll number to mark attendance");
+            error.status = 400;
+            throw error;
+          }
+          const record = session.records.find(
+            (item) => item.rollNumber === rollNumber,
+          );
+          if (!record) {
+            const error = new Error("That roll number is not on this course roster");
+            error.status = 400;
+            throw error;
+          }
+          if (!alreadyBound) {
+            const claimedByAnother = database.enrollments.some(
+              (item) =>
+                item.courseId === session.courseId &&
+                item.userId !== request.user.id &&
+                item.rollNumber === rollNumber,
+            );
+            if (claimedByAnother) {
+              const error = new Error("That roll number is already linked to another account");
+              error.status = 409;
+              throw error;
+            }
+            enrollment.rollNumber = rollNumber;
+          }
+
+          record.present = true;
+          record.markedAt = new Date().toISOString();
+          record.markedBy = request.user.id;
+          record.markedVia = "student";
+          return {
+            courseId: session.courseId,
+            rollNumber,
+            markedAt: record.markedAt,
+          };
+        });
+        response.status(201).json({ checkedIn: true, ...result });
+      } catch (error) {
+        next(error);
+      }
+    },
   );
 
   app.patch(

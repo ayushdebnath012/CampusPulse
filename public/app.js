@@ -93,6 +93,10 @@ if (!state.authenticated) {
 let scanTimer;
 let quizTimer;
 let activeAttendance = null;
+// Open sessions a student may mark themselves present in, polled while signed
+// in so the card appears as soon as the professor starts attendance.
+let openAttendance = [];
+let openAttendanceTimer = null;
 let courseRosters = new Map();
 let managedCourseId = "";
 let modalReturnFocus = null;
@@ -300,6 +304,8 @@ async function selectQuizCourse(courseId) {
 function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
+  clearInterval(openAttendanceTimer);
+  openAttendance = [];
   courseRosters = new Map();
   activeAttendance = null;
   managedCourseId = "";
@@ -346,7 +352,7 @@ const loginProfiles = {
   student: {
     title: "Student login",
     shortTitle: "Student",
-    description: "Join professor-owned courses by code, take quizzes, and view your calendar. Attendance is teaching-team managed.",
+    description: "Join professor-owned courses by code, mark your attendance when class starts, take quizzes, and view your calendar.",
     idLabel: "Verified institute email",
     placeholder: "student@kgpian.iitkgp.ac.in",
     initials: "ST",
@@ -454,6 +460,32 @@ function showApp() {
   render();
 }
 
+function canSelfMarkAttendance() {
+  return state.userRole === "student" || state.userRole === "ta";
+}
+
+async function refreshOpenAttendance({ rerender = true } = {}) {
+  if (!backendConfigured() || !apiToken || !canSelfMarkAttendance()) {
+    openAttendance = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest("/api/attendance/open");
+    const next = Array.isArray(payload.sessions) ? payload.sessions : [];
+    const changed = JSON.stringify(next) !== JSON.stringify(openAttendance);
+    openAttendance = next;
+    if (changed && rerender && state.route === "dashboard") render();
+  } catch {
+    // A failed poll must never disrupt the screen the student is using.
+  }
+}
+
+function startOpenAttendancePolling() {
+  clearInterval(openAttendanceTimer);
+  if (!canSelfMarkAttendance()) return;
+  openAttendanceTimer = setInterval(() => refreshOpenAttendance(), 15000);
+}
+
 async function syncBackendState() {
   if (!backendConfigured() || !apiToken) return;
   const payload = await apiRequest("/api/bootstrap");
@@ -473,6 +505,8 @@ async function syncBackendState() {
   state.attendanceCheckedIn = false;
   applyQuizSnapshot(payload.quiz);
   persist();
+  await refreshOpenAttendance({ rerender: false });
+  startOpenAttendancePolling();
 }
 
 async function restoreBackendSession() {
@@ -548,6 +582,7 @@ function navigate(route) {
   window.scrollTo({ top: 0, behavior: "smooth" });
   pageTitle.focus({ preventScroll: true });
   updateManager?.applyStagedUpdate?.();
+  if (route === "dashboard") refreshOpenAttendance();
 }
 
 function render() {
@@ -632,14 +667,41 @@ function renderDashboard() {
     </div>`;
 }
 
+function attendanceCallCard(session) {
+  const course = state.courses.find(item => item.id === session.courseId);
+  const courseName = course ? course.name : "Your course";
+  const startedAt = session.startedAt
+    ? new Date(session.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "";
+  if (session.checkedIn) {
+    const markedAt = session.markedAt
+      ? new Date(session.markedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "";
+    return `<article class="card page-card attendance-call is-marked">
+      <div class="section-head"><h3>${escapeHtml(courseName)}</h3><span class="badge green">${icon("i-check")} Present</span></div>
+      <p class="attendance-call-copy">You were marked present${markedAt ? ` at ${escapeHtml(markedAt)}` : ""}. Nothing else to do.</p>
+    </article>`;
+  }
+  return `<article class="card page-card attendance-call">
+    <div class="section-head"><h3>${escapeHtml(courseName)}</h3><span class="badge amber">Attendance open</span></div>
+    <p class="attendance-call-copy">Your professor started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. Wi‑Fi and Bluetooth must both be on.</p>
+    ${session.rollNumber
+      ? `<p class="attendance-call-roll">Roll number <strong>${escapeHtml(session.rollNumber)}</strong></p>`
+      : `<label class="attendance-call-label" for="rollNumber-${escapeHtml(session.id)}">Your roll number</label>
+         <input class="text-input" id="rollNumber-${escapeHtml(session.id)}" data-roll-for="${escapeHtml(session.id)}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
+    <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}">${icon("i-check")} Mark me present</button>
+  </article>`;
+}
+
 function renderStudentDashboard() {
   setHeader(`Good morning, ${roleDisplayName()}`, "STUDENT DASHBOARD", false);
   const enrolled = state.courses.filter(course => state.enrolledCourses.includes(course.id));
   view.innerHTML = `
     <div class="left-stack">
+      ${openAttendance.length ? `<div class="attendance-call-stack">${openAttendance.map(attendanceCallCard).join("")}</div>` : ""}
       <section class="student-welcome">
         <h2>${enrolled.length ? "Your classroom is ready" : "Join your first course"}</h2>
-        <p>${enrolled.length ? "Access your schedule, quick quizzes, and class updates. Attendance records are maintained by the course teaching team." : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
+        <p>${enrolled.length ? "Access your schedule, quick quizzes, and class updates. Mark yourself present when your professor opens attendance." : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
         <button class="btn" data-route-link="${enrolled.length ? "schedule" : "classes"}">${icon(enrolled.length ? "i-calendar" : "i-plus")} ${enrolled.length ? "View my schedule" : "Join a course"}</button>
       </section>
       <div class="course-grid">
@@ -1693,6 +1755,39 @@ document.addEventListener("click", async event => {
     document.querySelector("#modalRoot").innerHTML = "";
     modalReturnFocus = null;
     renderLogin(state.userRole);
+  }
+  if (action === "student-check-in") {
+    const button = event.target.closest("[data-action]");
+    const sessionId = button.dataset.sessionId;
+    const session = openAttendance.find(item => item.id === sessionId);
+    if (!session) return toast("That attendance session has closed", "error");
+    const rollInput = document.querySelector(`[data-roll-for="${sessionId}"]`);
+    const rollNumber = session.rollNumber || rollInput?.value.trim().toUpperCase() || "";
+    if (!rollNumber) return toast("Enter your roll number", "error");
+
+    button.disabled = true;
+    try {
+      const signals = await attendanceSignals({ requestWebBluetooth: true });
+      if (!signals.wifi || !signals.bluetooth) {
+        const missing = [!signals.wifi && "Wi‑Fi", !signals.bluetooth && "Bluetooth"]
+          .filter(Boolean)
+          .join(" and ");
+        return toast(`Turn on ${missing}, then mark attendance again`, "error");
+      }
+      await apiRequest(`/api/attendance/${sessionId}/check-in`, {
+        method: "POST",
+        body: { rollNumber, signals }
+      });
+      state.checks = { wifi: true, bluetooth: true };
+      persist();
+      toast("You are marked present");
+    } catch (error) {
+      return toast(error.message || "Could not mark attendance", "error");
+    } finally {
+      button.disabled = false;
+    }
+    await refreshOpenAttendance({ rerender: false });
+    return render();
   }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
