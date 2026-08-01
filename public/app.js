@@ -1160,7 +1160,6 @@ function renderSchedule() {
     .sort((left, right) =>
       left.dayIndex - right.dayIndex || timeToMinutes(left.start) - timeToMinutes(right.start)
     );
-  const todaysEvents = events.filter(item => item.dayIndex === todayIndex);
   const weekDays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const weekMonday = new Date();
   weekMonday.setHours(12, 0, 0, 0);
@@ -1194,21 +1193,13 @@ function renderSchedule() {
   const calendarCourseCount = new Set(calendarEvents.map(event => event.courseId)).size;
   setHeader(`${course.name} schedule`, `${course.courseCode} · WEEKLY AGENDA`, false);
   view.innerHTML = `
-    ${canManageSchedule(course) ? `<div class="schedule-toolbar">
-      <div><strong>${escapeHtml(course.courseCode)} timetable</strong><span>Upload a weekly grid or a day/start/end/subject list. Replaces this course's classes.</span></div>
+    ${state.courses.some(canManageSchedule) ? `<div class="schedule-toolbar">
+      <div><strong>Weekly timetable</strong><span>Upload one grid covering every course you teach. Each class is filed under the course code in its cell; anything unlabelled goes to ${escapeHtml(course.courseCode)}. Courses named in the file have their classes replaced.</span></div>
       <div class="setup-actions">
         <button class="btn btn-primary" data-action="choose-timetable-upload">${icon("i-upload")} Upload timetable</button>
         <input id="timetableFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
       </div>
     </div>` : ""}
-    <article class="card page-card today-agenda-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Today's classes</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.name)} · full class details</p></div><span class="badge ${todaysEvents.length ? "purple" : "gray"}">${todaysEvents.length} today</span></div>
-      <div class="agenda-class-list">
-        ${todaysEvents.length
-          ? todaysEvents.map(event => weeklyAgendaClass(event, course, { isStudent, enrolled, editable: canManageSchedule(course), today: true })).join("")
-          : `<div class="empty-agenda"><strong>No class scheduled today</strong><span>${canManageSchedule(course) ? "Add a class below to show its time, room, topic, and sub-classes here." : "The teaching team has not added a class for today."}</span></div>`}
-      </div>
-    </article>
     <article class="card page-card calendar-page schedule-calendar-card">
       <div class="calendar-titlebar">
         <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>All courses</h2><p>${calendarCourseCount > 1 ? `Every course you teach or attend · ${calendarCourseCount} courses` : "Your full week across every course"}</p></div>
@@ -3378,7 +3369,7 @@ document.addEventListener("change", async event => {
   if (event.target.id === "timetableFile") {
     const file = event.target.files?.[0];
     const course = selectedCourse();
-    if (!file || !course || !canManageSchedule(course)) return;
+    if (!file || !state.courses.some(canManageSchedule)) return;
     try {
       const classes = await readTimetableFile(file);
       const groups = groupClassesByCourse(classes, course);
