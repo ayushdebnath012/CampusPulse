@@ -788,6 +788,7 @@ function navigate(route, { fromHistory = false } = {}) {
   syncBackButton();
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
+  if (route === "quizzes") quizResults = null;
   if (route === "notices") {
     refreshNotices(state.selectedCourseId).then(() => {
       if (state.route === "notices") renderNotices();
@@ -1728,7 +1729,7 @@ function renderQuiz() {
     view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>${state.userRole === "ta" ? "Join the professor's course before publishing quizzes." : "Create a course before publishing quizzes."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
     return;
   }
-  setHeader("Quick quiz", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
+  setHeader("Quizzes", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
   const openDraft = quizDrafts.find(item => item.id === editingDraftId) || null;
   const courseClasses = state.backendSchedule
     .filter(item => item.courseId === course.id)
@@ -1743,12 +1744,12 @@ function renderQuiz() {
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     ${quizResultsCard()}
     ${!quizResults && quizHistory.length ? `<div class="schedule-toolbar">
-      <div><strong>Past quiz marks</strong><span>Pick a date to see how the class scored.</span></div>
+      <div><strong>Past quiz</strong><span>Pick a date to see how the class scored.</span></div>
       ${quizResultsPicker()}
     </div>` : ""}
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>${openDraft ? `${escapeHtml(openDraft.title || "Saved quiz")} · ${escapeHtml(course.courseCode)}` : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft
+        <div class="session-title"><div><h2>${openDraft ? `${escapeHtml(openDraft.title || "Untitled quiz")} · ${escapeHtml(course.courseCode)}` : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft
           ? `${[openDraft.day, formatQuizDate(openDraft.quizDate), openDraft.classLabel].filter(Boolean).map(escapeHtml).join(" · ") || escapeHtml(course.name)} — edit below, then publish when the class starts.`
           : `Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.`}</p></div>${openDraft ? `<button class="text-btn" type="button" data-action="close-draft-quiz">Start a new quiz</button>` : `<span class="badge purple">Draft</span>`}</div>
         <div class="quiz-builder" id="quizBuilder">
@@ -1771,10 +1772,10 @@ function renderQuiz() {
       </article>
       <aside class="card page-card quiz-settings">
         ${quizHistory.length ? `<div class="saved-quizzes">
-          <div class="section-head"><h3>Past quizzes</h3><span class="badge gray">${quizHistory.length}</span></div>
+          <div class="section-head"><h3>Past quiz</h3><span class="badge gray">${quizHistory.length}</span></div>
           ${quizHistory.map(item => `<div class="saved-quiz ${quizResults?.quiz?.id === item.id ? "is-open-draft" : ""}">
             <button class="saved-quiz-open" type="button" data-action="open-quiz-results" data-quiz-id="${escapeHtml(item.id)}">
-              <strong>${escapeHtml(item.title || "Quiz")}</strong>
+              <strong>${escapeHtml(item.title || "Past quiz")}</strong>
               <span>${item.responses} response${item.responses === 1 ? "" : "s"}${item.classLabel ? ` · ${escapeHtml(item.classLabel)}` : ""} · ${escapeHtml(formatQuizDate(item.quizDate || item.publishedAt))}</span>
             </button>
           </div>`).join("")}
@@ -1783,7 +1784,7 @@ function renderQuiz() {
           <div class="section-head"><h3>Saved for later</h3><span class="badge purple">${quizDrafts.length}</span></div>
           ${quizDrafts.map(draft => `<div class="saved-quiz ${draft.id === editingDraftId ? "is-open-draft" : ""}">
             <button class="saved-quiz-open" type="button" data-action="open-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">
-              <strong>${escapeHtml(draft.title || "Saved quiz")}</strong>
+              <strong>${escapeHtml(draft.title || "Untitled quiz")}</strong>
               <span>${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${escapeHtml(draft.classLabel)}` : ""}${draft.id === editingDraftId ? " · open" : ""}</span>
             </button>
             <div class="saved-quiz-actions">
@@ -1832,7 +1833,7 @@ function renderStudentQuizAccess() {
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge green">Enrolled</span></div>
-        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(quizMatchesCourse ? state.backendQuizTitle || "Quick quiz" : "No quiz available")}</h3><p class="stat-label" style="margin-top:5px">${quizMatchesCourse ? state.backendQuizQuestions.length : 0} questions${quizMatchesCourse && state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge ${quizPublished ? "purple" : "gray"}">${quizResponded ? "Submitted" : quizPublished ? "Available now" : "Not started"}</span></div>
+        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(quizMatchesCourse ? state.backendQuizTitle || "Class quiz" : "No quiz available")}</h3><p class="stat-label" style="margin-top:5px">${quizMatchesCourse ? state.backendQuizQuestions.length : 0} questions${quizMatchesCourse && state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge ${quizPublished ? "purple" : "gray"}">${quizResponded ? "Submitted" : quizPublished ? "Available now" : "Not started"}</span></div>
         ${quizPublished && !quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
           ${state.backendQuizQuestions.map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question || "")}</strong></legend>${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${questionIndex + 1} image" />` : ""}${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
           <button class="btn btn-primary" type="submit">${icon("i-send")} Submit quiz</button>
@@ -1908,7 +1909,7 @@ function quizResultsPicker(selectedId = "") {
       ${quizHistory
         .map(item => {
           const when = formatQuizDate(item.quizDate || item.publishedAt) || "No date";
-          const label = `${when} · ${item.title || "Quiz"}${item.classLabel ? ` · ${item.classLabel}` : ""}`;
+          const label = `${when}${item.title ? ` · ${item.title}` : ""}${item.classLabel ? ` · ${item.classLabel}` : ""}`;
           return `<option value="${escapeHtml(item.id)}" ${item.id === selectedId ? "selected" : ""}>${escapeHtml(label)}</option>`;
         })
         .join("")}
@@ -1921,7 +1922,7 @@ function quizResultsCard() {
   const { quiz, summary, results } = quizResults;
   return `<article class="card page-card" style="margin-bottom:22px">
     <div class="section-head">
-      <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Quiz")} · marks</h2><p class="stat-label">${[
+      <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Past quiz")} · marks</h2><p class="stat-label">${[
         formatQuizDate(quiz.quizDate || quiz.publishedAt),
         quiz.classLabel || quiz.day,
         `${summary.attempted} of ${summary.rostered} attempted`,
@@ -2120,7 +2121,7 @@ function renderLiveQuiz() {
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>${escapeHtml(state.backendQuizTitle || "Quick quiz")}</h2><p>${questionCount} ${questionCount === 1 ? "question" : "questions"}${state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge green">Live now</span></div>
+        <div class="session-title"><div><h2>${escapeHtml(state.backendQuizTitle || "Class quiz")}</h2><p>${questionCount} ${questionCount === 1 ? "question" : "questions"}${state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge green">Live now</span></div>
         <div class="quiz-live">
           <div class="response-count">${responses}</div><p class="stat-label">of ${totalStudents} students responded</p>
           <div class="response-track"><span style="width:${percentage}%"></span></div>
