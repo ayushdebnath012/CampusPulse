@@ -379,12 +379,6 @@ function createApp(options = {}) {
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
       if (
-        role === "faculty" &&
-        env.FACULTY_SIGNUP_CODE &&
-        request.body.roleCode !== env.FACULTY_SIGNUP_CODE
-      )
-        return response.status(403).json({ error: "Invalid faculty invitation code" });
-      if (
         role === "ta" &&
         (!env.TA_SIGNUP_CODE || request.body.roleCode !== env.TA_SIGNUP_CODE)
       )
@@ -443,15 +437,6 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
-      if (role === "faculty" && !env.FACULTY_SIGNUP_CODE)
-        return response.status(403).json({
-          error: "Faculty accounts must be provisioned with an invitation code",
-        });
-      if (
-        role === "faculty" &&
-        request.body.roleCode !== env.FACULTY_SIGNUP_CODE
-      )
-        return response.status(403).json({ error: "Invalid faculty invitation code" });
       if (
         role === "ta" &&
         (!env.TA_SIGNUP_CODE ||

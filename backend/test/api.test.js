@@ -855,7 +855,7 @@ test("production signup sends the verification code through the configured maile
   assert.match(sentMessage.code, /^\d{6}$/);
 });
 
-test("configured faculty and TA signup require administrator invitation codes", async (t) => {
+test("faculty signup ignores legacy invitations while TA still requires one", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
     await testServer.close();
@@ -873,14 +873,7 @@ test("configured faculty and TA signup require administrator invitation codes", 
     "/api/auth/signup",
     { method: "POST", body: baseUser },
   );
-  assert.equal(missingCode.response.status, 403);
-
-  const wrongCode = await request(
-    testServer.baseUrl,
-    "/api/auth/signup",
-    { method: "POST", body: { ...baseUser, roleCode: "wrong-code" } },
-  );
-  assert.equal(wrongCode.response.status, 403);
+  assert.equal(missingCode.response.status, 201);
 
   const uninvitedTA = await request(
     testServer.baseUrl,
