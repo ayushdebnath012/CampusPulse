@@ -149,7 +149,7 @@ function updateStatusLabel(status) {
   return {
     checking: "Checking",
     downloading: "Downloading",
-    ready: "Restart ready",
+    ready: "Installs shortly",
     applying: "Applying",
     current: "Up to date",
     error: "Embedded fallback",
@@ -172,6 +172,17 @@ function syncUpdateUi(updateState = updateManager?.state || {}) {
 }
 
 updateManager?.subscribe(syncUpdateUi);
+
+// A downloaded bundle reloads the webview, so hold it back while a class is
+// actually running or a dialog is open, and apply it on the next screen change.
+function updatesAreSafeToApply() {
+  const attendanceLive =
+    activeAttendance?.status === "open" || state.attendanceStatus === "scanning";
+  const modalOpen = Boolean(document.querySelector("#modalRoot")?.innerHTML.trim());
+  return !attendanceLive && !modalOpen;
+}
+
+updateManager?.setApplyGuard?.(updatesAreSafeToApply);
 
 function icon(id) {
   return `<svg aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -536,6 +547,7 @@ function navigate(route) {
   persist();
   window.scrollTo({ top: 0, behavior: "smooth" });
   pageTitle.focus({ preventScroll: true });
+  updateManager?.applyStagedUpdate?.();
 }
 
 function render() {
@@ -1239,7 +1251,7 @@ function renderSettings() {
       </aside>
       <article class="card page-card update-settings-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">App updates</h2><p id="webUpdateDetail" class="stat-label">${escapeHtml(updateState.message || "Updates are delivered with the website")}</p></div><span id="webUpdateStatus" class="badge ${updateState.status === "error" ? "amber" : "green"}">${updateStatusLabel(updateState.status)}</span></div>
-        <p class="update-explainer">Web features, fixes, and styling are downloaded securely in the Android app and applied after a restart. Native Android changes still require a newly signed APK.</p>
+        <p class="update-explainer">Web features, fixes, and styling download and install automatically in the Android app, except while a class is running — those wait until you leave the screen. Native Android changes still require a newly signed APK.</p>
         ${updateState.supported ? `<div class="setup-actions"><button class="btn" type="button" data-action="check-for-updates">Check now</button>${updateState.status === "ready" ? `<button class="btn btn-primary" type="button" data-action="restart-to-update">Restart and update</button>` : ""}</div>` : ""}
       </article>
     </div>`;

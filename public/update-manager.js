@@ -8,6 +8,8 @@
     window.Capacitor?.getPlatform?.() === "android" && Boolean(updater);
   const listeners = new Set();
   let activeCheck = null;
+  // The app registers a guard so a bundle never reloads mid-attendance.
+  let applyGuard = null;
 
   const state = {
     supported: isNativeAndroid,
@@ -24,6 +26,21 @@
   function snapshot() {
     return { ...state };
   }
+
+  function setApplyGuard(guard) {
+    applyGuard = typeof guard === "function" ? guard : null;
+  }
+
+  function canApplyNow() {
+    if (!applyGuard) return true;
+    try {
+      return applyGuard() !== false;
+    } catch {
+      return true;
+    }
+  }
+
+  const DEFERRED_MESSAGE = "Update ready. It installs as soon as you finish up.";
 
   function publish(patch = {}) {
     Object.assign(state, patch);
@@ -105,6 +122,10 @@
           return snapshot();
         }
         if (manifest.version === state.stagedVersion) {
+          if (!canApplyNow()) {
+            publish({ status: "ready", progress: 100, message: DEFERRED_MESSAGE });
+            return snapshot();
+          }
           publish({
             status: "applying",
             progress: 100,
@@ -124,6 +145,10 @@
         await updater.next({ id: bundle.id });
         state.stagedVersion = manifest.version;
         localStorage.setItem("campusPulseStagedWebVersion", manifest.version);
+        if (!canApplyNow()) {
+          publish({ status: "ready", progress: 100, message: DEFERRED_MESSAGE });
+          return snapshot();
+        }
         publish({
           status: "applying",
           progress: 100,
@@ -155,6 +180,15 @@
     return true;
   }
 
+  // Called when the app leaves a screen that was too busy to interrupt.
+  async function applyStagedUpdate() {
+    if (!isNativeAndroid || state.status !== "ready" || !state.stagedVersion) return false;
+    if (!canApplyNow()) return false;
+    publish({ status: "applying", message: "Installing the update…" });
+    await updater.reload();
+    return true;
+  }
+
   function subscribe(listener) {
     listeners.add(listener);
     listener(snapshot());
@@ -165,6 +199,8 @@
     state,
     checkForUpdate,
     restartToUpdate,
+    applyStagedUpdate,
+    setApplyGuard,
     subscribe,
   };
 
