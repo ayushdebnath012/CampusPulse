@@ -1219,7 +1219,7 @@ function renderSchedule() {
           <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(day => `<span class="${day.today ? "is-today" : ""}"><small>${day.label}</small><strong>${day.date}</strong></span>`).join("")}</div>
           <div class="calendar-body">
             <div class="calendar-times">${["8 AM", "9 AM", "10 AM", "11 AM", "12 PM", "1 PM", "2 PM", "3 PM", "4 PM", "5 PM"].map(time => `<span>${time}</span>`).join("")}</div>
-            <div class="calendar-lanes">${calendarDays.map((day, index) => `<div class="calendar-lane ${day.today ? "is-today" : ""}">${calendarEvents.filter(event => event.dayIndex === index).map(event => calendarEvent(event)).join("")}</div>`).join("")}</div>
+            <div class="calendar-lanes">${calendarDays.map((day, index) => `<div class="calendar-lane ${day.today ? "is-today" : ""}">${layoutDayEvents(calendarEvents.filter(event => event.dayIndex === index)).map(event => calendarEvent(event)).join("")}</div>`).join("")}</div>
           </div>
         </div>
       </div>
@@ -1279,7 +1279,39 @@ function weeklyAgendaClass(event, course, { isStudent, enrolled, editable, today
   </article>`;
 }
 
-async function saveCourseSchedule(course, classes, message) {
+// A timetable grid usually covers a whole week, so one cell may name a course
+// other than the open one. Each class goes to the course whose code it carries.
+function groupClassesByCourse(classes, fallbackCourse) {
+  const manageable = state.courses.filter(canManageSchedule);
+  // Longest code first so "ME60215A" is not matched by "ME60215".
+  const codes = manageable
+    .map(course => ({ course, code: String(course.courseCode || "").toUpperCase() }))
+    .filter(entry => entry.code.length >= 3)
+    .sort((left, right) => right.code.length - left.code.length);
+  const grouped = new Map();
+  for (const item of classes) {
+    const text = `${item.topic || ""} ${item.room || ""}`.toUpperCase();
+    const match = codes.find(entry => text.includes(entry.code));
+    const course = match ? match.course : fallbackCourse;
+    if (!course) continue;
+    // Strip the code out of the label; whatever is left is usually the room.
+    let topic = String(item.topic || "").trim();
+    let room = String(item.room || "").trim();
+    if (match) {
+      const remainder = topic
+        .replace(new RegExp(match.code, "ig"), " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!room && remainder) room = remainder;
+      topic = course.courseCode;
+    }
+    if (!grouped.has(course.id)) grouped.set(course.id, { course, classes: [] });
+    grouped.get(course.id).classes.push({ ...item, topic, room });
+  }
+  return [...grouped.values()];
+}
+
+async function saveCourseSchedule(course, classes, message, { silent = false } = {}) {
   try {
     const result = await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/schedule`, {
       method: "PUT",
@@ -1299,9 +1331,12 @@ async function saveCourseSchedule(course, classes, message) {
     );
     persist();
     await syncClassReminders();
+    if (silent) return true;
     renderSchedule();
     return toast(message);
   } catch (error) {
+    // A batch import reports once for the whole file, so let it handle this.
+    if (silent) throw error;
     if (error.status === 409 && backendConfigured()) {
       await syncBackendState().catch(() => {});
       if (state.route === "schedule") renderSchedule();
@@ -1361,12 +1396,49 @@ function timeToMinutes(value = "") {
   return hour * 60 + minute;
 }
 
+// Classes that share a time slot are placed in adjacent columns so a card can
+// hold several courses at once without one covering the others.
+function layoutDayEvents(events) {
+  const sorted = [...events].sort(
+    (left, right) =>
+      timeToMinutes(left.start) - timeToMinutes(right.start) ||
+      timeToMinutes(left.end) - timeToMinutes(right.end)
+  );
+  const columnEnds = [];
+  // Times are kept separate so the displayed start and end stay untouched.
+  const placed = sorted.map(event => {
+    const from = timeToMinutes(event.start);
+    const to = Math.max(from + 35, timeToMinutes(event.end));
+    let column = columnEnds.findIndex(columnEnd => columnEnd <= from);
+    if (column < 0) {
+      column = columnEnds.length;
+      columnEnds.push(to);
+    } else {
+      columnEnds[column] = to;
+    }
+    return { event, column, from, to };
+  });
+  // Every class in a run of overlaps shares the same column count.
+  return placed.map(item => {
+    const overlapping = placed.filter(
+      other => other.from < item.to && item.from < other.to
+    );
+    return {
+      ...item.event,
+      column: item.column,
+      columns: Math.max(...overlapping.map(other => other.column + 1)),
+    };
+  });
+}
+
 function calendarEvent(event) {
   const start = Math.max(8 * 60, Math.min(18 * 60, timeToMinutes(event.start)));
   const end = Math.max(start + 35, Math.min(18 * 60, timeToMinutes(event.end)));
   const top = ((start - 8 * 60) / (10 * 60)) * 100;
   const height = Math.max(8, ((end - start) / (10 * 60)) * 100);
-  return `<article class="calendar-event ${event.today ? "current" : ""} ${event.otherCourse ? "is-other-course" : ""}" style="--event-top:${top}%;--event-height:${height}%">
+  const columns = Math.max(1, Number(event.columns) || 1);
+  const column = Math.min(columns - 1, Math.max(0, Number(event.column) || 0));
+  return `<article class="calendar-event ${event.today ? "current" : ""} ${event.otherCourse ? "is-other-course" : ""}" style="--event-top:${top}%;--event-height:${height}%;--event-columns:${columns};--event-column:${column}">
     ${event.courseCode ? `<em class="calendar-event-course">${escapeHtml(event.courseCode)}</em>` : ""}
     <strong>${escapeHtml(event.topic)}</strong><span>${escapeHtml(event.start)} · ${escapeHtml(event.room || "Room TBA")}</span>
   </article>`;
@@ -3309,14 +3381,25 @@ document.addEventListener("change", async event => {
     if (!file || !course || !canManageSchedule(course)) return;
     try {
       const classes = await readTimetableFile(file);
-      const preview = classes
-        .slice(0, 3)
-        .map(item => `  ${item.day} ${item.start}${item.end ? `–${item.end}` : ""} ${item.topic}`)
+      const groups = groupClassesByCourse(classes, course);
+      if (!groups.length) throw new Error("No classes were found in that timetable");
+      const summary = groups
+        .map(group => `  ${group.course.courseCode} — ${group.classes.length} class${group.classes.length === 1 ? "" : "es"}`)
         .join("\n");
-      if (!window.confirm(`Replace the ${course.courseCode} timetable with ${classes.length} classes from ${file.name}?
-
-${preview}`)) return;
-      await saveCourseSchedule(course, classes, `${classes.length} classes imported`);
+      const affected = groups.map(group => group.course.courseCode).join(", ");
+      if (!window.confirm(
+        `Import ${classes.length} classes from ${file.name}?\n\n${summary}\n\n`
+        + `This replaces the timetable for ${affected}.`
+      )) return;
+      for (const group of groups) {
+        await saveCourseSchedule(group.course, group.classes, "", { silent: true });
+      }
+      renderSchedule();
+      toast(
+        groups.length > 1
+          ? `${classes.length} classes imported across ${groups.length} courses`
+          : `${classes.length} classes imported`
+      );
     } catch (error) {
       return toast(error.message || "Could not read that timetable", "error");
     } finally {
