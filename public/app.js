@@ -812,6 +812,7 @@ function render() {
   if (state.route === "quizzes") return renderQuiz();
   if (state.route === "students") return renderStudents();
   if (state.route === "notices") return renderNotices();
+  if (state.route === "quizmarks") return renderQuizMarks();
   if (state.route === "materials") return renderMaterials();
   return renderPlaceholder(state.route);
 }
@@ -1742,11 +1743,6 @@ function renderQuiz() {
   setTimeout(() => snapQuizDateToClassDay(), 0);
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
-    ${quizResultsCard()}
-    ${!quizResults && quizHistory.length ? `<div class="schedule-toolbar">
-      <div><strong>Past quiz</strong><span>Pick a date to see how the class scored.</span></div>
-      ${quizResultsPicker()}
-    </div>` : ""}
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${openDraft ? `${escapeHtml(openDraft.title || "Untitled quiz")} · ${escapeHtml(course.courseCode)}` : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft
@@ -1917,6 +1913,41 @@ function quizResultsPicker(selectedId = "") {
   </label>`;
 }
 
+function renderQuizMarks() {
+  const course = selectedCourse();
+  if (!quizResults || !course) return navigate("quizzes");
+  const { quiz } = quizResults;
+  setHeader(
+    `${quiz.title || "Past quiz"} · marks`,
+    `${course.courseCode} · ${formatQuizDate(quiz.quizDate || quiz.publishedAt) || "PAST QUIZ"}`,
+    false
+  );
+  view.innerHTML = `
+    <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
+    ${quizResultsCard()}
+    ${quizQuestionsCard()}`;
+}
+
+function quizQuestionsCard() {
+  const questions = quizResults?.quiz?.questions || [];
+  if (!questions.length) return "";
+  return `<article class="card page-card">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Questions</h2><p class="stat-label">The correct option is marked. Students never receive it.</p></div><span class="badge gray">${questions.length}</span></div>
+    <div class="quiz-review">
+      ${questions.map((question, index) => `<div class="question-card">
+        <div class="question-top"><span class="q-number">${index + 1}</span><strong>${escapeHtml(question.text || "Image question")}</strong></div>
+        ${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${index + 1} image" />` : ""}
+        <div class="options">
+          ${(question.options || []).map((option, optionIndex) => `<div class="option-input review-option ${optionIndex === question.answer ? "is-correct" : ""}">
+            <span class="review-mark">${optionIndex === question.answer ? icon("i-check") : ""}</span>
+            <span>${escapeHtml(option)}</span>
+          </div>`).join("")}
+        </div>
+      </div>`).join("")}
+    </div>
+  </article>`;
+}
+
 function quizResultsCard() {
   if (!quizResults) return "";
   const { quiz, summary, results } = quizResults;
@@ -1931,7 +1962,7 @@ function quizResultsCard() {
       <div class="setup-actions">
         ${quizResultsPicker(quiz.id)}
         <button class="btn" type="button" data-action="export-quiz-results">${icon("i-download")} Excel</button>
-        <button class="text-btn" type="button" data-action="close-quiz-results">Close</button>
+        <button class="text-btn danger" type="button" data-action="delete-quiz" data-quiz-id="${escapeHtml(quiz.id)}">Delete quiz</button>
       </div>
     </div>
     <div class="roster-scroll">
@@ -3758,14 +3789,23 @@ document.addEventListener("click", async event => {
       quizResults = null;
       return toast(error.message || "Could not load those marks", "error");
     }
-    renderQuiz();
-    window.scrollTo({ top: 0, behavior: "smooth" });
-    return;
+    return navigate("quizmarks");
   }
-  if (action === "close-quiz-results") {
-    quizResults = null;
-    renderQuiz();
-    return;
+  if (action === "delete-quiz") {
+    const course = selectedCourse();
+    const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
+    if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
+    if (!window.confirm("Delete this quiz and every mark recorded for it? This cannot be undone.")) return;
+    try {
+      await apiRequest(`/api/quizzes/${encodeURIComponent(quizId)}`, { method: "DELETE" });
+      quizResults = null;
+      await refreshQuizHistory(course.id);
+      await refreshQuizDrafts(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not delete that quiz", "error");
+    }
+    navigate("quizzes");
+    return toast("Quiz deleted");
   }
   if (action === "export-quiz-results") {
     if (!quizResults) return toast("Open a quiz first", "error");
@@ -3973,7 +4013,7 @@ document.addEventListener("change", async event => {
     const quizId = event.target.value;
     if (!quizId) {
       quizResults = null;
-      renderQuiz();
+      navigate("quizzes");
       return;
     }
     try {
@@ -3982,7 +4022,7 @@ document.addEventListener("change", async event => {
       quizResults = null;
       return toast(error.message || "Could not load those marks", "error");
     }
-    renderQuiz();
+    renderQuizMarks();
     window.scrollTo({ top: 0, behavior: "smooth" });
     return;
   }

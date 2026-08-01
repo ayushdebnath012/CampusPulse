@@ -2416,6 +2416,8 @@ function createApp(options = {}) {
             classLabel: quiz.classLabel || "",
             quizDate: quiz.quizDate || "",
             total,
+            // The team may see the answer key alongside the marks.
+            questions: quiz.questions,
             publishedAt: quiz.publishedAt || quiz.createdAt,
             closedAt: quiz.closedAt || null,
           },
@@ -2488,16 +2490,14 @@ function createApp(options = {}) {
     async (request, response, next) => {
       try {
         await store.update((database) => {
-          const draft = database.quizzes.find(
-            (item) => item.id === request.params.id && item.status === "draft",
-          );
-          if (!draft) {
-            const error = new Error("That draft quiz no longer exists");
+          const quiz = database.quizzes.find((item) => item.id === request.params.id);
+          if (!quiz) {
+            const error = new Error("That quiz no longer exists");
             error.status = 404;
             throw error;
           }
-          requireCourse(database, request.user, draft.courseId, "run");
-          database.quizzes = database.quizzes.filter((item) => item.id !== draft.id);
+          requireCourse(database, request.user, quiz.courseId, "run");
+          database.quizzes = database.quizzes.filter((item) => item.id !== quiz.id);
           return null;
         });
         response.status(204).end();

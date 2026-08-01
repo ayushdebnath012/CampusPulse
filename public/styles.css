@@ -656,3 +656,11 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   .results-picker { width: 100%; }
   .results-picker .select { flex: 1 1 auto; min-width: 0; }
 }
+
+.quiz-review { display: flex; flex-direction: column; gap: 14px; }
+.quiz-review .question-top { display: flex; align-items: center; gap: 12px; }
+.quiz-review .question-top strong { font-size: 13px; }
+.review-option { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; font-size: 12px; }
+.review-option.is-correct { color: #087b59; border-color: #b9ead8; background: var(--green-soft); font-weight: 700; }
+.review-mark { display: grid; place-items: center; width: 18px; height: 18px; flex: 0 0 auto; }
+.review-mark svg { width: 14px; height: 14px; }

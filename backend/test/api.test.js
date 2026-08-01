@@ -2001,8 +2001,25 @@ test("quiz results list every rostered student with their marks", async (t) => {
     assert.equal(rejected.response.status, 400);
   }
 
+  // The team sees the answer key alongside the marks.
+  assert.equal(results.body.quiz.questions.length, 2);
+  assert.equal(results.body.quiz.questions[0].answer, 0);
+
+  // A finished quiz can be removed along with its marks.
+  const dropped = await request(testServer.baseUrl, `/api/quizzes/${quizId}`, {
+    method: "DELETE",
+    token: professor.token,
+  });
+  assert.equal(dropped.response.status, 204);
+  const afterDelete = await request(
+    testServer.baseUrl,
+    `/api/quizzes/history?courseId=${course.id}`,
+    { token: professor.token },
+  );
+  assert.deepEqual(afterDelete.body.quizzes, []);
+
   // Marks are for the course team only.
-  for (const route of [`/api/quizzes/${quizId}/results`, "/api/quizzes/history"]) {
+  for (const route of ["/api/quizzes/history"]) {
     const denied = await request(testServer.baseUrl, route, { token: student.token });
     assert.equal(denied.response.status, 403);
   }
