@@ -42,6 +42,27 @@ function publicUser(user) {
   };
 }
 
+function publicMaterial(material) {
+  const { dataBase64: _dataBase64, ...metadata } = material;
+  return metadata;
+}
+
+function uploadedFileName(value) {
+  let decoded = String(value || "");
+  try {
+    decoded = decodeURIComponent(decoded);
+  } catch {
+    // Keep the literal header value when it was not URI encoded.
+  }
+  return decoded
+    .replace(/\\/g, "/")
+    .split("/")
+    .pop()
+    .replace(/[\x00-\x1f\x7f]/g, "")
+    .trim()
+    .slice(0, 160);
+}
+
 function courseRoster(database, courseId) {
   return database.courseStudents
     .filter((student) => student.courseId === courseId)
@@ -186,6 +207,9 @@ function publicCourse(database, user, course) {
     owned: owner,
     enrolled: Boolean(enrollment),
     rosterReady: courseRoster(database, course.id).length > 0,
+    materialCount: database.courseMaterials.filter(
+      (material) => material.courseId === course.id,
+    ).length,
     capabilities: {
       canManageCourse: owner,
       canManageRoster: owner,
@@ -371,7 +395,7 @@ function createApp(options = {}) {
       response.setHeader("Vary", "Origin");
       response.setHeader(
         "Access-Control-Allow-Headers",
-        "Authorization, Content-Type",
+        "Authorization, Content-Type, X-File-Name",
       );
       response.setHeader(
         "Access-Control-Allow-Methods",
@@ -381,7 +405,13 @@ function createApp(options = {}) {
     if (request.method === "OPTIONS") return response.sendStatus(204);
     next();
   });
-  app.use(express.json({ limit: "128kb" }));
+  const jsonParser = express.json({ limit: "128kb" });
+  app.use((request, response, next) => {
+    const materialUpload =
+      request.method === "POST" &&
+      /^\/api\/courses\/[^/]+\/materials$/.test(request.path);
+    return materialUpload ? next() : jsonParser(request, response, next);
+  });
   app.use("/api", (_request, response, next) => {
     response.setHeader("Cache-Control", "no-store");
     next();
@@ -465,11 +495,41 @@ function createApp(options = {}) {
           error: "TA accounts must be provisioned with a valid invitation code",
         });
 
+      // Everyone gives a phone number. Roll number and hall of residence apply
+      // to students and TAs, not to professors.
+      const phone = String(request.body.phone || "").trim();
+      if (!/^\+?[0-9][0-9\s()-]{6,19}$/.test(phone)) {
+        return response.status(400).json({ error: "Enter a valid contact number" });
+      }
+      const rollNumber =
+        role === "faculty"
+          ? ""
+          : String(request.body.rollNumber || "").trim().toUpperCase();
+      const hall =
+        role === "faculty" ? "" : String(request.body.hall || "").trim().slice(0, 80);
+      if (role !== "faculty") {
+        if (!rollNumber || rollNumber.length > 40) {
+          return response.status(400).json({ error: "Enter your roll number" });
+        }
+        if (hall.length < 2) {
+          return response.status(400).json({ error: "Enter your hall of residence" });
+        }
+      }
+
       const passwordHash = await hashPassword(password);
       const token = randomToken();
       const result = await store.update((database) => {
         if (database.users.some((user) => user.email === email)) {
           return { error: "An account already exists for this email", status: 409 };
+        }
+        if (
+          rollNumber &&
+          database.users.some((user) => user.rollNumber === rollNumber)
+        ) {
+          return {
+            error: "An account already exists for this roll number",
+            status: 409,
+          };
         }
         const now = new Date().toISOString();
         const created = {
@@ -477,6 +537,9 @@ function createApp(options = {}) {
           role,
           name,
           email,
+          phone,
+          ...(rollNumber ? { rollNumber } : {}),
+          ...(hall ? { hall } : {}),
           passwordHash,
           createdAt: now,
           verifiedAt: null,
@@ -899,7 +962,9 @@ function createApp(options = {}) {
               name: user.name,
               email: user.email,
               role: item.courseRole || user.role,
-              rollNumber: item.rollNumber || "",
+              rollNumber: item.rollNumber || user.rollNumber || "",
+              phone: user.phone || "",
+              hall: user.hall || "",
               courseId: course.id,
               courseCode: course.courseCode,
               courseName: course.name,
@@ -1184,15 +1249,142 @@ function createApp(options = {}) {
   );
 
   app.post(
+    "/api/courses/:id/materials",
+    authenticate,
+    requireRoles("faculty"),
+    express.raw({ type: () => true, limit: "8mb" }),
+    async (request, response, next) => {
+      try {
+        const fileName = uploadedFileName(request.headers["x-file-name"]);
+        const data = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
+        if (!fileName) {
+          return response.status(400).json({ error: "Choose a file to upload" });
+        }
+        if (!data.length) {
+          return response.status(400).json({ error: "The selected file is empty" });
+        }
+        const requestedContentType = String(request.headers["content-type"] || "")
+          .split(";")[0]
+          .trim()
+          .slice(0, 120);
+        const contentType = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(
+          requestedContentType,
+        )
+          ? requestedContentType
+          : "application/octet-stream";
+        const material = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const created = {
+            id: `material-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            courseId: course.id,
+            fileName,
+            contentType,
+            size: data.length,
+            uploadedAt: new Date().toISOString(),
+            uploadedBy: request.user.id,
+            uploadedByName: request.user.name,
+            dataBase64: data.toString("base64"),
+          };
+          database.courseMaterials.push(created);
+          return publicMaterial(created);
+        });
+        response.status(201).json({ material });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/courses/:id/materials",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const database = await store.read();
+        const course = requireCourse(database, request.user, request.params.id);
+        const materials = database.courseMaterials
+          .filter((material) => material.courseId === course.id)
+          .sort((left, right) => right.uploadedAt.localeCompare(left.uploadedAt))
+          .map(publicMaterial);
+        response.json({ materials });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/materials/:id/download",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const database = await store.read();
+        const material = database.courseMaterials.find(
+          (item) => item.id === request.params.id,
+        );
+        if (!material) {
+          return response.status(404).json({ error: "Course material not found" });
+        }
+        requireCourse(database, request.user, material.courseId);
+        const data = Buffer.from(material.dataBase64, "base64");
+        const fallbackName = material.fileName
+          .replace(/[^\x20-\x7e]/g, "_")
+          .replace(/["\\]/g, "_");
+        response.setHeader("Content-Type", material.contentType);
+        response.setHeader("Content-Length", data.length);
+        response.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(material.fileName)}`,
+        );
+        response.send(data);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/materials/:id",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        await store.update((database) => {
+          const material = database.courseMaterials.find(
+            (item) => item.id === request.params.id,
+          );
+          if (!material) {
+            const error = new Error("Course material not found");
+            error.status = 404;
+            throw error;
+          }
+          requireCourse(database, request.user, material.courseId, "owner");
+          database.courseMaterials = database.courseMaterials.filter(
+            (item) => item.id !== material.id,
+          );
+          return null;
+        });
+        response.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
     "/api/courses/join",
     authenticate,
     requireRoles("student", "ta"),
     async (request, response, next) => {
       try {
         const code = String(request.body.code || "").trim().toUpperCase();
-        const submittedRoll = String(request.body.rollNumber || "")
-          .trim()
-          .toUpperCase();
+        // The roll number belongs to the account, so it is never re-entered.
+        const submittedRoll = String(request.user.rollNumber || "").trim().toUpperCase();
         const enrollment = await store.update((database) => {
           const course = database.courses.find(
             (item) => item.code === code && hasValidCourseOwner(database, item),
@@ -1202,31 +1394,28 @@ function createApp(options = {}) {
             error.status = 404;
             throw error;
           }
-          // A course opens to students only once its roll list exists.
           const roster = courseRoster(database, course.id);
-          if (!roster.length) {
-            const error = new Error(
-              "This course has not started yet — its professor has not uploaded the roll list",
-            );
-            error.status = 409;
-            throw error;
-          }
+          // Without an uploaded roll list the course builds its own from the
+          // students who enrol, so it still has a register to work from.
+          const openEnrolment =
+            roster.length === 0 || course.rosterSource === "self-enrolled";
           const existing = database.enrollments.find(
             (item) => item.userId === request.user.id && item.courseId === course.id,
           );
           if (existing) return { course, existing: true };
 
-          // Students are admitted only if the professor's roll list contains
-          // them; teaching assistants never appear on it.
+          // With a roll list the student must be on it; without one they
+          // register their own details instead. TAs never appear on either.
           let rollNumber = "";
           if (request.user.role === "student") {
             if (!submittedRoll) {
-              const error = new Error("Enter your roll number to join this course");
+              const error = new Error(
+                "Your account has no roll number. Sign up again with your roll number.",
+              );
               error.status = 400;
               throw error;
             }
-            const entry = roster.find((item) => item.rollNumber === submittedRoll);
-            if (!entry) {
+            if (!openEnrolment && !roster.some((item) => item.rollNumber === submittedRoll)) {
               const error = new Error(
                 "You are not admitted to this course — your roll number is not on its roll list",
               );
@@ -1247,6 +1436,24 @@ function createApp(options = {}) {
               throw error;
             }
             rollNumber = submittedRoll;
+
+            if (openEnrolment) {
+              const added = {
+                courseId: course.id,
+                serial: courseRoster(database, course.id).length + 1,
+                rollNumber,
+                name: request.user.name,
+              };
+              database.courseStudents.push(added);
+              database.attendanceSessions.forEach((session) => {
+                if (session.courseId === course.id && session.status === "open") {
+                  session.records.push(attendanceRecord(added));
+                }
+              });
+              course.students = courseRoster(database, course.id).length;
+              course.rosterSource = "self-enrolled";
+              course.rosterUpdatedAt = new Date().toISOString();
+            }
           }
 
           database.enrollments.push({
@@ -1435,9 +1642,8 @@ function createApp(options = {}) {
             error: "Connect Wi‑Fi and turn on Bluetooth before marking attendance",
           });
         }
-        const submittedRoll = String(request.body.rollNumber || "")
-          .trim()
-          .toUpperCase();
+        // The roll number belongs to the account, so it is never re-entered.
+        const submittedRoll = String(request.user.rollNumber || "").trim().toUpperCase();
 
         const result = await store.update((database) => {
           const session = database.attendanceSessions.find(

@@ -27,6 +27,7 @@ function initialData(env = process.env) {
     maintenance: [],
     courses,
     courseStudents,
+    courseMaterials: [],
     schedule: [],
     attendanceSessions: [],
     quizzes: [],

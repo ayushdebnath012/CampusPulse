@@ -29,6 +29,35 @@ async function apiRequest(path, options = {}) {
   return payload;
 }
 
+async function apiFileUpload(path, file) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": file.type || "application/octet-stream",
+      "X-File-Name": encodeURIComponent(file.name)
+    },
+    body: file
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error || `Upload failed (${response.status})`);
+  }
+  return payload;
+}
+
+async function materialBlob(materialId) {
+  const response = await fetch(
+    `${API_BASE}/api/materials/${encodeURIComponent(materialId)}/download`,
+    { headers: { Authorization: `Bearer ${apiToken}` } }
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || `Download failed (${response.status})`);
+  }
+  return response.blob();
+}
+
 function backendConfigured() {
   return Boolean(API_BASE);
 }
@@ -112,6 +141,8 @@ async function refreshEmailDeliveryState() {
 }
 let courseRosters = new Map();
 let managedCourseId = "";
+let courseMaterials = new Map();
+let materialsCourseId = "";
 let modalReturnFocus = null;
 let selectedLoginRole = state.userRole || "faculty";
 let authMode = state.accounts.length ? "login" : "signup";
@@ -253,6 +284,16 @@ async function loadCourseRoster(courseId, { force = false } = {}) {
   return roster;
 }
 
+async function loadCourseMaterials(courseId, { force = false } = {}) {
+  if (!force && courseMaterials.has(courseId)) return courseMaterials.get(courseId);
+  const result = await apiRequest(
+    `/api/courses/${encodeURIComponent(courseId)}/materials`
+  );
+  const materials = result.materials || [];
+  courseMaterials.set(courseId, materials);
+  return materials;
+}
+
 function currentAttendanceRecords() {
   return Array.isArray(activeAttendance?.records) ? activeAttendance.records : [];
 }
@@ -320,8 +361,10 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   openAttendance = [];
   enrolledStudents = [];
   courseRosters = new Map();
+  courseMaterials = new Map();
   activeAttendance = null;
   managedCourseId = "";
+  materialsCourseId = "";
   state.backendAttendanceId = "";
   state.attendanceStatus = "not_started";
   state.attendanceCheckedIn = false;
@@ -427,6 +470,13 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
               <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
               <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="8" required /></div>
             </div>
+            <label for="signupPhone">Contact number</label>
+            <input id="signupPhone" name="phone" type="tel" placeholder="10-digit mobile number" autocomplete="tel" required />
+            ${selectedLoginRole === "faculty" ? "" : `
+            <div class="auth-field-pair">
+              <div><label for="signupRoll">Roll number</label><input id="signupRoll" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" required /></div>
+              <div><label for="signupHall">Hall of residence</label><input id="signupHall" name="hall" type="text" placeholder="e.g. Azad Hall" autocomplete="off" maxlength="80" required /></div>
+            </div>`}
             ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
@@ -1078,7 +1128,7 @@ function studentCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge green">Enrolled</span>
     <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
-    <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Open course</button></div>
+    <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Quizzes</button><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">Materials (${Number(course.materialCount) || 0})</button></div>
   </article>`;
 }
 
@@ -1378,13 +1428,14 @@ function renderLiveQuiz() {
 }
 
 function renderClasses() {
+  if (materialsCourseId) return renderCourseMaterials(materialsCourseId);
   if (state.userRole === "student") return renderStudentClasses();
   if (state.userRole === "ta") return renderTAClasses();
   if (state.userRole === "faculty" && managedCourseId) return renderCourseRoster(managedCourseId);
   setHeader("My courses", "PROFESSOR WORKSPACE", false);
   view.innerHTML = `
     <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Only you can manage these courses, join codes, and official rosters.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Manage join codes, rosters, and files shared with each enrolled class.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
       <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
     </article>`;
 }
@@ -1394,6 +1445,7 @@ function facultyCourseCard(course) {
     <div class="course-accent"></div><h3>${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
     <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
     <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} Not started — upload the roll list` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><button class="text-btn" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${course.rosterReady === false ? "Upload roll list" : "Manage roster"}</button></div>
+    <div class="course-footer"><span>${Number(course.materialCount) || 0} shared files</span><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">Manage materials</button></div>
   </article>`;
 }
 
@@ -1447,6 +1499,60 @@ function renderCourseRoster(courseId) {
     </div>`;
 }
 
+function materialSize(size) {
+  const bytes = Number(size) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function materialDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function materialCanOpen(material) {
+  return /^(application\/pdf|image\/|text\/)/i.test(material.contentType || "");
+}
+
+function materialTableRow(material, owner) {
+  return `<tr>
+    <td><strong>${escapeHtml(material.fileName)}</strong><br><span class="stat-label">${escapeHtml(material.uploadedByName || "Professor")}</span></td>
+    <td>${escapeHtml(materialSize(material.size))}</td>
+    <td>${escapeHtml(materialDate(material.uploadedAt))}</td>
+    <td class="roster-actions"><div class="setup-actions">
+      ${materialCanOpen(material) ? `<button class="text-btn" type="button" data-action="view-material" data-material-id="${escapeHtml(material.id)}">View</button>` : ""}
+      <button class="text-btn" type="button" data-action="download-material" data-material-id="${escapeHtml(material.id)}" data-file-name="${escapeHtml(material.fileName)}">Download</button>
+      ${owner ? `<button class="text-btn danger" type="button" data-action="delete-material" data-material-id="${escapeHtml(material.id)}">Remove</button>` : ""}
+    </div></td>
+  </tr>`;
+}
+
+function renderCourseMaterials(courseId) {
+  const course = state.courses.find(item => item.id === courseId);
+  if (!course) {
+    materialsCourseId = "";
+    return renderClasses();
+  }
+  const materials = courseMaterials.get(courseId) || [];
+  const owner = canManageCourse(course);
+  setHeader(`${course.name} materials`, `${course.courseCode} · COURSE FILES`, false);
+  view.innerHTML = `
+    <button class="back-btn" data-action="close-course-materials">${icon("i-back")} Back to courses</button>
+    <article class="card page-card">
+      <div class="section-head">
+        <div><h2 style="margin:0 0 5px">Course materials</h2><p class="stat-label">Files here are private to this course's professor, teaching assistants, and enrolled students.</p></div>
+        <div class="setup-actions"><span class="badge ${materials.length ? "green" : "gray"}">${materials.length} files</span>${owner ? `<button class="btn btn-primary" type="button" data-action="choose-material-upload">${icon("i-upload")} Upload material</button><input id="materialUploadFile" type="file" hidden />` : ""}</div>
+      </div>
+      ${materials.length ? `<div class="roster-scroll"><table class="roster-table">
+        <thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
+        <tbody>${materials.map(material => materialTableRow(material, owner)).join("")}</tbody>
+      </table></div>` : `<div class="empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h3>No materials uploaded yet</h3><p>${owner ? "Upload notes, slides, PDFs, assignments, or other course files." : "Your professor has not shared any course files yet."}</p></div></div>`}
+    </article>`;
+}
+
 function renderTAClasses() {
   setHeader("Courses you assist", "TEACHING ASSISTANT WORKSPACE", false);
   view.innerHTML = `
@@ -1467,7 +1573,7 @@ function taCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge purple">Teaching assistant</span>
     <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
-    <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button></div>
+    <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">Materials (${Number(course.materialCount) || 0})</button></div>
   </article>`;
 }
 
@@ -1478,10 +1584,9 @@ function renderStudentClasses() {
     <div class="left-stack">
     <article class="card join-panel">
       <span class="empty-icon">${icon("i-plus")}</span><h2>Enter your course code</h2>
-      <p class="stat-label">Your faculty will share a private course code. Your roll number must appear on the course roll list — you only need to join once.</p>
+      <p class="stat-label">Your faculty will share a private course code. The roll number from your account is used, so you only need to join once.</p>
       <form class="join-code" id="joinForm">
         <div class="join-code-field"><label for="studentJoinCode">Private course code</label><input id="studentJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div>
-        <div class="join-code-field"><label for="studentJoinRoll">Your roll number</label><input id="studentJoinRoll" name="rollNumber" maxlength="20" placeholder="e.g. 21ME10001" autocomplete="off" required/></div>
         <button class="btn btn-primary">Join course</button>
       </form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
@@ -1538,19 +1643,20 @@ function renderStudents() {
   view.innerHTML = `
     <div class="page-grid roster-grid">
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled students</h2><p class="stat-label">Accounts that joined with a roll number from your roll list</p></div><span class="badge ${enrolled.length ? "green" : "amber"}">${enrolled.length} enrolled</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled students</h2><p class="stat-label">Accounts that joined this course using their registered roll number</p></div><div class="setup-actions"><span class="badge ${enrolled.length ? "green" : "amber"}">${enrolled.length} enrolled</span><button class="btn" type="button" data-action="export-enrolled" ${enrolled.length ? "" : "disabled"}>${icon("i-download")} Excel</button></div></div>
         ${enrolled.length ? [...byCourse.entries()].map(([courseId, students]) => {
           const course = state.courses.find(item => item.id === courseId);
           return `<div style="margin-top:18px">
             <div class="section-head"><h3>${escapeHtml(course ? `${course.courseCode} · ${course.name}` : courseId)}</h3><span class="badge purple">${students.length}</span></div>
             <div class="roster-scroll">
               <table class="roster-table">
-                <thead><tr><th>Roll No</th><th>Name</th><th>Email</th><th>Role</th></tr></thead>
+                <thead><tr><th>Roll No</th><th>Name</th><th>Email</th><th>Phone</th><th>Hall</th></tr></thead>
                 <tbody>${students.map(student => `<tr>
                   <td class="roster-roll">${escapeHtml(student.rollNumber || "—")}</td>
                   <td>${escapeHtml(student.name)}</td>
                   <td>${escapeHtml(student.email)}</td>
-                  <td>${escapeHtml(student.role === "ta" ? "TA" : "Student")}</td>
+                  <td>${escapeHtml(student.phone || "—")}</td>
+                  <td>${escapeHtml(student.hall || "—")}</td>
                 </tr>`).join("")}</tbody>
               </table>
             </div>
@@ -1821,6 +1927,108 @@ async function xlsxRows(buffer) {
 
 async function parseRosterXlsx(buffer) {
   return rosterFromRows(await xlsxRows(buffer), "sheet");
+}
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? (value >>> 1) ^ 0xedb88320 : value >>> 1;
+  }
+  return value >>> 0;
+});
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// A .xlsx is a ZIP of XML. Entries are stored uncompressed, which keeps the
+// writer to a CRC and a couple of headers instead of a spreadsheet library.
+function zipStored(files) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  for (const [name, text] of files) {
+    const nameBytes = encoder.encode(name);
+    const data = encoder.encode(text);
+    const crc = crc32(data);
+    const local = new DataView(new ArrayBuffer(30));
+    local.setUint32(0, 0x04034b50, true);
+    local.setUint16(4, 20, true);
+    local.setUint16(8, 0, true);
+    local.setUint32(14, crc, true);
+    local.setUint32(18, data.length, true);
+    local.setUint32(22, data.length, true);
+    local.setUint16(26, nameBytes.length, true);
+    chunks.push(new Uint8Array(local.buffer), nameBytes, data);
+
+    const entry = new DataView(new ArrayBuffer(46));
+    entry.setUint32(0, 0x02014b50, true);
+    entry.setUint16(4, 20, true);
+    entry.setUint16(6, 20, true);
+    entry.setUint16(10, 0, true);
+    entry.setUint32(16, crc, true);
+    entry.setUint32(20, data.length, true);
+    entry.setUint32(24, data.length, true);
+    entry.setUint16(28, nameBytes.length, true);
+    entry.setUint32(42, offset, true);
+    central.push(new Uint8Array(entry.buffer), nameBytes);
+    offset += 30 + nameBytes.length + data.length;
+  }
+  const centralSize = central.reduce((total, part) => total + part.length, 0);
+  const end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true);
+  end.setUint16(8, files.length, true);
+  end.setUint16(10, files.length, true);
+  end.setUint32(12, centralSize, true);
+  end.setUint32(16, offset, true);
+  return new Blob([...chunks, ...central, new Uint8Array(end.buffer)], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+}
+
+function xlsxCell(reference, value) {
+  const text = String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    // Excel rejects control characters outright.
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
+  return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${text}</t></is></c>`;
+}
+
+function downloadXlsx(filename, headers, rows) {
+  const columns = (index) => {
+    let name = "";
+    let value = index;
+    do {
+      name = String.fromCharCode(65 + (value % 26)) + name;
+      value = Math.floor(value / 26) - 1;
+    } while (value >= 0);
+    return name;
+  };
+  const sheetRows = [headers, ...rows]
+    .map((cells, rowIndex) =>
+      `<row r="${rowIndex + 1}">${cells.map((cell, columnIndex) => xlsxCell(`${columns(columnIndex)}${rowIndex + 1}`, cell)).join("")}</row>`
+    )
+    .join("");
+  const blob = zipStored([
+    ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
+    ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+    ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Enrolled" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+    ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`],
+    ["xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`]
+  ]);
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 function decodePdfLiteral(raw) {
@@ -2132,6 +2340,87 @@ document.addEventListener("click", async event => {
     managedCourseId = "";
     return renderClasses();
   }
+  if (action === "open-course-materials") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    if (!state.courses.some(course => course.id === courseId)) {
+      return toast("Course not found", "error");
+    }
+    try {
+      await loadCourseMaterials(courseId, { force: true });
+    } catch (error) {
+      return toast(error.message || "Could not load course materials", "error");
+    }
+    managedCourseId = "";
+    materialsCourseId = courseId;
+    state.route = "classes";
+    setNavigationState("classes");
+    persist();
+    return renderClasses();
+  }
+  if (action === "close-course-materials") {
+    materialsCourseId = "";
+    return renderClasses();
+  }
+  if (action === "choose-material-upload") {
+    const course = state.courses.find(item => item.id === materialsCourseId);
+    if (!canManageCourse(course)) {
+      return toast("Only the course professor can upload materials", "error");
+    }
+    return document.querySelector("#materialUploadFile")?.click();
+  }
+  if (action === "view-material" || action === "download-material") {
+    const button = event.target.closest("[data-material-id]");
+    const materialId = button?.dataset.materialId || "";
+    const material = (courseMaterials.get(materialsCourseId) || [])
+      .find(item => item.id === materialId);
+    if (!material) return toast("Course material not found", "error");
+    button.disabled = true;
+    try {
+      const blob = await materialBlob(materialId);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      if (action === "view-material") {
+        link.target = "_blank";
+        link.rel = "noopener";
+      } else {
+        link.download = material.fileName;
+      }
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return toast(action === "view-material" ? "Opening material" : "Download started");
+    } catch (error) {
+      return toast(error.message || "Could not download that material", "error");
+    } finally {
+      button.disabled = false;
+    }
+  }
+  if (action === "delete-material") {
+    const course = state.courses.find(item => item.id === materialsCourseId);
+    const materialId = event.target.closest("[data-material-id]")?.dataset.materialId || "";
+    const material = (courseMaterials.get(materialsCourseId) || [])
+      .find(item => item.id === materialId);
+    if (!canManageCourse(course) || !material) {
+      return toast("Only the course professor can remove materials", "error");
+    }
+    if (!window.confirm(`Remove ${material.fileName} from ${course.courseCode}?`)) return;
+    try {
+      await apiRequest(`/api/materials/${encodeURIComponent(materialId)}`, {
+        method: "DELETE"
+      });
+      const materials = await loadCourseMaterials(course.id, { force: true });
+      state.courses = state.courses.map(item =>
+        item.id === course.id ? { ...item, materialCount: materials.length } : item
+      );
+      persist();
+      renderCourseMaterials(course.id);
+      return toast("Course material removed");
+    } catch (error) {
+      return toast(error.message || "Could not remove that material", "error");
+    }
+  }
   if (action === "choose-roster-upload") {
     const course = state.courses.find(item => item.id === managedCourseId);
     if (!canManageCourse(course)) return toast("Only the course owner can upload a roster", "error");
@@ -2298,6 +2587,23 @@ document.addEventListener("click", async event => {
     modalReturnFocus = null;
     renderLogin(state.userRole);
   }
+  if (action === "export-enrolled") {
+    if (!enrolledStudents.length) return toast("Nobody has joined yet", "error");
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadXlsx(
+      `CampusPulse-enrolled-${stamp}.xlsx`,
+      ["Name", "Roll No", "Email", "Phone No", "Hall of Residence", "Course"],
+      enrolledStudents.map(student => [
+        student.name,
+        student.rollNumber || "",
+        student.email,
+        student.phone || "",
+        student.hall || "",
+        student.courseCode
+      ])
+    );
+    return toast(`${enrolledStudents.length} enrolled students exported`);
+  }
   if (action === "choose-timetable-upload") {
     return document.querySelector("#timetableFile")?.click();
   }
@@ -2423,6 +2729,36 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", async event => {
+  if (event.target.id === "materialUploadFile") {
+    const file = event.target.files?.[0];
+    const course = state.courses.find(item => item.id === materialsCourseId);
+    if (!file || !course || !canManageCourse(course)) return;
+    if (!file.size) {
+      event.target.value = "";
+      return toast("That file is empty", "error");
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      event.target.value = "";
+      return toast("Course materials must be 8 MB or smaller", "error");
+    }
+    try {
+      await apiFileUpload(
+        `/api/courses/${encodeURIComponent(course.id)}/materials`,
+        file
+      );
+      const materials = await loadCourseMaterials(course.id, { force: true });
+      state.courses = state.courses.map(item =>
+        item.id === course.id ? { ...item, materialCount: materials.length } : item
+      );
+      persist();
+      renderCourseMaterials(course.id);
+      return toast(`${file.name} shared with the course`);
+    } catch (error) {
+      return toast(error.message || "Could not upload that material", "error");
+    } finally {
+      event.target.value = "";
+    }
+  }
   if (event.target.id === "quizCourseSelect") {
     try {
       await selectQuizCourse(event.target.value);
@@ -2548,7 +2884,16 @@ document.addEventListener("submit", async event => {
       const signedUp = await apiRequest("/api/auth/signup", {
         method: "POST",
         auth: false,
-        body: { role: data.role, name, email, password: data.password, roleCode: data.roleCode || undefined }
+        body: {
+          role: data.role,
+          name,
+          email,
+          password: data.password,
+          phone: String(data.phone || "").trim(),
+          rollNumber: String(data.rollNumber || "").trim().toUpperCase() || undefined,
+          hall: String(data.hall || "").trim() || undefined,
+          roleCode: data.roleCode || undefined
+        }
       });
       apiToken = signedUp.token;
       localStorage.setItem("campusPulseApiToken", apiToken);
@@ -2726,12 +3071,11 @@ document.addEventListener("submit", async event => {
   if (event.target.id === "joinForm") {
     const data = new FormData(event.target);
     const code = String(data.get("joinCode") || "").trim().toUpperCase();
-    const rollNumber = String(data.get("rollNumber") || "").trim().toUpperCase();
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
     try {
       const result = await apiRequest("/api/courses/join", {
         method: "POST",
-        body: rollNumber ? { code, rollNumber } : { code }
+        body: { code }
       });
       await syncBackendState();
       state.selectedCourseId = result.course.id;
