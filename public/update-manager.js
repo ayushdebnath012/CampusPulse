@@ -106,10 +106,12 @@
         }
         if (manifest.version === state.stagedVersion) {
           publish({
-            status: "ready",
+            status: "applying",
             progress: 100,
-            message: "An update is ready. Restart to apply it.",
+            message: "Update ready. Restarting automatically...",
           });
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          await updater.reload();
           return snapshot();
         }
 
@@ -123,10 +125,12 @@
         state.stagedVersion = manifest.version;
         localStorage.setItem("campusPulseStagedWebVersion", manifest.version);
         publish({
-          status: "ready",
+          status: "applying",
           progress: 100,
-          message: "An update is ready. Restart to apply it.",
+          message: "Update downloaded. Restarting automatically...",
         });
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        await updater.reload();
         return snapshot();
       } catch (error) {
         publish({
