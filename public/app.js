@@ -1684,7 +1684,7 @@ function renderStudentAttendance() {
         <div class="stat-grid" style="margin-top:18px">
           <article class="card stat"><div class="stat-top"><span class="stat-icon green">${icon("i-check")}</span></div><div class="stat-value">${summary?.attended ?? 0}</div><div class="stat-label">Classes attended</div></article>
           <article class="card stat"><div class="stat-top"><span class="stat-icon amber">${icon("i-clock")}</span></div><div class="stat-value">${summary?.missed ?? 0}</div><div class="stat-label">Classes missed</div></article>
-          <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span></div><div class="stat-value">${summary?.held ?? 0}</div><div class="stat-label">Classes held</div></article>
+          <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span><span class="trend">${summary?.held ?? 0} held</span></div><div class="stat-value">${percentage}%</div><div class="stat-label">Attendance</div></article>
         </div>
       </article>
       <article class="card page-card">
