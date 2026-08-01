@@ -1635,6 +1635,104 @@ test("editing a course keeps its join code, and deleting one clears its data", a
   assert.equal(gone.response.status, 404);
 });
 
+test("a quiz can carry image questions and name the class it belongs to", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Quiz Professor",
+    email: "quiz-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [{ rollNumber: "23ME10001", name: "Quiz Student" }],
+  });
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Quiz Student",
+    email: "quiz-student@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10001",
+  });
+  await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code },
+  });
+
+  const timetable = await request(testServer.baseUrl, `/api/courses/${course.id}/schedule`, {
+    method: "PUT",
+    token: professor.token,
+    body: {
+      revision: 0,
+      classes: [{ day: "Monday", start: "3:00 PM", end: "5:00 PM", topic: "Fuzzy sets" }],
+    },
+  });
+  assert.equal(timetable.response.status, 200);
+  const scheduleId = timetable.body.schedule[0].id;
+
+  const pixel =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+  const badImage = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Diagram check",
+      questions: [
+        { text: "Which diagram?", options: ["A", "B"], answer: 0, image: "https://example.com/x.png" },
+      ],
+    },
+  });
+  assert.equal(badImage.response.status, 400);
+
+  const wrongClass = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Diagram check",
+      scheduleId: "schedule-not-here",
+      questions: [{ text: "Which diagram?", options: ["A", "B"], answer: 0 }],
+    },
+  });
+  assert.equal(wrongClass.response.status, 400);
+
+  const published = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Diagram check",
+      scheduleId,
+      day: "Monday",
+      classLabel: "Monday · 3:00 PM–5:00 PM · Fuzzy sets",
+      questions: [
+        { text: "Which diagram shows a fuzzy set?", options: ["A", "B"], answer: 1, image: pixel },
+        // A question may be the image alone, with no text.
+        { text: "", options: ["Left", "Right"], answer: 0, image: pixel },
+      ],
+    },
+  });
+  assert.equal(published.response.status, 201);
+  assert.equal(published.body.quiz.day, "Monday");
+  assert.equal(published.body.quiz.scheduleId, scheduleId);
+  assert.equal(published.body.quiz.questions[0].image, pixel);
+  assert.equal(published.body.quiz.questions[1].text, "");
+
+  // The student gets the image and the class, but never the answer key.
+  const seen = await request(testServer.baseUrl, "/api/bootstrap", { token: student.token });
+  assert.equal(seen.body.quiz.classLabel, "Monday · 3:00 PM–5:00 PM · Fuzzy sets");
+  assert.equal(seen.body.quiz.day, "Monday");
+  assert.equal(seen.body.quiz.questions[0].image, pixel);
+  assert.equal("answer" in seen.body.quiz.questions[0], false);
+});
+
 test("professors sign up from department subdomains, students do not", async (t) => {
   const overrideEmail = "profile-override@mech.iitkgp.ac.in";
   const testServer = await createTestServer({

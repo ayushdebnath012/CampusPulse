@@ -75,6 +75,7 @@ const defaultState = {
   backendQuizId: "",
   backendQuizCourseId: "",
   backendQuizTitle: "",
+  backendQuizClassLabel: "",
   backendQuizQuestions: [],
   quizResponded: false,
   attendanceStatus: "not_started",
@@ -355,6 +356,7 @@ function applyQuizSnapshot(quiz) {
   state.backendQuizId = quiz?.id || "";
   state.backendQuizCourseId = quiz?.courseId || "";
   state.backendQuizTitle = quiz?.title || "";
+  state.backendQuizClassLabel = quiz?.classLabel || quiz?.day || "";
   state.backendQuizQuestions = quiz?.questions || [];
   state.quizPublished = quiz?.status === "open";
   state.quizResponses = Array.isArray(quiz?.responses) ? quiz.responses.length : 0;
@@ -395,6 +397,7 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   state.backendQuizId = "";
   state.backendQuizCourseId = "";
   state.backendQuizTitle = "";
+  state.backendQuizClassLabel = "";
   state.backendQuizQuestions = [];
   state.quizPublished = false;
   state.quizResponded = false;
@@ -1669,6 +1672,20 @@ function renderQuiz() {
         <div class="section-head"><h3>Quiz settings</h3></div>
         <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
         <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" />
+        <label for="quizClassSelect">Quiz for which class</label>
+        <select class="select" id="quizClassSelect">
+          <option value="">Not tied to a class</option>
+          ${state.backendSchedule
+            .filter(item => item.courseId === course.id)
+            .map(item => {
+              const label = `${item.day} · ${item.start}${item.end ? `–${item.end}` : ""}${item.topic ? ` · ${item.topic}` : ""}`;
+              return `<option value="${escapeHtml(item.id)}" data-day="${escapeHtml(item.day || "")}" data-label="${escapeHtml(label)}">${escapeHtml(label)}</option>`;
+            })
+            .join("")}
+          ${["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            .map(day => `<option value="day:${day}" data-day="${day}" data-label="${day} class">${day} class</option>`)
+            .join("")}
+        </select>
         <label for="duration">Time limit</label><select class="select" id="duration"><option>3 minutes</option><option>5 minutes</option><option>No limit</option></select>
         <label for="reveal">Results</label><select class="select" id="reveal"><option>Reveal after quiz ends</option><option>Reveal after each answer</option><option>Keep private</option></select>
         <div class="security-note"><span class="lock">✦</span><span>Quiz responses are linked to the active course and visible only to its teaching team.</span></div>
@@ -1694,9 +1711,9 @@ function renderStudentQuizAccess() {
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge green">Enrolled</span></div>
-        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(quizMatchesCourse ? state.backendQuizTitle || "Quick quiz" : "No quiz available")}</h3><p class="stat-label" style="margin-top:5px">${quizMatchesCourse ? state.backendQuizQuestions.length : 0} questions</p></div><span class="badge ${quizPublished ? "purple" : "gray"}">${quizResponded ? "Submitted" : quizPublished ? "Available now" : "Not started"}</span></div>
+        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(quizMatchesCourse ? state.backendQuizTitle || "Quick quiz" : "No quiz available")}</h3><p class="stat-label" style="margin-top:5px">${quizMatchesCourse ? state.backendQuizQuestions.length : 0} questions${quizMatchesCourse && state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge ${quizPublished ? "purple" : "gray"}">${quizResponded ? "Submitted" : quizPublished ? "Available now" : "Not started"}</span></div>
         ${quizPublished && !quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
-          ${state.backendQuizQuestions.map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question)}</strong></legend>${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
+          ${state.backendQuizQuestions.map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question || "")}</strong></legend>${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${questionIndex + 1} image" />` : ""}${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
           <button class="btn btn-primary" type="submit">${icon("i-send")} Submit quiz</button>
         </form>` : `<button class="btn btn-primary" disabled>${icon(quizResponded ? "i-check" : "i-play")} ${quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
       </article>
@@ -1705,9 +1722,25 @@ function renderStudentQuizAccess() {
     <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join a course before opening its quizzes.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
 }
 
+// The selected class travels with the quiz so students know which one it is for.
+function quizClassSelection() {
+  const select = document.querySelector("#quizClassSelect");
+  const option = select?.selectedOptions?.[0];
+  if (!select || !select.value || !option) return {};
+  const day = option.dataset.day || "";
+  const classLabel = option.dataset.label || "";
+  return {
+    ...(select.value.startsWith("day:") ? {} : { scheduleId: select.value }),
+    ...(day ? { day } : {}),
+    ...(classLabel ? { classLabel } : {})
+  };
+}
+
 function questionBlock(number, question = "", options = ["", "", "", ""], answer = 0) {
   return `<div class="question-card">
-    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" aria-label="Question options">${icon("i-more")}</button></div>
+    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" placeholder="Type question ${number}" aria-label="Question ${number}" /><button class="icon-btn" type="button" data-action="attach-question-image" aria-label="Attach an image to question ${number}">${icon("i-upload")}</button></div>
+    <div class="question-image" hidden><img alt="Question ${number} image" /><button class="text-btn danger" type="button" data-action="remove-question-image">Remove image</button></div>
+    <input class="question-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
     <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" placeholder="Option ${i + 1}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
   </div>`;
 }
@@ -1727,7 +1760,7 @@ function renderLiveQuiz() {
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>${escapeHtml(state.backendQuizTitle || "Quick quiz")}</h2><p>${questionCount} ${questionCount === 1 ? "question" : "questions"}</p></div><span class="badge green">Live now</span></div>
+        <div class="session-title"><div><h2>${escapeHtml(state.backendQuizTitle || "Quick quiz")}</h2><p>${questionCount} ${questionCount === 1 ? "question" : "questions"}${state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge green">Live now</span></div>
         <div class="quiz-live">
           <div class="response-count">${responses}</div><p class="stat-label">of ${totalStudents} students responded</p>
           <div class="response-track"><span style="width:${percentage}%"></span></div>
@@ -3299,6 +3332,23 @@ document.addEventListener("click", async event => {
     await refreshOpenAttendance({ rerender: false });
     return render();
   }
+  if (action === "attach-question-image") {
+    const card = event.target.closest(".question-card");
+    return card?.querySelector(".question-image-file")?.click();
+  }
+  if (action === "remove-question-image") {
+    const card = event.target.closest(".question-card");
+    const holder = card?.querySelector(".question-image");
+    const picture = holder?.querySelector("img");
+    if (picture) {
+      picture.removeAttribute("src");
+      delete picture.dataset.image;
+    }
+    if (holder) holder.hidden = true;
+    const input = card?.querySelector(".question-image-file");
+    if (input) input.value = "";
+    return;
+  }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1));
@@ -3310,10 +3360,12 @@ document.addEventListener("click", async event => {
       const questions = [...document.querySelectorAll("#quizBuilder .question-card")].map((card) => {
         const options = [...card.querySelectorAll(".option-input input[type='text']")].map((input) => input.value.trim());
         const selected = [...card.querySelectorAll(".option-input input[type='radio']")].findIndex((input) => input.checked);
+        const image = card.querySelector(".question-image img")?.dataset.image || "";
         return {
-          text: card.querySelector(".question-top > input")?.value.trim() || "Question",
+          text: card.querySelector(".question-top > input")?.value.trim() || (image ? "" : "Question"),
           options,
-          answer: Math.max(0, selected)
+          answer: Math.max(0, selected),
+          ...(image ? { image } : {})
         };
       });
       try {
@@ -3322,6 +3374,7 @@ document.addEventListener("click", async event => {
           body: {
             courseId: course.id,
             title: document.querySelector("#quizTitle")?.value || "Quick quiz",
+            ...quizClassSelection(),
             questions
           }
         });
@@ -3399,6 +3452,37 @@ document.addEventListener("change", async event => {
   }
   if (event.target.id === "attendanceCourseSelect") {
     return switchCourseContext(event.target.value);
+  }
+  if (event.target.classList?.contains("question-image-file")) {
+    const file = event.target.files?.[0];
+    const card = event.target.closest(".question-card");
+    if (!file || !card) return;
+    // Kept small so a quiz stays comfortably inside the request limit.
+    if (file.size > 600 * 1024) {
+      event.target.value = "";
+      return toast("Use an image under 600 KB", "error");
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error("Could not read that image"));
+        reader.readAsDataURL(file);
+      });
+      const holder = card.querySelector(".question-image");
+      const picture = holder?.querySelector("img");
+      if (picture) {
+        picture.src = dataUrl;
+        picture.dataset.image = dataUrl;
+      }
+      if (holder) holder.hidden = false;
+      toast("Image attached to the question");
+    } catch (error) {
+      return toast(error.message || "Could not read that image", "error");
+    } finally {
+      event.target.value = "";
+    }
+    return;
   }
   if (event.target.id === "timetableFile") {
     const file = event.target.files?.[0];

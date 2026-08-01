@@ -144,6 +144,8 @@ function safeQuizForStudent(quiz, userId) {
     title: quiz.title,
     status: quiz.status,
     createdAt: quiz.createdAt,
+    ...(quiz.day ? { day: quiz.day } : {}),
+    ...(quiz.classLabel ? { classLabel: quiz.classLabel } : {}),
     questions: quiz.questions.map(({ answer, ...question }) => question),
     responded: quiz.responses.some((item) => item.userId === userId),
   };
@@ -371,8 +373,20 @@ function normalizeQuizQuestions(input) {
       ? question.options.map((option) => String(option || "").trim())
       : [];
     const answer = Number(question?.answer);
+    const image = String(question?.image || "").trim();
+    // Images ride along as data URLs; anything else could point off-site.
+    if (image && !/^data:image\/(png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(image)) {
+      const error = new Error(`Question ${index + 1} has an unsupported image`);
+      error.status = 400;
+      throw error;
+    }
+    if (image.length > 900000) {
+      const error = new Error(`The image on question ${index + 1} is too large`);
+      error.status = 413;
+      throw error;
+    }
     if (
-      text.length < 2 ||
+      (text.length < 2 && !image) ||
       text.length > 500 ||
       options.length < 2 ||
       options.length > 6 ||
@@ -385,7 +399,7 @@ function normalizeQuizQuestions(input) {
       error.status = 400;
       throw error;
     }
-    return { text, options, answer };
+    return { text, options, answer, ...(image ? { image } : {}) };
   });
 }
 
@@ -2027,10 +2041,31 @@ function createApp(options = {}) {
               item.closedBy = request.user.id;
             }
           });
+          const scheduledDay = WEEKDAYS.find(
+            (day) =>
+              day.toLowerCase() ===
+              String(request.body.day || "").trim().toLowerCase(),
+          ) || "";
+          const scheduleId = String(request.body.scheduleId || "").trim();
+          if (
+            scheduleId &&
+            !database.schedule.some(
+              (item) => item.id === scheduleId && item.courseId === courseId,
+            )
+          ) {
+            const error = new Error("That class is not on this course timetable");
+            error.status = 400;
+            throw error;
+          }
           const created = {
             id: `quiz-${Date.now()}`,
             courseId,
             title: String(request.body.title || "Quick quiz").slice(0, 100),
+            ...(scheduledDay ? { day: scheduledDay } : {}),
+            ...(scheduleId ? { scheduleId } : {}),
+            ...(request.body.classLabel
+              ? { classLabel: String(request.body.classLabel).trim().slice(0, 120) }
+              : {}),
             questions,
             status: "open",
             createdBy: request.user.id,
