@@ -664,3 +664,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .review-option.is-correct { color: #087b59; border-color: #b9ead8; background: var(--green-soft); font-weight: 700; }
 .review-mark { display: grid; place-items: center; width: 18px; height: 18px; flex: 0 0 auto; }
 .review-mark svg { width: 14px; height: 14px; }
+
+.section-link { display: flex; align-items: center; gap: 6px; padding: 0; border: 0; background: none; cursor: pointer; }
+.section-link h3 { margin: 0; }
+.section-link svg { width: 14px; height: 14px; color: var(--primary); }
+.section-link:hover h3 { color: var(--primary); }

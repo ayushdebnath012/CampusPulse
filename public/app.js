@@ -859,7 +859,7 @@ function renderDashboard() {
           </article>
           <article class="card stat">
             <div class="stat-top"><span class="stat-icon amber">${icon("i-quiz")}</span><span class="trend">Published</span></div>
-            <div class="stat-value">${stats.quizzes}</div><div class="stat-label">Quick quizzes</div>
+            <div class="stat-value">${stats.quizzes}</div><div class="stat-label">Quizzes</div>
           </article>
         </div>
 
@@ -1726,7 +1726,7 @@ function renderQuiz() {
   if (state.userRole === "student") return renderStudentQuizAccess();
   const course = selectedCourse();
   if (!course || !canPublishQuiz(course)) {
-    setHeader("Quick quizzes", "COURSE ACCESS", false);
+    setHeader("Quizzes", "COURSE ACCESS", false);
     view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>${state.userRole === "ta" ? "Join the professor's course before publishing quizzes." : "Create a course before publishing quizzes."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
     return;
   }
@@ -1768,7 +1768,7 @@ function renderQuiz() {
       </article>
       <aside class="card page-card quiz-settings">
         ${quizHistory.length ? `<div class="saved-quizzes">
-          <div class="section-head"><h3>Past quiz</h3><span class="badge gray">${quizHistory.length}</span></div>
+          <div class="section-head"><button class="section-link" type="button" data-action="open-past-quizzes"><h3>Past quiz</h3>${icon("i-arrow")}</button><span class="badge gray">${quizHistory.length}</span></div>
           ${quizHistory.map(item => `<div class="saved-quiz ${quizResults?.quiz?.id === item.id ? "is-open-draft" : ""}">
             <button class="saved-quiz-open" type="button" data-action="open-quiz-results" data-quiz-id="${escapeHtml(item.id)}">
               <strong>${escapeHtml(item.title || "Past quiz")}</strong>
@@ -1777,7 +1777,7 @@ function renderQuiz() {
           </div>`).join("")}
         </div>` : ""}
         ${quizDrafts.length ? `<div class="saved-quizzes">
-          <div class="section-head"><h3>Saved for later</h3><span class="badge purple">${quizDrafts.length}</span></div>
+          <div class="section-head"><h3>Saved quiz</h3><span class="badge purple">${quizDrafts.length}</span></div>
           ${quizDrafts.map(draft => `<div class="saved-quiz ${draft.id === editingDraftId ? "is-open-draft" : ""}">
             <button class="saved-quiz-open" type="button" data-action="open-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">
               <strong>${escapeHtml(draft.title || "Untitled quiz")}</strong>
@@ -1915,7 +1915,8 @@ function quizResultsPicker(selectedId = "") {
 
 function renderQuizMarks() {
   const course = selectedCourse();
-  if (!quizResults || !course) return navigate("quizzes");
+  if (!course) return navigate("quizzes");
+  if (!quizResults) return renderPastQuizList(course);
   const { quiz } = quizResults;
   setHeader(
     `${quiz.title || "Past quiz"} · marks`,
@@ -1926,6 +1927,29 @@ function renderQuizMarks() {
     <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
     ${quizResultsCard()}
     ${quizQuestionsCard()}`;
+}
+
+// The list of everything this course has run, newest first.
+function renderPastQuizList(course) {
+  setHeader("Past quiz", `${course.courseCode} · MARKS BY DATE`, false);
+  view.innerHTML = `
+    <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
+    <article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Past quiz</h2><p class="stat-label">Choose a quiz to see who scored what.</p></div><span class="badge ${quizHistory.length ? "purple" : "gray"}">${quizHistory.length}</span></div>
+      ${quizHistory.length ? `<div class="roster-scroll">
+        <table class="roster-table">
+          <thead><tr><th>Date</th><th>Quiz</th><th>Class</th><th>Questions</th><th>Responses</th><th></th></tr></thead>
+          <tbody>${quizHistory.map(item => `<tr>
+            <td>${escapeHtml(formatQuizDate(item.quizDate || item.publishedAt) || "—")}</td>
+            <td>${escapeHtml(item.title || "Untitled quiz")}</td>
+            <td>${escapeHtml(item.classLabel || item.day || "—")}</td>
+            <td>${item.questions}</td>
+            <td>${item.responses}</td>
+            <td class="roster-actions"><button class="text-btn" type="button" data-action="open-quiz-results" data-quiz-id="${escapeHtml(item.id)}">View marks</button></td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>` : `<p class="stat-label" style="padding:14px 2px">No quiz has run yet. Publish one from the Quizzes tab.</p>`}
+    </article>`;
 }
 
 function quizQuestionsCard() {
@@ -3780,6 +3804,10 @@ document.addEventListener("click", async event => {
     }
     renderNotices();
     return toast("Notice removed");
+  }
+  if (action === "open-past-quizzes") {
+    quizResults = null;
+    return navigate("quizmarks");
   }
   if (action === "open-quiz-results") {
     const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
