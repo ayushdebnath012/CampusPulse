@@ -144,6 +144,7 @@ function publicCourse(database, user, course) {
     ...(owner ? { code } : {}),
     owned: owner,
     enrolled: Boolean(enrollment),
+    rosterReady: courseRoster(database, course.id).length > 0,
     capabilities: {
       canManageCourse: owner,
       canManageRoster: owner,
@@ -832,6 +833,9 @@ function createApp(options = {}) {
     async (request, response, next) => {
       try {
         const code = String(request.body.code || "").trim().toUpperCase();
+        const submittedRoll = String(request.body.rollNumber || "")
+          .trim()
+          .toUpperCase();
         const enrollment = await store.update((database) => {
           const course = database.courses.find(
             (item) => item.code === code && hasValidCourseOwner(database, item),
@@ -841,15 +845,59 @@ function createApp(options = {}) {
             error.status = 404;
             throw error;
           }
+          // A course opens to students only once its roll list exists.
+          const roster = courseRoster(database, course.id);
+          if (!roster.length) {
+            const error = new Error(
+              "This course has not started yet — its professor has not uploaded the roll list",
+            );
+            error.status = 409;
+            throw error;
+          }
           const existing = database.enrollments.find(
             (item) => item.userId === request.user.id && item.courseId === course.id,
           );
           if (existing) return { course, existing: true };
+
+          // Students are admitted only if the professor's roll list contains
+          // them; teaching assistants never appear on it.
+          let rollNumber = "";
+          if (request.user.role === "student") {
+            if (!submittedRoll) {
+              const error = new Error("Enter your roll number to join this course");
+              error.status = 400;
+              throw error;
+            }
+            const entry = roster.find((item) => item.rollNumber === submittedRoll);
+            if (!entry) {
+              const error = new Error(
+                "You are not admitted to this course — your roll number is not on its roll list",
+              );
+              error.status = 403;
+              throw error;
+            }
+            const claimedByAnother = database.enrollments.some(
+              (item) =>
+                item.courseId === course.id &&
+                item.userId !== request.user.id &&
+                item.rollNumber === submittedRoll,
+            );
+            if (claimedByAnother) {
+              const error = new Error(
+                "That roll number is already linked to another account",
+              );
+              error.status = 409;
+              throw error;
+            }
+            rollNumber = submittedRoll;
+          }
+
           database.enrollments.push({
             id: `enrollment-${Date.now()}`,
             userId: request.user.id,
             courseId: course.id,
             courseRole: request.user.role,
+            ...(rollNumber ? { rollNumber } : {}),
             joinedAt: new Date().toISOString(),
           });
           return { course, existing: false };
@@ -890,7 +938,9 @@ function createApp(options = {}) {
           const course = requireCourse(database, request.user, courseId, "run");
           const roster = courseRoster(database, courseId);
           if (!roster.length) {
-            const error = new Error("This course does not have a roster");
+            const error = new Error(
+              "Upload the course roll list before taking attendance",
+            );
             error.status = 409;
             throw error;
           }

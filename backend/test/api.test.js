@@ -214,7 +214,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const joined = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.token,
-    body: { code: "SC401A" },
+    body: { code: "SC401A", rollNumber: "MFTEST0001" },
   });
   assert.equal(joined.response.status, 201);
   assert.equal(joined.body.course.id, "soft401");
@@ -719,7 +719,7 @@ test("first professor automatically owns courses and receives working join codes
   const joined = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: student.body.token,
-    body: { code: softCourse.code },
+    body: { code: softCourse.code, rollNumber: "MFTEST0001" },
   });
   assert.equal(joined.response.status, 201);
   assert.equal(joined.body.course.id, "soft401");
@@ -781,6 +781,93 @@ test("one-time account reset removes existing identities but preserves course da
   assert.deepEqual(repeated, { applied: false, deletedAccounts: 0 });
 });
 
+test("a course stays closed until its professor uploads the roll list", async (t) => {
+  const testServer = await createTestServer({
+    env: { COURSE_ROSTERS_JSON: JSON.stringify([]) },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Ayush Professor",
+    email: "professor@iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Ayush Student",
+    email: "student@kgpian.iitkgp.ac.in",
+    password: "student-password",
+  });
+
+  const ownedBefore = await request(testServer.baseUrl, "/api/courses", {
+    token: professor.token,
+  });
+  const softBefore = ownedBefore.body.courses.find((course) => course.id === "soft401");
+  assert.equal(softBefore.rosterReady, false);
+
+  const earlyJoin = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: "SC401A" },
+  });
+  assert.equal(earlyJoin.response.status, 409);
+  assert.match(earlyJoin.body.error, /has not started yet/i);
+
+  const earlySession = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: "soft401" },
+  });
+  assert.equal(earlySession.response.status, 409);
+  assert.match(earlySession.body.error, /roll list/i);
+
+  const uploaded = await request(testServer.baseUrl, "/api/courses/soft401/roster", {
+    method: "PUT",
+    token: professor.token,
+    body: {
+      students: [
+        { rollNumber: "21ME10001", name: "Ayush Student" },
+        { rollNumber: "21ME10002", name: "Second Student" },
+      ],
+    },
+  });
+  assert.equal(uploaded.response.status, 200);
+  assert.equal(uploaded.body.course.rosterReady, true);
+
+  const join = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: "SC401A", rollNumber: "21ME10001" },
+  });
+  assert.equal(join.response.status, 201);
+
+  const session = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: "soft401" },
+  });
+  assert.equal(session.response.status, 201);
+  assert.deepEqual(
+    session.body.attendance.records.map((record) => record.rollNumber),
+    ["21ME10001", "21ME10002"],
+  );
+
+  const marked = await request(
+    testServer.baseUrl,
+    `/api/attendance/${session.body.attendance.id}/check-in`,
+    {
+      method: "POST",
+      token: student.token,
+      body: { rollNumber: "21ME10001", signals: { wifi: true, bluetooth: true } },
+    },
+  );
+  assert.equal(marked.response.status, 201);
+});
+
 test("students mark their own attendance only while the professor's session is open", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
@@ -806,11 +893,30 @@ test("students mark their own attendance only while the professor's session is o
     email: "outsider@kgpian.iitkgp.ac.in",
     password: "outsider-password",
   });
-  for (const token of [student.token, outsider.token]) {
+  // Admission is checked against the roll list at join time.
+  const notAdmitted = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: "SC401A", rollNumber: "NOTONROSTER" },
+  });
+  assert.equal(notAdmitted.response.status, 403);
+  assert.match(notAdmitted.body.error, /not admitted/i);
+
+  const noRoll = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: "SC401A" },
+  });
+  assert.equal(noRoll.response.status, 400);
+
+  for (const [token, rollNumber] of [
+    [student.token, "MFTEST0001"],
+    [outsider.token, "MFTEST0002"],
+  ]) {
     const joined = await request(testServer.baseUrl, "/api/courses/join", {
       method: "POST",
       token,
-      body: { code: "SC401A" },
+      body: { code: "SC401A", rollNumber },
     });
     assert.equal(joined.response.status, 201);
   }
@@ -855,13 +961,6 @@ test("students mark their own attendance only while the professor's session is o
     assert.equal(blocked.response.status, 400);
   }
 
-  const wrongRoll = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
-    method: "POST",
-    token: student.token,
-    body: { rollNumber: "NOTONROSTER", signals: goodSignals },
-  });
-  assert.equal(wrongRoll.response.status, 400);
-
   const checkedIn = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
     token: student.token,
@@ -873,13 +972,23 @@ test("students mark their own attendance only while the professor's session is o
   // The student payload must not carry the rest of the roster.
   assert.equal("records" in checkedIn.body, false);
 
-  // A second account cannot claim a roll number already bound to someone else.
-  const stolen = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+  // A roll number bound at join cannot be claimed by a second account.
+  const stolen = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: outsider.token,
+    body: { code: "SC401A", rollNumber: "MFTEST0001" },
+  });
+  assert.equal(stolen.response.status, 200);
+  assert.equal(stolen.body.existing, true);
+
+  // Marking uses the roll bound at join, never one supplied at check-in time.
+  const spoofed = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
     token: outsider.token,
     body: { rollNumber: "MFTEST0001", signals: goodSignals },
   });
-  assert.equal(stolen.response.status, 409);
+  assert.equal(spoofed.response.status, 201);
+  assert.equal(spoofed.body.rollNumber, "MFTEST0002");
 
   // Once bound, the roll number no longer has to be supplied.
   const repeat = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {

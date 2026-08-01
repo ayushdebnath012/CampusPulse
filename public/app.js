@@ -892,11 +892,12 @@ function renderAttendanceSetup() {
     return;
   }
   const roster = courseRosters.get(course.id) || [];
+  const ready = roster.length > 0;
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        ${sessionHeading("Choose the official roster", "Attendance has not started yet", "amber")}
+        ${sessionHeading(ready ? "Choose the official roster" : "Upload the roll list first", "Attendance has not started yet", "amber")}
         ${stepper(1)}
         <div class="roster-picker">
           <label for="attendanceCourseSelect">Course roster</label>
@@ -905,14 +906,20 @@ function renderAttendanceSetup() {
           </select>
           <div class="roster-source-card">
             <span class="student-avatar">${roster.length}</span>
-            <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${roster.length} students</p></div>
-            <span class="badge green">Official roster ready</span>
+            <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${ready ? `${roster.length} students` : "no roll list uploaded yet"}</p></div>
+            <span class="badge ${ready ? "green" : "amber"}">${ready ? "Official roster ready" : "Roll list required"}</span>
           </div>
         </div>
-        <div class="security-note"><span class="lock">⌾</span><span>This list is visible only to the course-owning professor and enrolled teaching assistants. Each session stores a roster snapshot so marks stay linked to roll numbers.</span></div>
+        ${ready
+          ? `<div class="security-note"><span class="lock">⌾</span><span>This list is visible only to the course-owning professor and enrolled teaching assistants. Each session stores a roster snapshot so marks stay linked to roll numbers.</span></div>`
+          : `<div class="security-note"><span class="lock">⌾</span><span>Attendance runs against your official roll list. Upload it as Excel (.xlsx), PDF, CSV, or JSON — it needs a roll number column and a name column. Students can only mark themselves once a roll list exists.</span></div>`}
         <div class="setup-actions">
           <button class="btn" data-route-link="dashboard">Cancel</button>
-          <button class="btn btn-primary" data-action="start-scan" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button>
+          ${ready
+            ? `<button class="btn btn-primary" data-action="start-scan">${icon("i-play")} Take attendance</button>`
+            : canManageCourse(course)
+              ? `<button class="btn btn-primary" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-download")} Upload roll list</button>`
+              : `<span class="badge gray">Waiting for the professor's roll list</span>`}
         </div>
       </article>
       ${attendanceSidePanel(roster.map(student => ({ ...student, present: false })))}
@@ -1151,7 +1158,7 @@ function facultyCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><h3>${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
     <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
-    <div class="course-footer"><span>${icon("i-users")} ${Number(course.students) || 0} rostered students</span><button class="text-btn" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">Manage roster</button></div>
+    <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} Not started — upload the roll list` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><button class="text-btn" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${course.rosterReady === false ? "Upload roll list" : "Manage roster"}</button></div>
   </article>`;
 }
 
@@ -1169,7 +1176,7 @@ function renderCourseRoster(courseId) {
       <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · active course roster</p></div><span class="badge green">${roster.length} students</span></div>
       <div class="roster-toolbar roster-search-toolbar">
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
-        <div class="setup-actions"><button class="btn" data-action="choose-roster-upload">${icon("i-download")} Upload roster</button><button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button><input id="rosterUploadFile" type="file" accept=".csv,.json,text/csv,application/json" hidden /></div>
+        <div class="setup-actions"><button class="btn" data-action="choose-roster-upload">${icon("i-download")} Upload roll list</button><button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button><input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden /></div>
       </div>
       <div class="roster roster-scroll professor-roster" id="professorRoster">
         ${roster.map((student, index) => studentRow({ ...student, present: false }, index, false, true)).join("")}
@@ -1209,8 +1216,12 @@ function renderStudentClasses() {
     <div class="left-stack">
     <article class="card join-panel">
       <span class="empty-icon">${icon("i-plus")}</span><h2>Enter your course code</h2>
-      <p class="stat-label">Your faculty will share a private course code. You only need to join once.</p>
-      <form class="join-code" id="joinForm"><div class="join-code-field"><label for="studentJoinCode">Private course code</label><input id="studentJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
+      <p class="stat-label">Your faculty will share a private course code. Your roll number must appear on the course roll list — you only need to join once.</p>
+      <form class="join-code" id="joinForm">
+        <div class="join-code-field"><label for="studentJoinCode">Private course code</label><input id="studentJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div>
+        <div class="join-code-field"><label for="studentJoinRoll">Your roll number</label><input id="studentJoinRoll" name="rollNumber" maxlength="20" placeholder="e.g. 21ME10001" autocomplete="off" required/></div>
+        <button class="btn btn-primary">Join course</button>
+      </form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
     </article>
     ${weeklySchedule()}
@@ -1415,6 +1426,248 @@ function parseCSVRow(line) {
   return values;
 }
 
+const ROLL_HEADERS = ["roll", "rollno", "rollnumber", "studentroll", "rollno.", "regno", "registrationno"];
+const NAME_HEADERS = ["name", "studentname", "fullname", "student"];
+
+// Shared by CSV and Excel: rows are arrays of cell strings, first row the header.
+function rosterFromRows(rows, label) {
+  const cleaned = rows.filter(row => row.some(cell => String(cell || "").trim()));
+  if (cleaned.length < 2) throw new Error(`Roster ${label} must include a header and at least one student`);
+  const headers = cleaned[0].map(header =>
+    String(header || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+  );
+  const rollIndex = headers.findIndex(header => ROLL_HEADERS.includes(header));
+  const nameIndex = headers.findIndex(header => NAME_HEADERS.includes(header));
+  if (rollIndex < 0 || nameIndex < 0) {
+    throw new Error(`Roster ${label} needs a roll number column and a name column`);
+  }
+  return cleaned
+    .slice(1)
+    .map(row => ({
+      rollNumber: String(row[rollIndex] ?? "").trim(),
+      name: String(row[nameIndex] ?? "").trim()
+    }))
+    .filter(student => student.rollNumber || student.name);
+}
+
+function decodeXmlText(value = "") {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&amp;/g, "&");
+}
+
+async function inflateEntry(bytes, method) {
+  if (method === 0) return bytes;
+  if (method !== 8) throw new Error("This Excel file uses an unsupported compression method");
+  if (typeof DecompressionStream !== "function") {
+    throw new Error("This browser cannot open .xlsx files — save the sheet as CSV instead");
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Minimal reader for the parts of the .xlsx container we need. An .xlsx file is
+// a ZIP of XML, so the central directory is walked directly rather than pulling
+// in a spreadsheet library the app has no bundler for.
+async function readXlsxParts(buffer, wanted) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  let end = -1;
+  for (let index = bytes.length - 22; index >= 0 && index > bytes.length - 66000; index -= 1) {
+    if (view.getUint32(index, true) === 0x06054b50) { end = index; break; }
+  }
+  if (end < 0) throw new Error("That file is not a readable .xlsx workbook");
+
+  const entryCount = view.getUint16(end + 10, true);
+  let pointer = view.getUint32(end + 16, true);
+  const parts = new Map();
+  for (let index = 0; index < entryCount; index += 1) {
+    if (view.getUint32(pointer, true) !== 0x02014b50) break;
+    const method = view.getUint16(pointer + 10, true);
+    const compressedSize = view.getUint32(pointer + 20, true);
+    const nameLength = view.getUint16(pointer + 28, true);
+    const extraLength = view.getUint16(pointer + 30, true);
+    const commentLength = view.getUint16(pointer + 32, true);
+    const localOffset = view.getUint32(pointer + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(pointer + 46, pointer + 46 + nameLength));
+    if (wanted(name)) {
+      const localNameLength = view.getUint16(localOffset + 26, true);
+      const localExtraLength = view.getUint16(localOffset + 28, true);
+      const start = localOffset + 30 + localNameLength + localExtraLength;
+      const raw = bytes.subarray(start, start + compressedSize);
+      parts.set(name, new TextDecoder().decode(await inflateEntry(raw, method)));
+    }
+    pointer += 46 + nameLength + extraLength + commentLength;
+  }
+  return parts;
+}
+
+function columnIndex(reference = "") {
+  const letters = String(reference).match(/^[A-Z]+/)?.[0] || "";
+  return [...letters].reduce((total, letter) => total * 26 + (letter.charCodeAt(0) - 64), 0) - 1;
+}
+
+async function parseRosterXlsx(buffer) {
+  const parts = await readXlsxParts(
+    buffer,
+    name => name === "xl/sharedStrings.xml" || /^xl\/worksheets\/sheet\d+\.xml$/.test(name)
+  );
+  const sheetName = [...parts.keys()]
+    .filter(name => name.startsWith("xl/worksheets/"))
+    .sort()[0];
+  if (!sheetName) throw new Error("That workbook has no readable sheet");
+
+  const sharedStrings = [...(parts.get("xl/sharedStrings.xml") || "").matchAll(/<si>([\s\S]*?)<\/si>/g)]
+    .map(match => [...match[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
+      .map(part => decodeXmlText(part[1]))
+      .join(""));
+
+  const rows = [];
+  for (const rowMatch of parts.get(sheetName).matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
+    const cells = [];
+    for (const cellMatch of rowMatch[1].matchAll(/<c([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const attributes = cellMatch[1];
+      const body = cellMatch[2];
+      const type = attributes.match(/\st="([^"]+)"/)?.[1] || "";
+      const reference = attributes.match(/\sr="([^"]+)"/)?.[1] || "";
+      let value = "";
+      if (type === "s") {
+        value = sharedStrings[Number(body.match(/<v>([\s\S]*?)<\/v>/)?.[1] || -1)] || "";
+      } else if (type === "inlineStr") {
+        value = [...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
+          .map(part => decodeXmlText(part[1]))
+          .join("");
+      } else {
+        value = decodeXmlText(body.match(/<v>([\s\S]*?)<\/v>/)?.[1] || "");
+      }
+      const index = reference ? columnIndex(reference) : cells.length;
+      cells[index >= 0 ? index : cells.length] = value;
+    }
+    rows.push([...cells].map(cell => cell ?? ""));
+  }
+  return rosterFromRows(rows, "sheet");
+}
+
+function decodePdfLiteral(raw) {
+  let out = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character !== "\\") { out += character; continue; }
+    const next = raw[index += 1];
+    if (next === "n") out += "\n";
+    else if (next === "r") out += "\r";
+    else if (next === "t") out += "\t";
+    else if (next === "b" || next === "f") out += " ";
+    else if (next >= "0" && next <= "7") {
+      let octal = next;
+      while (octal.length < 3 && raw[index + 1] >= "0" && raw[index + 1] <= "7") octal += raw[index += 1];
+      out += String.fromCharCode(parseInt(octal, 8));
+    } else out += next;
+  }
+  return out;
+}
+
+function decodePdfHex(raw) {
+  const digits = raw.replace(/[^0-9A-Fa-f]/g, "");
+  let out = "";
+  for (let index = 0; index + 1 < digits.length; index += 2) {
+    out += String.fromCharCode(parseInt(digits.slice(index, index + 2), 16));
+  }
+  return out;
+}
+
+// Text-showing operators only; positioning operators end the current line.
+function pdfTextLines(content) {
+  const lines = [];
+  let current = "";
+  let pending = [];
+  const tokens = content.matchAll(
+    /\((?:\\[\s\S]|[^\\()])*\)|<[0-9A-Fa-f\s]*>|\bTJ\b|\bTj\b|\bTD\b|\bTd\b|\bT\*|\bTm\b|\bBT\b|\bET\b/g
+  );
+  const flushLine = () => {
+    if (current.trim()) lines.push(current.trim());
+    current = "";
+  };
+  for (const [token] of tokens) {
+    if (token.startsWith("(")) pending.push(decodePdfLiteral(token.slice(1, -1)));
+    else if (token.startsWith("<")) pending.push(decodePdfHex(token.slice(1, -1)));
+    else if (token === "Tj" || token === "TJ") { current += pending.join(""); pending = []; }
+    else { pending = []; flushLine(); }
+  }
+  flushLine();
+  return lines;
+}
+
+async function pdfContentStreams(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const raw = new TextDecoder("latin1").decode(bytes);
+  if (/\/Encrypt\b/.test(raw)) {
+    throw new Error("That PDF is password protected — export an unprotected copy");
+  }
+  const chunks = [];
+  const marker = /stream\r?\n?/g;
+  let match;
+  while ((match = marker.exec(raw))) {
+    const dictionary = raw.slice(Math.max(0, match.index - 400), match.index);
+    const start = match.index + match[0].length;
+    const stop = raw.indexOf("endstream", start);
+    if (stop < 0) break;
+    // Prefer the declared /Length; otherwise drop the EOL that precedes
+    // "endstream", because a single trailing byte makes inflate reject the
+    // whole stream as trailing junk.
+    const declared = Number(dictionary.match(/\/Length\s+(\d+)/)?.[1] || 0);
+    let finish = declared > 0 && start + declared <= stop ? start + declared : stop;
+    while (finish > start && (bytes[finish - 1] === 0x0a || bytes[finish - 1] === 0x0d)) finish -= 1;
+    const slice = bytes.subarray(start, finish);
+    if (/\/FlateDecode/.test(dictionary)) {
+      if (typeof DecompressionStream !== "function") {
+        throw new Error("This browser cannot open compressed PDFs — upload the Excel or CSV version");
+      }
+      try {
+        const stream = new Blob([slice]).stream().pipeThrough(new DecompressionStream("deflate"));
+        chunks.push(new TextDecoder("latin1").decode(await new Response(stream).arrayBuffer()));
+      } catch {
+        // Not every stream is page content; skip the ones that will not inflate.
+      }
+    } else {
+      chunks.push(new TextDecoder("latin1").decode(slice));
+    }
+    marker.lastIndex = stop;
+  }
+  return chunks;
+}
+
+// Roll numbers carry at least one digit; the remainder of the line is the name.
+function rosterFromTextLines(lines) {
+  const pattern = /^(?:\d{1,4}[.)]?\s+)?([A-Za-z0-9/-]{5,20})[\s,|]+([A-Za-z][A-Za-z .'`-]{1,80})$/;
+  const students = [];
+  for (const line of lines) {
+    const text = line.replace(/\s+/g, " ").trim();
+    const match = text.match(pattern);
+    if (!match) continue;
+    const rollNumber = match[1].toUpperCase();
+    if (!/\d/.test(rollNumber)) continue;
+    students.push({ rollNumber, name: match[2].trim() });
+  }
+  return students;
+}
+
+async function parseRosterPdf(buffer) {
+  const streams = await pdfContentStreams(buffer);
+  const lines = streams.flatMap(pdfTextLines);
+  const students = rosterFromTextLines(lines);
+  if (!students.length) {
+    throw new Error(
+      "No roll numbers were found in that PDF. Scanned PDFs hold no text — upload the Excel or CSV version instead"
+    );
+  }
+  return students;
+}
+
 function parseRosterUpload(text, filename = "") {
   if (filename.toLowerCase().endsWith(".json")) {
     const parsed = JSON.parse(text);
@@ -1426,15 +1679,17 @@ function parseRosterUpload(text, filename = "") {
     }));
   }
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  if (lines.length < 2) throw new Error("Roster CSV must include a header and at least one student");
-  const headers = parseCSVRow(lines[0]).map(header => header.toLowerCase().replace(/[^a-z0-9]/g, ""));
-  const rollIndex = headers.findIndex(header => ["roll", "rollno", "rollnumber", "studentroll"].includes(header));
-  const nameIndex = headers.findIndex(header => ["name", "studentname", "fullname"].includes(header));
-  if (rollIndex < 0 || nameIndex < 0) throw new Error("Roster CSV needs roll number and name columns");
-  return lines.slice(1).map(line => {
-    const values = parseCSVRow(line);
-    return { rollNumber: values[rollIndex], name: values[nameIndex] };
-  });
+  return rosterFromRows(lines.map(parseCSVRow), "CSV");
+}
+
+async function readRosterFile(file) {
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".xlsx")) return parseRosterXlsx(await file.arrayBuffer());
+  if (name.endsWith(".pdf")) return parseRosterPdf(await file.arrayBuffer());
+  if (name.endsWith(".xls")) {
+    throw new Error("Save the sheet as .xlsx or CSV — the old .xls format is not supported");
+  }
+  return parseRosterUpload(await file.text(), file.name);
 }
 
 function parseScheduleICS(text) {
@@ -1574,6 +1829,9 @@ document.addEventListener("click", async event => {
       return toast(error.message || "Could not load the course roster", "error");
     }
     managedCourseId = courseId;
+    state.route = "classes";
+    setNavigationState("classes");
+    persist();
     return renderClasses();
   }
   if (action === "close-course-roster") {
@@ -1869,8 +2127,19 @@ document.addEventListener("change", async event => {
     const course = state.courses.find(item => item.id === managedCourseId);
     if (!file || !canManageCourse(course)) return;
     try {
-      const students = parseRosterUpload(await file.text(), file.name);
-      if (!window.confirm(`Replace the official ${course.courseCode} roster with ${students.length} uploaded students? Existing attendance snapshots will remain unchanged.`)) return;
+      const students = await readRosterFile(file);
+      // The PDF reader is heuristic, so show what was actually read before it
+      // replaces the official roster.
+      const preview = students
+        .slice(0, 3)
+        .map(student => `  ${student.rollNumber} — ${student.name}`)
+        .join("\n");
+      const confirmed = window.confirm(
+        `Replace the official ${course.courseCode} roster with ${students.length} students read from ${file.name}?\n\n`
+        + `First entries:\n${preview}\n\n`
+        + "Check these look right. Existing attendance snapshots stay unchanged."
+      );
+      if (!confirmed) return;
       const result = await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/roster`, {
         method: "PUT",
         body: { students }
@@ -2040,12 +2309,14 @@ document.addEventListener("submit", async event => {
     toast(`${result.course.name} created · Code ${result.course.code}`);
   }
   if (event.target.id === "joinForm") {
-    const code = new FormData(event.target).get("joinCode").trim().toUpperCase();
+    const data = new FormData(event.target);
+    const code = String(data.get("joinCode") || "").trim().toUpperCase();
+    const rollNumber = String(data.get("rollNumber") || "").trim().toUpperCase();
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
     try {
       const result = await apiRequest("/api/courses/join", {
         method: "POST",
-        body: { code }
+        body: rollNumber ? { code, rollNumber } : { code }
       });
       await syncBackendState();
       state.selectedCourseId = result.course.id;
