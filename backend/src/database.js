@@ -28,6 +28,7 @@ function initialData(env = process.env) {
     courses,
     courseStudents,
     courseMaterials: [],
+    courseNotices: [],
     schedule: [],
     attendanceSessions: [],
     quizzes: [],

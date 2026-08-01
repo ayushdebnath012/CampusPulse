@@ -134,6 +134,7 @@ let enrolledStudents = [];
 let quizDrafts = [];
 let editingDraftId = "";
 let quizHistory = [];
+let courseNotices = [];
 let quizResults = null;
 let passwordResetEmail = "";
 // Reset by email is only offered when the server can actually send one.
@@ -661,6 +662,7 @@ async function syncBackendState() {
   persist();
   await refreshOpenAttendance({ rerender: false });
   await refreshEnrolledStudents();
+  await refreshNotices(state.selectedCourseId);
   if (canPublishQuiz()) {
     await refreshQuizDrafts(state.selectedCourseId);
     await refreshQuizHistory(state.selectedCourseId);
@@ -786,6 +788,11 @@ function navigate(route, { fromHistory = false } = {}) {
   syncBackButton();
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
+  if (route === "notices") {
+    refreshNotices(state.selectedCourseId).then(() => {
+      if (state.route === "notices") renderNotices();
+    });
+  }
   if (route === "quizzes" && canPublishQuiz()) {
     Promise.all([
       refreshQuizDrafts(state.selectedCourseId),
@@ -803,6 +810,7 @@ function render() {
   if (state.route === "attendance") return renderAttendance();
   if (state.route === "quizzes") return renderQuiz();
   if (state.route === "students") return renderStudents();
+  if (state.route === "notices") return renderNotices();
   if (state.route === "materials") return renderMaterials();
   return renderPlaceholder(state.route);
 }
@@ -961,6 +969,7 @@ async function switchCourseContext(
   editingDraftId = "";
   persist();
   quizResults = null;
+  await refreshNotices(course.id);
   if (canPublishQuiz(course)) {
     await refreshQuizDrafts(course.id);
     await refreshQuizHistory(course.id);
@@ -1729,12 +1738,15 @@ function renderQuiz() {
         timeToMinutes(left.start) - timeToMinutes(right.start)
     );
   if (state.quizPublished && state.backendQuizCourseId === course.id) return renderLiveQuiz();
+  setTimeout(() => snapQuizDateToClassDay(), 0);
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     ${quizResultsCard()}
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>${openDraft ? escapeHtml(openDraft.title || "Saved quiz") : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft ? `Saved for ${escapeHtml(openDraft.classLabel || course.name)}. Edit it below, then publish when the class starts.` : `Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.`}</p></div>${openDraft ? `<button class="text-btn" type="button" data-action="close-draft-quiz">Start a new quiz</button>` : `<span class="badge purple">Draft</span>`}</div>
+        <div class="session-title"><div><h2>${openDraft ? `${escapeHtml(openDraft.title || "Saved quiz")} · ${escapeHtml(course.courseCode)}` : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft
+          ? `${[openDraft.day, formatQuizDate(openDraft.quizDate), openDraft.classLabel].filter(Boolean).map(escapeHtml).join(" · ") || escapeHtml(course.name)} — edit below, then publish when the class starts.`
+          : `Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.`}</p></div>${openDraft ? `<button class="text-btn" type="button" data-action="close-draft-quiz">Start a new quiz</button>` : `<span class="badge purple">Draft</span>`}</div>
         <div class="quiz-builder" id="quizBuilder">
           ${openDraft && openDraft.questions.length
             ? openDraft.questions
@@ -1837,6 +1849,44 @@ function scheduledClassLabel(item, course) {
   return [item.day, time, code].filter(Boolean).join(" · ") + extra;
 }
 
+const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function isoDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+// The nearest date on the given weekday, so only days the course runs are used.
+function nearestDateOnDay(day, from = new Date()) {
+  const target = WEEKDAY_NAMES.indexOf(day);
+  if (target < 0) return isoDate(from);
+  const base = new Date(from);
+  base.setHours(12, 0, 0, 0);
+  const current = (base.getDay() + 6) % 7;
+  const backwards = (current - target + 7) % 7;
+  const forwards = (target - current + 7) % 7;
+  base.setDate(base.getDate() + (backwards <= forwards ? -backwards : forwards));
+  return isoDate(base);
+}
+
+function selectedClassDay() {
+  const option = document.querySelector("#quizClassSelect")?.selectedOptions?.[0];
+  return option?.dataset.day || "";
+}
+
+// Keeps the picker on a day the class actually meets.
+function snapQuizDateToClassDay({ announce = false } = {}) {
+  const input = document.querySelector("#quizDate");
+  const day = selectedClassDay();
+  if (!input || !day) return;
+  const picked = input.value ? new Date(`${input.value}T12:00:00`) : null;
+  const pickedDay = picked && !Number.isNaN(picked.getTime())
+    ? WEEKDAY_NAMES[(picked.getDay() + 6) % 7]
+    : "";
+  if (pickedDay === day) return;
+  input.value = nearestDateOnDay(day, picked && !Number.isNaN(picked.getTime()) ? picked : new Date());
+  if (announce) toast(`This class runs on ${day} — moved to the nearest ${day}`);
+}
+
 function formatQuizDate(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -1885,6 +1935,71 @@ function readQuizBuilder() {
   });
 }
 
+async function refreshNotices(courseId) {
+  if (!backendConfigured() || !apiToken || !courseId) {
+    courseNotices = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest(`/api/courses/${encodeURIComponent(courseId)}/notices`);
+    courseNotices = Array.isArray(payload.notices) ? payload.notices : [];
+  } catch {
+    courseNotices = [];
+  }
+}
+
+function noticeIcon(kind) {
+  return { quiz: "i-quiz", attendance: "i-users", material: "i-download" }[kind] || "i-bell";
+}
+
+function noticeAge(value) {
+  const when = new Date(value);
+  if (Number.isNaN(when.getTime())) return "";
+  const minutes = Math.round((Date.now() - when.getTime()) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return when.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+function renderNotices() {
+  const course = selectedCourse();
+  setHeader("Notices", course ? `${course.courseCode} · COURSE NOTICE BOARD` : "COURSE NOTICE BOARD", false);
+  if (!course) {
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-bell")}</span><h2>No notices</h2><p>${state.userRole === "faculty" ? "Create a course to post notices." : "Join a course to see its notices."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
+    return;
+  }
+  view.innerHTML = noticeBoard(course);
+}
+
+// Shown to students, TAs and professors alike; only the team can post.
+function noticeBoard(course) {
+  if (!course) return "";
+  const canPost = canRunAttendance(course);
+  return `<article class="card page-card notice-board">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Notice board</h2><p class="stat-label">${escapeHtml(course.courseCode)} · announcements and course activity</p></div><span class="badge ${courseNotices.length ? "purple" : "gray"}">${courseNotices.length}</span></div>
+    ${canPost ? `<form id="noticeForm" class="login-form" style="margin-bottom:16px">
+      <label for="noticeTitle">New notice</label>
+      <input class="text-input" id="noticeTitle" name="title" placeholder="e.g. Class moved to NR305" maxlength="120" required />
+      <label for="noticeBody">Details (optional)</label>
+      <textarea class="text-input" id="noticeBody" name="body" rows="2" maxlength="2000" placeholder="Anything students should know"></textarea>
+      <button class="btn btn-primary" type="submit">${icon("i-send")} Post notice</button>
+    </form>` : ""}
+    <div class="notice-list">
+      ${courseNotices.length ? courseNotices.map(notice => `<div class="notice">
+        <span class="activity-icon">${icon(noticeIcon(notice.kind))}</span>
+        <div>
+          <strong>${escapeHtml(notice.title)}</strong>
+          ${notice.body ? `<p>${escapeHtml(notice.body)}</p>` : ""}
+          <span class="notice-meta">${escapeHtml(notice.authorName || "Course team")} · ${escapeHtml(noticeAge(notice.createdAt))}</span>
+        </div>
+        ${canPost ? `<button class="text-btn danger" type="button" data-action="delete-notice" data-notice-id="${escapeHtml(notice.id)}">Remove</button>` : ""}
+      </div>`).join("") : `<p class="stat-label">Nothing posted yet.${canPost ? " Post a notice, or one appears automatically when you open attendance, publish a quiz, or share material." : ""}</p>`}
+    </div>
+  </article>`;
+}
+
 async function refreshQuizHistory(courseId) {
   if (!backendConfigured() || !apiToken || !courseId) {
     quizHistory = [];
@@ -1931,6 +2046,12 @@ function quizSettingsPayload() {
   }
   if (!quizDate) {
     toast("Pick the date this quiz is for", "error");
+    return null;
+  }
+  const classDay = option.dataset.day || "";
+  const pickedDay = WEEKDAY_NAMES[(new Date(`${quizDate}T12:00:00`).getDay() + 6) % 7];
+  if (classDay && pickedDay !== classDay) {
+    toast(`This class runs on ${classDay} — pick a ${classDay}`, "error");
     return null;
   }
   if (timeLimit === "" || !reveal) {
@@ -3583,6 +3704,24 @@ document.addEventListener("click", async event => {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1));
   }
+  if (action === "delete-notice") {
+    const course = selectedCourse();
+    const noticeId = event.target.closest("[data-notice-id]")?.dataset.noticeId || "";
+    if (!course || !canRunAttendance(course)) {
+      return toast("Only the course team can remove notices", "error");
+    }
+    try {
+      await apiRequest(
+        `/api/courses/${encodeURIComponent(course.id)}/notices/${encodeURIComponent(noticeId)}`,
+        { method: "DELETE" }
+      );
+      await refreshNotices(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not remove that notice", "error");
+    }
+    renderNotices();
+    return toast("Notice removed");
+  }
   if (action === "open-quiz-results") {
     const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
     try {
@@ -3801,6 +3940,14 @@ document.addEventListener("change", async event => {
     } finally {
       event.target.value = "";
     }
+  }
+  if (event.target.id === "quizClassSelect") {
+    snapQuizDateToClassDay();
+    return;
+  }
+  if (event.target.id === "quizDate") {
+    snapQuizDateToClassDay({ announce: true });
+    return;
   }
   if (event.target.id === "quizCourseSelect") {
     return switchCourseContext(event.target.value);
@@ -4188,6 +4335,27 @@ document.addEventListener("submit", async event => {
     } catch (error) {
       return toast(error.message || "Could not add that student", "error");
     }
+  }
+  if (event.target.id === "noticeForm") {
+    const course = selectedCourse();
+    if (!course || !canRunAttendance(course)) {
+      return toast("Only the course team can post notices", "error");
+    }
+    const data = new FormData(event.target);
+    try {
+      await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/notices`, {
+        method: "POST",
+        body: {
+          title: String(data.get("title") || "").trim(),
+          body: String(data.get("body") || "").trim()
+        }
+      });
+      await refreshNotices(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not post that notice", "error");
+    }
+    renderNotices();
+    return toast("Notice posted");
   }
   if (event.target.id === "changePasswordForm") {
     const data = new FormData(event.target);

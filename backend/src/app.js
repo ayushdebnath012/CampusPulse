@@ -127,6 +127,29 @@ function workspaceStats(database, user, courses) {
   };
 }
 
+// Course announcements: written by the team, plus an automatic line whenever
+// something happens that students need to know about.
+function addNotice(database, { courseId, kind, title, body = "", authorId, authorName }) {
+  const notice = {
+    id: `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    courseId,
+    kind,
+    title,
+    body,
+    authorId: authorId || "",
+    authorName: authorName || "",
+    createdAt: new Date().toISOString(),
+  };
+  database.courseNotices.push(notice);
+  // Only the most recent announcements are worth keeping per course.
+  const forCourse = database.courseNotices.filter((item) => item.courseId === courseId);
+  if (forCourse.length > 100) {
+    const cutoff = new Set(forCourse.slice(0, forCourse.length - 100).map((item) => item.id));
+    database.courseNotices = database.courseNotices.filter((item) => !cutoff.has(item.id));
+  }
+  return notice;
+}
+
 function attendanceRecord(student) {
   return {
     serial: student.serial,
@@ -327,6 +350,13 @@ function normalizeQuizSettings(body, { courseId, database }) {
   const quizDate = String(body.quizDate || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(quizDate) || Number.isNaN(Date.parse(quizDate))) {
     const error = new Error("Pick the date this quiz is for");
+    error.status = 400;
+    throw error;
+  }
+  // The date has to land on a day the course actually runs.
+  const picked = new Date(`${quizDate}T12:00:00`);
+  if (WEEKDAYS[(picked.getDay() + 6) % 7] !== scheduled.day) {
+    const error = new Error(`${scheduled.day} is the day this class runs — pick a ${scheduled.day}`);
     error.status = 400;
     throw error;
   }
@@ -1579,6 +1609,14 @@ function createApp(options = {}) {
             dataBase64: data.toString("base64"),
           };
           database.courseMaterials.push(created);
+          addNotice(database, {
+            courseId: created.courseId,
+            kind: "material",
+            title: `New material: ${created.name}`,
+            body: "Open the Materials tab to view or download it.",
+            authorId: request.user.id,
+            authorName: request.user.name,
+          });
           return publicMaterial(created);
         });
         response.status(201).json({ material });
@@ -1824,6 +1862,14 @@ function createApp(options = {}) {
             records: roster.map(attendanceRecord),
           };
           database.attendanceSessions.push(created);
+          addNotice(database, {
+            courseId,
+            kind: "attendance",
+            title: "Attendance is open",
+            body: "Mark yourself present with Wi‑Fi and Bluetooth switched on.",
+            authorId: request.user.id,
+            authorName: request.user.name,
+          });
           return created;
         });
         response.status(201).json({ attendance: session });
@@ -2109,6 +2155,16 @@ function createApp(options = {}) {
             responses: [],
           };
           database.quizzes.push(created);
+          if (!asDraft) {
+            addNotice(database, {
+              courseId,
+              kind: "quiz",
+              title: `Quiz published: ${created.title}`,
+              body: `${questions.length} question${questions.length === 1 ? "" : "s"}${created.classLabel ? ` · ${created.classLabel}` : ""}.`,
+              authorId: request.user.id,
+              authorName: request.user.name,
+            });
+          }
           return created;
         });
         response.status(201).json({ quiz });
@@ -2173,6 +2229,94 @@ function createApp(options = {}) {
           return draft;
         });
         response.json({ quiz });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/courses/:id/notices",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        // Anyone with access to the course can read; only the team writes.
+        requireCourse(data, request.user, request.params.id, "access");
+        const notices = data.courseNotices
+          .filter((item) => item.courseId === request.params.id)
+          .slice(-100)
+          .reverse();
+        response.json({ notices });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/courses/:id/notices",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const notice = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "run",
+          );
+          const title = String(request.body.title || "")
+            .trim()
+            .replace(/\s+/g, " ")
+            .slice(0, 120);
+          const body = String(request.body.body || "").trim().slice(0, 2000);
+          if (title.length < 2) {
+            const error = new Error("Give the notice a title");
+            error.status = 400;
+            throw error;
+          }
+          return addNotice(database, {
+            courseId: course.id,
+            kind: "notice",
+            title,
+            body,
+            authorId: request.user.id,
+            authorName: request.user.name,
+          });
+        });
+        response.status(201).json({ notice });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/courses/:id/notices/:noticeId",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        await store.update((database) => {
+          requireCourse(database, request.user, request.params.id, "run");
+          const exists = database.courseNotices.some(
+            (item) =>
+              item.id === request.params.noticeId &&
+              item.courseId === request.params.id,
+          );
+          if (!exists) {
+            const error = new Error("That notice no longer exists");
+            error.status = 404;
+            throw error;
+          }
+          database.courseNotices = database.courseNotices.filter(
+            (item) => item.id !== request.params.noticeId,
+          );
+          return null;
+        });
+        response.status(204).end();
       } catch (error) {
         next(error);
       }
@@ -2320,6 +2464,14 @@ function createApp(options = {}) {
           draft.status = "open";
           draft.publishedAt = new Date().toISOString();
           draft.publishedBy = request.user.id;
+          addNotice(database, {
+            courseId: draft.courseId,
+            kind: "quiz",
+            title: `Quiz published: ${draft.title}`,
+            body: `${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${draft.classLabel}` : ""}.`,
+            authorId: request.user.id,
+            authorName: request.user.name,
+          });
           return draft;
         });
         response.json({ quiz });

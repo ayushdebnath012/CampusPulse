@@ -640,3 +640,11 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 }
 .saved-quiz-open:hover { background: #f4f4fa; }
 .saved-quiz.is-open-draft { border-left: 3px solid var(--primary); padding-left: 9px; }
+
+.notice-list { display: flex; flex-direction: column; gap: 4px; }
+.notice { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; border-top: 1px solid #f1f1f6; }
+.notice:first-child { border-top: 0; }
+.notice > div { flex: 1 1 auto; min-width: 0; }
+.notice strong { display: block; font-size: 12px; }
+.notice p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.notice-meta { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; }

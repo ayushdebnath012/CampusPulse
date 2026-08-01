@@ -360,6 +360,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     },
   );
   assert.equal(taSchedule.response.status, 200);
+  const softTuesdayId = taSchedule.body.schedule[0].id;
   assert.deepEqual(taSchedule.body.schedule[0].subtopics, [
     "Review",
     "Problem solving",
@@ -472,7 +473,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: {
       courseId: soft.id,
       title: "Soft Computing check",
-      ...quizSettings(softClassId),
+      ...quizSettings(softTuesdayId, { day: "Tuesday", quizDate: "2026-08-04" }),
       questions: [
         {
           prompt: "Which set has partial membership?",
@@ -490,7 +491,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: {
       courseId: soft.id,
       title: "Invalid quiz",
-      ...quizSettings(softClassId),
+      ...quizSettings(softTuesdayId, { day: "Tuesday", quizDate: "2026-08-04" }),
       questions: [{ text: "Invalid", options: ["Only one"], answer: 0 }],
     },
   });
@@ -2005,6 +2006,119 @@ test("quiz results list every rostered student with their marks", async (t) => {
     const denied = await request(testServer.baseUrl, route, { token: student.token });
     assert.equal(denied.response.status, 403);
   }
+});
+
+test("course activity raises notices that students can read but not change", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Notice Professor",
+    email: "notice-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [{ rollNumber: "23ME10001", name: "Notice Student" }],
+  });
+  const classId = await addClass(testServer.baseUrl, professor.token, course.id);
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Notice Student",
+    email: "notice-student@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10001",
+  });
+  await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code },
+  });
+
+  const empty = await request(testServer.baseUrl, `/api/courses/${course.id}/notices`, {
+    token: student.token,
+  });
+  assert.equal(empty.response.status, 200);
+  assert.deepEqual(empty.body.notices, []);
+
+  // Opening attendance and publishing a quiz each announce themselves.
+  await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: course.id },
+  });
+  await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Pop quiz",
+      ...quizSettings(classId),
+      questions: [{ text: "One?", options: ["A", "B"], answer: 0 }],
+    },
+  });
+
+  const posted = await request(testServer.baseUrl, `/api/courses/${course.id}/notices`, {
+    method: "POST",
+    token: professor.token,
+    body: { title: "Class moved to NR305", body: "Only for this week." },
+  });
+  assert.equal(posted.response.status, 201);
+
+  const seen = await request(testServer.baseUrl, `/api/courses/${course.id}/notices`, {
+    token: student.token,
+  });
+  assert.equal(seen.body.notices.length, 3);
+  // Newest first.
+  assert.deepEqual(
+    seen.body.notices.map((item) => item.kind),
+    ["notice", "quiz", "attendance"],
+  );
+  assert.equal(seen.body.notices[0].title, "Class moved to NR305");
+  assert.equal(seen.body.notices[0].authorName, "Notice Professor");
+
+  // Students may not post or remove.
+  const refusedPost = await request(testServer.baseUrl, `/api/courses/${course.id}/notices`, {
+    method: "POST",
+    token: student.token,
+    body: { title: "Cancel the class" },
+  });
+  assert.equal(refusedPost.response.status, 403);
+  const refusedDelete = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/notices/${posted.body.notice.id}`,
+    { method: "DELETE", token: student.token },
+  );
+  assert.equal(refusedDelete.response.status, 403);
+
+  const removed = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/notices/${posted.body.notice.id}`,
+    { method: "DELETE", token: professor.token },
+  );
+  assert.equal(removed.response.status, 204);
+  const afterRemoval = await request(testServer.baseUrl, `/api/courses/${course.id}/notices`, {
+    token: student.token,
+  });
+  assert.equal(afterRemoval.body.notices.length, 2);
+
+  // A quiz date has to land on the day that class runs.
+  const wrongDay = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Wrong day",
+      // The class runs on Monday; 4 August 2026 is a Tuesday.
+      ...quizSettings(classId, { quizDate: "2026-08-04" }),
+      questions: [{ text: "One?", options: ["A", "B"], answer: 0 }],
+    },
+  });
+  assert.equal(wrongDay.response.status, 400);
+  assert.match(wrongDay.body.error, /Monday/);
 });
 
 test("professors sign up from department subdomains, students do not", async (t) => {
