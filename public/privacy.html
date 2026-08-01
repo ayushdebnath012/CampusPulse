@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#5b55d9" />
+    <title>CampusPulse Privacy Policy</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; color: #101735; background: #f7f7fc; }
+      body { margin: 0; }
+      main { width: min(820px, calc(100% - 36px)); margin: 42px auto; background: #fff; border: 1px solid #e2e4ef; border-radius: 22px; padding: clamp(24px, 5vw, 52px); box-sizing: border-box; box-shadow: 0 18px 50px rgba(31, 35, 75, .08); }
+      a { color: #514bd2; }
+      h1 { font-size: clamp(2rem, 6vw, 3.2rem); margin: 0 0 8px; }
+      h2 { margin-top: 30px; }
+      p, li { line-height: 1.65; color: #4f5675; }
+      .brand { color: #514bd2; font-weight: 800; letter-spacing: .04em; }
+      .updated { color: #7b819b; font-size: .92rem; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+      .button { display: inline-block; padding: 12px 16px; border-radius: 12px; background: #5b55d9; color: #fff; text-decoration: none; font-weight: 700; }
+      .button.secondary { background: #f0efff; color: #514bd2; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="brand">CAMPUSPULSE</p>
+      <h1>Privacy policy</h1>
+      <p class="updated">Effective and last updated: 31 July 2026</p>
+
+      <p>CampusPulse is an academic classroom-management prototype operated by the CampusPulse project maintainers. This policy explains how CampusPulse handles information when professors, teaching assistants, and students use the web or Android app.</p>
+
+      <h2>Information we process</h2>
+      <ul>
+        <li>Account information: name, IIT KGP email address, role, verification status, and a securely hashed password.</li>
+        <li>Course information: course enrollment, schedules, and official roster entries containing student names and roll numbers supplied by the course team.</li>
+        <li>Class activity: teaching-team-marked attendance status and timestamps, quiz answers, and quiz score.</li>
+        <li>Operational information: authentication sessions and timestamps needed to secure and run the service.</li>
+      </ul>
+      <p>CampusPulse does not store precise location history, raw Bluetooth identifiers, or Wi-Fi passwords. Timetable files selected by students are parsed locally in the browser and are not uploaded.</p>
+
+      <h2>Why we use it</h2>
+      <p>We process this information to authenticate users, enforce role and course access, show schedules, record classroom attendance, run quizzes, prevent abuse, and maintain service security.</p>
+
+      <h2>Sharing and service providers</h2>
+      <p>Information is not sold or used for advertising. It is processed by infrastructure providers used to operate CampusPulse, currently Render for the API/database and GitHub Pages for static web delivery. A course is visible only to its owner professor and users enrolled by code. The owner and enrolled teaching assistants can access the roster snapshot needed to run attendance; only the owner can replace the official roster or manage the course code.</p>
+
+      <h2>Device permissions</h2>
+      <p>Teaching-team-marked attendance does not require students to share Bluetooth, Wi-Fi, or location signals. CampusPulse does not derive or retain precise physical location.</p>
+
+      <h2>Retention and deletion</h2>
+      <p>Records are retained while an account is active and as needed for the classroom workflow. A user can delete their account from <strong>Settings → Delete my account</strong> or use the external deletion page below. Deletion removes the account, sessions, enrollments, and quiz responses associated with that account. Official roster entries and teaching-team-recorded attendance are course records independent of student app accounts and may be retained for academic record integrity; roster correction requests should be directed to the course professor. A professor must transfer or remove owned courses before deleting the owner account.</p>
+
+      <h2>Security</h2>
+      <p>CampusPulse uses HTTPS, password hashing, expiring authentication sessions, role-based authorization, and a managed PostgreSQL database. No internet service can guarantee absolute security, so this prototype should not be used as an institution’s permanent system of record without an approved production deployment and retention policy.</p>
+
+      <h2>Children</h2>
+      <p>CampusPulse is intended for higher-education users and is not directed to children under 13.</p>
+
+      <h2>Contact</h2>
+      <p>Privacy or deletion questions can be submitted through the <a href="https://github.com/ayushdebnath012/CampusPulse/issues" target="_blank" rel="noopener">CampusPulse project issue tracker</a>.</p>
+
+      <div class="actions">
+        <a class="button" href="delete-account.html">Delete an account</a>
+        <a class="button secondary" href="./">Return to CampusPulse</a>
+      </div>
+    </main>
+  </body>
+</html>

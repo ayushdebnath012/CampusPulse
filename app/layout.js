@@ -1,6 +1,6 @@
 export const metadata = {
   title: "CampusPulse",
-  description: "Classroom attendance, quick quizzes, course access, and ERP sync.",
+  description: "Professor-owned courses, teaching-team attendance, and quick quizzes.",
 };
 
 export default function RootLayout({ children }) {

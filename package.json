@@ -1,18 +1,20 @@
 {
   "name": "campuspulse",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "private": true,
-  "description": "A lightweight attendance, quiz, course enrollment, and ERP sync prototype for classrooms.",
+  "description": "A lightweight course enrollment, attendance, and quiz prototype for classrooms.",
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build && node scripts/package-sites.mjs",
     "start": "node server.js",
     "android:sync": "cap sync android",
-    "android:build": "cap sync android && cd android && gradlew.bat assembleDebug"
+    "android:build": "cap sync android && cd android && gradlew.bat assembleDebug",
+    "android:release": "cap sync android && cd android && gradlew.bat assembleRelease"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
     "@capacitor/core": "^8.4.2",
+    "@capgo/capacitor-updater": "^8.51.3",
     "@mdx-js/rollup": "^3.1.1",
     "@vitejs/plugin-react": "^5.1.4",
     "@vitejs/plugin-rsc": "^0.5.26",

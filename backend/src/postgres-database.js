@@ -6,6 +6,7 @@ function clone(value) {
 }
 
 function createPostgresStore(connectionString, options = {}) {
+  const env = options.env || process.env;
   const pool = new Pool({
     connectionString,
     ssl: options.ssl ? { rejectUnauthorized: false } : undefined,
@@ -32,7 +33,7 @@ function createPostgresStore(connectionString, options = {}) {
     const result = await client.query(
       "SELECT data FROM campuspulse_store WHERE id = 1",
     );
-    return normalizeData(result.rows[0]?.data || initialData());
+    return normalizeData(result.rows[0]?.data || initialData(env), env);
   }
 
   return {
@@ -50,12 +51,12 @@ function createPostgresStore(connectionString, options = {}) {
             `INSERT INTO campuspulse_store (id, data)
              VALUES (1, $1::jsonb)
              ON CONFLICT (id) DO NOTHING`,
-            [JSON.stringify(initialData())],
+            [JSON.stringify(initialData(env))],
           );
           const result = await client.query(
             "SELECT data FROM campuspulse_store WHERE id = 1 FOR UPDATE",
           );
-          const data = normalizeData(result.rows[0].data);
+          const data = normalizeData(result.rows[0].data, env);
           const value = await mutator(data);
           await client.query(
             "UPDATE campuspulse_store SET data = $1::jsonb, updated_at = NOW() WHERE id = 1",

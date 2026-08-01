@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#5b55d9" />
+    <title>Delete a CampusPulse Account</title>
+    <style>
+      :root { color-scheme: light; font-family: Inter, system-ui, sans-serif; color: #101735; background: #f7f7fc; }
+      body { margin: 0; }
+      main { width: min(620px, calc(100% - 36px)); margin: 42px auto; background: #fff; border: 1px solid #e2e4ef; border-radius: 22px; padding: clamp(24px, 5vw, 48px); box-sizing: border-box; box-shadow: 0 18px 50px rgba(31, 35, 75, .08); }
+      h1 { font-size: clamp(2rem, 7vw, 3rem); margin: 4px 0 10px; }
+      p { line-height: 1.6; color: #555c79; }
+      label { display: block; margin: 18px 0 7px; font-weight: 700; }
+      input, select { width: 100%; box-sizing: border-box; border: 1px solid #d8dbea; border-radius: 12px; padding: 13px 14px; font: inherit; }
+      button { width: 100%; margin-top: 22px; border: 0; border-radius: 12px; padding: 14px; background: #ca404c; color: #fff; font: inherit; font-weight: 800; cursor: pointer; }
+      button:disabled { opacity: .6; cursor: wait; }
+      a { color: #514bd2; }
+      .brand { color: #514bd2; font-weight: 800; letter-spacing: .04em; }
+      .notice { margin-top: 20px; padding: 13px 15px; border-radius: 12px; background: #f3f2ff; color: #4c4a88; }
+      .notice.error { background: #fff0f1; color: #9c2933; }
+      .notice.success { background: #eaf9f3; color: #147658; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="brand">CAMPUSPULSE</p>
+      <h1>Delete your account</h1>
+      <p>Confirm your credentials to permanently delete your CampusPulse account, sessions, enrollment, and quiz responses. Official course rosters and teaching-team-recorded attendance are maintained separately as course records. A professor must transfer or remove owned courses first.</p>
+      <form id="deleteAccountForm">
+        <label for="role">Account type</label>
+        <select id="role" name="role" required>
+          <option value="student">Student</option>
+          <option value="ta">Teaching Assistant</option>
+          <option value="faculty">Professor / Faculty</option>
+        </select>
+        <label for="email">IIT KGP email</label>
+        <input id="email" name="email" type="email" autocomplete="username" required />
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" minlength="8" required />
+        <button id="deleteButton" type="submit">Permanently delete my account</button>
+      </form>
+      <div id="result" class="notice" hidden aria-live="polite"></div>
+      <p><a href="privacy.html">Read the privacy policy</a> · <a href="./">Return to CampusPulse</a></p>
+    </main>
+    <script src="config.js?v=13"></script>
+    <script src="delete-account.js?v=13"></script>
+  </body>
+</html>

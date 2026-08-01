@@ -24,6 +24,7 @@ function createMailer(env = process.env) {
 
   return {
     configured,
+    provider: resendConfigured ? "resend" : smtpConfigured ? "smtp" : "disabled",
     async sendVerification({ email, name, code }) {
       const text = `Hello ${name}, your CampusPulse verification code is ${code}. It expires in 10 minutes.`;
       const html = `<p>Hello ${escapeHtml(name)},</p><p>Your CampusPulse verification code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`;

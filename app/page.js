@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
 export default function Home() {
-  redirect("/index.html?v=9");
+  redirect("/index.html?v=15");
 }

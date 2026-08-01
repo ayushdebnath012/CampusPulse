@@ -1,8 +1,8 @@
 {
   "name": "campuspulse-backend",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Persistent API for CampusPulse authentication, attendance, quizzes, schedules, and ERP exports.",
+  "description": "Persistent API for CampusPulse authentication, private courses, attendance, quizzes, and schedules.",
   "main": "src/server.js",
   "type": "commonjs",
   "engines": {

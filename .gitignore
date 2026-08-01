@@ -4,3 +4,7 @@ dist/
 .open-next/
 next-env.d.ts
 *.log
+*.jks
+*.keystore
+android/local.properties
+artifacts/*.apk

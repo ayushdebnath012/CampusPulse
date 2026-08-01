@@ -34,12 +34,191 @@ function publicUser(user) {
   };
 }
 
-function asCsv(rows) {
-  return rows
-    .map((row) =>
-      row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(","),
-    )
-    .join("\n");
+function courseRoster(database, courseId) {
+  return database.courseStudents
+    .filter((student) => student.courseId === courseId)
+    .sort((left, right) => left.serial - right.serial);
+}
+
+function attendanceRecord(student) {
+  return {
+    serial: student.serial,
+    rollNumber: student.rollNumber,
+    name: student.name,
+    present: false,
+    markedAt: null,
+    markedBy: null,
+  };
+}
+
+function safeQuizForStudent(quiz, userId) {
+  if (!quiz) return null;
+  return {
+    id: quiz.id,
+    courseId: quiz.courseId,
+    title: quiz.title,
+    status: quiz.status,
+    createdAt: quiz.createdAt,
+    questions: quiz.questions.map(({ answer, ...question }) => question),
+    responded: quiz.responses.some((item) => item.userId === userId),
+  };
+}
+
+function courseEnrollment(database, user, courseId) {
+  return database.enrollments.find(
+    (item) => item.userId === user.id && item.courseId === courseId,
+  );
+}
+
+function isCourseOwner(user, course) {
+  return user.role === "faculty" && course.ownerId === user.id;
+}
+
+function hasValidCourseOwner(database, course) {
+  return database.users.some(
+    (user) => user.id === course.ownerId && user.role === "faculty",
+  );
+}
+
+function isEnrolledAssistant(database, user, courseId) {
+  return user.role === "ta" && Boolean(courseEnrollment(database, user, courseId));
+}
+
+function canRunCourse(database, user, course) {
+  return (
+    isCourseOwner(user, course) ||
+    (hasValidCourseOwner(database, course) &&
+      isEnrolledAssistant(database, user, course.id))
+  );
+}
+
+function accessibleCourses(database, user) {
+  if (user.role === "faculty") {
+    return database.courses.filter((course) => isCourseOwner(user, course));
+  }
+  const enrolledIds = new Set(
+    database.enrollments
+      .filter((item) => item.userId === user.id)
+      .map((item) => item.courseId),
+  );
+  return database.courses.filter(
+    (course) => enrolledIds.has(course.id) && hasValidCourseOwner(database, course),
+  );
+}
+
+function publicCourse(database, user, course) {
+  const enrollment = courseEnrollment(database, user, course.id);
+  const owner = isCourseOwner(user, course);
+  const assistant =
+    hasValidCourseOwner(database, course) &&
+    isEnrolledAssistant(database, user, course.id);
+  const { ownerId: _ownerId, code, ...metadata } = course;
+  return {
+    ...metadata,
+    ...(owner ? { code } : {}),
+    owned: owner,
+    enrolled: Boolean(enrollment),
+    capabilities: {
+      canManageCourse: owner,
+      canManageRoster: owner,
+      canViewAttendanceRoster: owner || assistant,
+      canRunAttendance: owner || assistant,
+      canPublishQuiz: owner || assistant,
+    },
+  };
+}
+
+function requireCourse(database, user, courseId, permission = "access") {
+  const course = database.courses.find((item) => item.id === courseId);
+  if (!course) {
+    const error = new Error("Course not found");
+    error.status = 404;
+    throw error;
+  }
+  const allowed =
+    permission === "owner"
+      ? isCourseOwner(user, course)
+      : permission === "run"
+        ? canRunCourse(database, user, course)
+        : accessibleCourses(database, user).some((item) => item.id === course.id);
+  if (!allowed) {
+    const error = new Error("You do not have access to this course");
+    error.status = 403;
+    throw error;
+  }
+  return course;
+}
+
+function createJoinCode(database) {
+  let code;
+  do {
+    code = randomToken().replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase();
+  } while (!code || database.courses.some((course) => course.code === code));
+  return code;
+}
+
+function normalizeRosterUpload(students, courseId) {
+  if (!Array.isArray(students) || !students.length || students.length > 500) {
+    const error = new Error("Upload a roster containing 1–500 students");
+    error.status = 400;
+    throw error;
+  }
+  const seen = new Set();
+  return students.map((student, index) => {
+    const rollNumber = String(student.rollNumber || student.roll || "")
+      .trim()
+      .toUpperCase();
+    const name = String(student.name || "").trim().replace(/\s+/g, " ");
+    if (!rollNumber || rollNumber.length > 40 || name.length < 2 || name.length > 120) {
+      const error = new Error(`Invalid roster entry at row ${index + 1}`);
+      error.status = 400;
+      throw error;
+    }
+    if (seen.has(rollNumber)) {
+      const error = new Error(`Duplicate roll number at row ${index + 1}`);
+      error.status = 400;
+      throw error;
+    }
+    seen.add(rollNumber);
+    return {
+      courseId,
+      serial: index + 1,
+      rollNumber,
+      name,
+    };
+  });
+}
+
+function normalizeQuizQuestions(input) {
+  if (!Array.isArray(input) || !input.length || input.length > 10) {
+    const error = new Error("Add 1–10 quiz questions");
+    error.status = 400;
+    throw error;
+  }
+  return input.map((question, index) => {
+    const text = String(question?.text || question?.question || question?.prompt || "")
+      .trim()
+      .replace(/\s+/g, " ");
+    const options = Array.isArray(question?.options)
+      ? question.options.map((option) => String(option || "").trim())
+      : [];
+    const answer = Number(question?.answer);
+    if (
+      text.length < 2 ||
+      text.length > 500 ||
+      options.length < 2 ||
+      options.length > 6 ||
+      options.some((option) => !option || option.length > 200) ||
+      !Number.isInteger(answer) ||
+      answer < 0 ||
+      answer >= options.length
+    ) {
+      const error = new Error(`Invalid quiz question at row ${index + 1}`);
+      error.status = 400;
+      throw error;
+    }
+    return { text, options, answer };
+  });
 }
 
 function createApp(options = {}) {
@@ -53,9 +232,13 @@ function createApp(options = {}) {
     (env.DATABASE_URL
       ? createPostgresStore(env.DATABASE_URL, {
           ssl: String(env.DATABASE_SSL || "").toLowerCase() === "true",
+          env,
         })
-      : createStore(databasePath));
+      : createStore(databasePath, { env }));
   const mailer = options.mailer || createMailer(env);
+  const allowDevVerificationCode =
+    String(env.NODE_ENV || "").toLowerCase() !== "production" &&
+    String(env.ALLOW_DEV_VERIFICATION_CODE || "").toLowerCase() === "true";
   const app = express();
 
   const allowedOrigins = new Set(
@@ -81,12 +264,19 @@ function createApp(options = {}) {
         "Access-Control-Allow-Headers",
         "Authorization, Content-Type",
       );
-      response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      response.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+      );
     }
     if (request.method === "OPTIONS") return response.sendStatus(204);
     next();
   });
   app.use(express.json({ limit: "128kb" }));
+  app.use("/api", (_request, response, next) => {
+    response.setHeader("Cache-Control", "no-store");
+    next();
+  });
 
   async function authenticate(request, response, next) {
     try {
@@ -114,13 +304,40 @@ function createApp(options = {}) {
         : response.status(403).json({ error: "You do not have permission for this action" });
   }
 
-  app.get("/api/health", (_request, response) => {
-    response.json({
-      ok: true,
-      service: "campuspulse-api",
-      version: "1.0.0",
-      emailDelivery: mailer.configured ? "smtp" : "preview",
-    });
+  app.get("/api/health", async (_request, response, next) => {
+    try {
+      const production = String(env.NODE_ENV || "").toLowerCase() === "production";
+      const missingSecrets = production
+        ? [
+            "FACULTY_SIGNUP_CODE",
+            "TA_SIGNUP_CODE",
+            "COURSE_OWNER_EMAILS_JSON",
+            "COURSE_JOIN_CODES_JSON",
+          ].filter((key) => !String(env[key] || "").trim())
+        : [];
+      if (missingSecrets.length) {
+        return response.status(503).json({
+          ok: false,
+          error: `Missing required configuration: ${missingSecrets.join(", ")}`,
+        });
+      }
+      const data = await store.read();
+      if (production && !data.courseStudents.length) {
+        return response.status(503).json({
+          ok: false,
+          error: "The private course roster source is not configured",
+        });
+      }
+      response.json({
+        ok: true,
+        service: "campuspulse-api",
+        version: "1.0.0",
+        emailDelivery:
+          mailer.provider || (mailer.configured ? "configured" : "disabled"),
+      });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.post("/api/auth/signup/request", async (request, response, next) => {
@@ -136,22 +353,33 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
+      if (role === "faculty" && !env.FACULTY_SIGNUP_CODE)
+        return response.status(403).json({
+          error: "Faculty accounts must be provisioned with an invitation code",
+        });
       if (
         role === "faculty" &&
-        env.FACULTY_SIGNUP_CODE &&
         request.body.roleCode !== env.FACULTY_SIGNUP_CODE
       )
         return response.status(403).json({ error: "Invalid faculty invitation code" });
       if (
         role === "ta" &&
-        env.TA_SIGNUP_CODE &&
+        (!env.TA_SIGNUP_CODE ||
         request.body.roleCode !== env.TA_SIGNUP_CODE
+        )
       )
-        return response.status(403).json({ error: "Invalid TA invitation code" });
+        return response.status(403).json({
+          error: "TA accounts must be provisioned with a valid invitation code",
+        });
 
       const data = await store.read();
       if (data.users.some((user) => user.email === email))
         return response.status(409).json({ error: "An account already exists for this email" });
+      if (!mailer.configured && !allowDevVerificationCode) {
+        return response.status(503).json({
+          error: "Verification email delivery is temporarily unavailable",
+        });
+      }
 
       const code = randomCode();
       const passwordHash = await hashPassword(password);
@@ -173,7 +401,7 @@ function createApp(options = {}) {
       });
       const delivery = await mailer.sendVerification({ email, name, code });
       const payload = { ok: true, expiresInSeconds: TEN_MINUTES / 1000 };
-      if (!delivery.delivered && env.ALLOW_DEV_VERIFICATION_CODE !== "false") {
+      if (!delivery.delivered && allowDevVerificationCode) {
         payload.devCode = delivery.previewCode;
       }
       response.status(202).json(payload);
@@ -231,6 +459,11 @@ function createApp(options = {}) {
   app.post("/api/auth/signup/resend", async (request, response, next) => {
     try {
       const email = cleanEmail(request.body.email);
+      if (!mailer.configured && !allowDevVerificationCode) {
+        return response.status(503).json({
+          error: "Verification email delivery is temporarily unavailable",
+        });
+      }
       const code = randomCode();
       const record = await store.update((database) => {
         const pending = database.verificationCodes.find((item) => item.email === email);
@@ -244,7 +477,7 @@ function createApp(options = {}) {
         return response.status(404).json({ error: "No pending sign-up for this email" });
       const delivery = await mailer.sendVerification({ ...record, code });
       const payload = { ok: true, expiresInSeconds: TEN_MINUTES / 1000 };
-      if (!delivery.delivered && env.ALLOW_DEV_VERIFICATION_CODE !== "false") {
+      if (!delivery.delivered && allowDevVerificationCode) {
         payload.devCode = delivery.previewCode;
       }
       response.json(payload);
@@ -300,27 +533,76 @@ function createApp(options = {}) {
     response.json({ user: publicUser(request.user) });
   });
 
+  app.delete("/api/account", authenticate, async (request, response, next) => {
+    try {
+      const userId = request.user.id;
+      const email = request.user.email;
+      await store.update((database) => {
+        if (database.courses.some((course) => course.ownerId === userId)) {
+          const error = new Error(
+            "Transfer or remove your owned courses before deleting this account",
+          );
+          error.status = 409;
+          throw error;
+        }
+        database.users = database.users.filter((item) => item.id !== userId);
+        database.sessions = database.sessions.filter(
+          (item) => item.userId !== userId,
+        );
+        database.enrollments = database.enrollments.filter(
+          (item) => item.userId !== userId,
+        );
+        database.verificationCodes = database.verificationCodes.filter(
+          (item) => item.email !== email,
+        );
+        database.attendanceSessions.forEach((session) => {
+          if (Array.isArray(session.present)) {
+            session.present = session.present.filter(
+              (item) => item.userId !== userId,
+            );
+          }
+          if (Array.isArray(session.records)) {
+            session.records.forEach((record) => {
+              if (record.markedBy === userId) record.markedBy = "deleted-user";
+            });
+          }
+          if (session.startedBy === userId) session.startedBy = "deleted-user";
+          if (session.closedBy === userId) session.closedBy = "deleted-user";
+        });
+        database.quizzes.forEach((quiz) => {
+          quiz.responses = quiz.responses.filter(
+            (item) => item.userId !== userId,
+          );
+          if (quiz.createdBy === userId) quiz.createdBy = "deleted-user";
+        });
+        return null;
+      });
+      response.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/bootstrap", authenticate, async (request, response, next) => {
     try {
       const data = await store.read();
+      const courses = accessibleCourses(data, request.user);
+      const courseIds = new Set(courses.map((course) => course.id));
       const enrolledCourseIds = data.enrollments
         .filter((item) => item.userId === request.user.id)
         .map((item) => item.courseId);
-      const currentAttendance = [...data.attendanceSessions]
+      const currentQuiz = [...data.quizzes]
         .reverse()
-        .find((item) => item.status === "open");
-      const currentQuiz = [...data.quizzes].reverse().find((item) => item.status === "open");
+        .find((item) => item.status === "open" && courseIds.has(item.courseId));
       response.json({
         user: publicUser(request.user),
-        courses: data.courses.map((course) => ({
-          ...course,
-          code: request.user.role === "student" ? undefined : course.code,
-          enrolled: enrolledCourseIds.includes(course.id),
-        })),
+        courses: courses.map((course) => publicCourse(data, request.user, course)),
         enrolledCourseIds,
-        schedule: data.schedule,
-        attendance: currentAttendance || null,
-        quiz: currentQuiz || null,
+        schedule: data.schedule.filter((item) => courseIds.has(item.courseId)),
+        quiz:
+          request.user.role === "student"
+            ? safeQuizForStudent(currentQuiz, request.user.id)
+            : currentQuiz || null,
       });
     } catch (error) {
       next(error);
@@ -330,17 +612,10 @@ function createApp(options = {}) {
   app.get("/api/courses", authenticate, async (request, response, next) => {
     try {
       const data = await store.read();
-      const enrolled = new Set(
-        data.enrollments
-          .filter((item) => item.userId === request.user.id)
-          .map((item) => item.courseId),
-      );
       response.json({
-        courses: data.courses.map((course) => ({
-          ...course,
-          code: request.user.role === "student" ? undefined : course.code,
-          enrolled: enrolled.has(course.id),
-        })),
+        courses: accessibleCourses(data, request.user).map((course) =>
+          publicCourse(data, request.user, course),
+        ),
       });
     } catch (error) {
       next(error);
@@ -348,14 +623,123 @@ function createApp(options = {}) {
   });
 
   app.post(
+    "/api/courses",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
+        const courseCode = String(request.body.courseCode || "")
+          .trim()
+          .toUpperCase()
+          .replace(/\s+/g, " ");
+        const section = String(request.body.section || "").trim().slice(0, 80);
+        const room = String(request.body.room || "Room TBA").trim().slice(0, 80);
+        if (
+          name.length < 2 ||
+          name.length > 120 ||
+          courseCode.length < 2 ||
+          courseCode.length > 30
+        ) {
+          return response
+            .status(400)
+            .json({ error: "Enter a valid course name and code" });
+        }
+        const course = await store.update((database) => {
+          if (
+            database.courses.some(
+              (item) => item.courseCode.toUpperCase() === courseCode,
+            )
+          ) {
+            const error = new Error("A course with this code already exists");
+            error.status = 409;
+            throw error;
+          }
+          const created = {
+            id: `course-${Date.now()}-${randomToken().slice(0, 6)}`,
+            code: createJoinCode(database),
+            name,
+            courseCode,
+            section: section || "Current term",
+            room: room || "Room TBA",
+            students: 0,
+            ownerId: request.user.id,
+            createdAt: new Date().toISOString(),
+          };
+          database.courses.push(created);
+          return publicCourse(database, request.user, created);
+        });
+        response.status(201).json({ course });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/courses/:id/roster",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const course = requireCourse(data, request.user, request.params.id, "run");
+        response.json({
+          course: publicCourse(data, request.user, course),
+          students: courseRoster(data, course.id),
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.put(
+    "/api/courses/:id/roster",
+    authenticate,
+    requireRoles("faculty"),
+    async (request, response, next) => {
+      try {
+        const result = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "owner",
+          );
+          const students = normalizeRosterUpload(request.body.students, course.id);
+          database.courseStudents = [
+            ...database.courseStudents.filter(
+              (student) => student.courseId !== course.id,
+            ),
+            ...students,
+          ];
+          course.students = students.length;
+          course.rosterSource = "owner-upload";
+          course.rosterUpdatedAt = new Date().toISOString();
+          return {
+            course: publicCourse(database, request.user, course),
+            students,
+          };
+        });
+        response.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
     "/api/courses/join",
     authenticate,
-    requireRoles("student"),
+    requireRoles("student", "ta"),
     async (request, response, next) => {
       try {
         const code = String(request.body.code || "").trim().toUpperCase();
         const enrollment = await store.update((database) => {
-          const course = database.courses.find((item) => item.code === code);
+          const course = database.courses.find(
+            (item) => item.code === code && hasValidCourseOwner(database, item),
+          );
           if (!course) {
             const error = new Error("Course code not found");
             error.status = 404;
@@ -369,20 +753,31 @@ function createApp(options = {}) {
             id: `enrollment-${Date.now()}`,
             userId: request.user.id,
             courseId: course.id,
+            courseRole: request.user.role,
             joinedAt: new Date().toISOString(),
           });
           return { course, existing: false };
         });
-        response.status(enrollment.existing ? 200 : 201).json(enrollment);
+        const data = await store.read();
+        response.status(enrollment.existing ? 200 : 201).json({
+          course: publicCourse(data, request.user, enrollment.course),
+          existing: enrollment.existing,
+        });
       } catch (error) {
         next(error);
       }
     },
   );
 
-  app.get("/api/schedule", authenticate, async (_request, response, next) => {
+  app.get("/api/schedule", authenticate, async (request, response, next) => {
     try {
-      response.json({ schedule: (await store.read()).schedule });
+      const data = await store.read();
+      const courseIds = new Set(
+        accessibleCourses(data, request.user).map((course) => course.id),
+      );
+      response.json({
+        schedule: data.schedule.filter((item) => courseIds.has(item.courseId)),
+      });
     } catch (error) {
       next(error);
     }
@@ -396,22 +791,39 @@ function createApp(options = {}) {
       try {
         const session = await store.update((database) => {
           const courseId = request.body.courseId || "soft401";
-          if (!database.courses.some((item) => item.id === courseId)) {
-            const error = new Error("Course not found");
-            error.status = 404;
+          const course = requireCourse(database, request.user, courseId, "run");
+          const roster = courseRoster(database, courseId);
+          if (!roster.length) {
+            const error = new Error("This course does not have a roster");
+            error.status = 409;
+            throw error;
+          }
+          const scheduleId = String(request.body.scheduleId || "").trim() || null;
+          if (
+            scheduleId &&
+            !database.schedule.some(
+              (item) => item.id === scheduleId && item.courseId === courseId,
+            )
+          ) {
+            const error = new Error("Schedule does not belong to this course");
+            error.status = 400;
             throw error;
           }
           database.attendanceSessions.forEach((item) => {
-            if (item.status === "open") item.status = "closed";
+            if (item.status === "open" && item.courseId === courseId) {
+              item.status = "closed";
+              item.closedAt = new Date().toISOString();
+              item.closedBy = request.user.id;
+            }
           });
           const created = {
             id: `attendance-${Date.now()}`,
             courseId,
-            scheduleId: request.body.scheduleId || "schedule-2",
+            scheduleId,
             startedBy: request.user.id,
             startedAt: new Date().toISOString(),
             status: "open",
-            present: [],
+            records: roster.map(attendanceRecord),
           };
           database.attendanceSessions.push(created);
           return created;
@@ -423,70 +835,101 @@ function createApp(options = {}) {
     },
   );
 
-  app.get("/api/attendance/current", authenticate, async (request, response, next) => {
-    try {
-      const data = await store.read();
-      const attendance = [...data.attendanceSessions]
-        .reverse()
-        .find((item) => item.status === "open");
-      if (!attendance) return response.json({ attendance: null });
-      if (request.user.role === "student") {
-        return response.json({
-          attendance: {
-            id: attendance.id,
-            courseId: attendance.courseId,
-            status: attendance.status,
-            startedAt: attendance.startedAt,
-            checkedIn: attendance.present.some((item) => item.userId === request.user.id),
-          },
-        });
+  app.get(
+    "/api/attendance/current",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courseId = String(request.query.courseId || "").trim();
+        const accessibleIds = new Set(
+          accessibleCourses(data, request.user).map((course) => course.id),
+        );
+        if (courseId) requireCourse(data, request.user, courseId, "run");
+        const sessions = data.attendanceSessions.filter(
+          (item) =>
+            accessibleIds.has(item.courseId) &&
+            (!courseId || item.courseId === courseId),
+        );
+        const attendance =
+          [...sessions].reverse().find((item) => item.status === "open") ||
+          [...sessions].reverse().find(Boolean);
+        response.json({ attendance: attendance || null });
+      } catch (error) {
+        next(error);
       }
-      response.json({ attendance });
-    } catch (error) {
-      next(error);
-    }
-  });
+    },
+  );
+
+  app.get(
+    "/api/attendance/:id",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const attendance = data.attendanceSessions.find(
+          (item) => item.id === request.params.id,
+        );
+        if (!attendance)
+          return response.status(404).json({ error: "Attendance session not found" });
+        requireCourse(data, request.user, attendance.courseId, "run");
+        response.json({ attendance });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   app.post(
     "/api/attendance/:id/check-in",
     authenticate,
-    requireRoles("student"),
+    (_request, response) =>
+      response
+        .status(403)
+        .json({ error: "Attendance is recorded by the course teaching team" }),
+  );
+
+  app.patch(
+    "/api/attendance/:id/records",
+    authenticate,
+    requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
-        if (!request.body.wifi || !request.body.bluetooth)
-          return response.status(400).json({ error: "Wi-Fi and Bluetooth are required" });
-        const result = await store.update((database) => {
-          const attendance = database.attendanceSessions.find(
+        const updates = Array.isArray(request.body.records)
+          ? request.body.records.slice(0, 400)
+          : [];
+        if (!updates.length)
+          return response.status(400).json({ error: "Select at least one roster entry" });
+        const attendance = await store.update((database) => {
+          const session = database.attendanceSessions.find(
             (item) => item.id === request.params.id && item.status === "open",
           );
-          if (!attendance) {
+          if (!session) {
             const error = new Error("Attendance session is not open");
             error.status = 404;
             throw error;
           }
-          const enrolled = database.enrollments.some(
-            (item) =>
-              item.userId === request.user.id && item.courseId === attendance.courseId,
+          requireCourse(database, request.user, session.courseId, "run");
+          const recordByRoll = new Map(
+            session.records.map((record) => [record.rollNumber, record]),
           );
-          if (!enrolled) {
-            const error = new Error("Join the course before checking in");
-            error.status = 403;
-            throw error;
+          for (const update of updates) {
+            const rollNumber = String(update.rollNumber || "").trim().toUpperCase();
+            const record = recordByRoll.get(rollNumber);
+            if (!record) {
+              const error = new Error("A submitted roll number is not in this roster");
+              error.status = 400;
+              throw error;
+            }
+            record.present = update.present === true;
+            record.markedAt = new Date().toISOString();
+            record.markedBy = request.user.id;
           }
-          const existing = attendance.present.find(
-            (item) => item.userId === request.user.id,
-          );
-          if (!existing) {
-            attendance.present.push({
-              userId: request.user.id,
-              checkedInAt: new Date().toISOString(),
-              wifi: true,
-              bluetooth: true,
-            });
-          }
-          return { checkedIn: true, attendanceId: attendance.id };
+          return session;
         });
-        response.json(result);
+        response.json({ attendance });
       } catch (error) {
         next(error);
       }
@@ -501,13 +944,14 @@ function createApp(options = {}) {
       try {
         const attendance = await store.update((database) => {
           const session = database.attendanceSessions.find(
-            (item) => item.id === request.params.id,
+            (item) => item.id === request.params.id && item.status === "open",
           );
           if (!session) {
-            const error = new Error("Attendance session not found");
-            error.status = 404;
+            const error = new Error("Attendance session is not open");
+            error.status = 409;
             throw error;
           }
+          requireCourse(database, request.user, session.courseId, "run");
           session.status = "closed";
           session.closedAt = new Date().toISOString();
           session.closedBy = request.user.id;
@@ -526,18 +970,20 @@ function createApp(options = {}) {
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
-        const questions = Array.isArray(request.body.questions)
-          ? request.body.questions.slice(0, 10)
-          : [];
-        if (!questions.length)
-          return response.status(400).json({ error: "Add at least one question" });
+        const questions = normalizeQuizQuestions(request.body.questions);
         const quiz = await store.update((database) => {
+          const courseId = String(request.body.courseId || "").trim();
+          requireCourse(database, request.user, courseId, "run");
           database.quizzes.forEach((item) => {
-            if (item.status === "open") item.status = "closed";
+            if (item.status === "open" && item.courseId === courseId) {
+              item.status = "closed";
+              item.closedAt = new Date().toISOString();
+              item.closedBy = request.user.id;
+            }
           });
           const created = {
             id: `quiz-${Date.now()}`,
-            courseId: request.body.courseId || "soft401",
+            courseId,
             title: String(request.body.title || "Quick quiz").slice(0, 100),
             questions,
             status: "open",
@@ -557,19 +1003,23 @@ function createApp(options = {}) {
 
   app.get("/api/quizzes/current", authenticate, async (request, response, next) => {
     try {
-      const quiz = [...(await store.read()).quizzes]
+      const data = await store.read();
+      const courseId = String(request.query.courseId || "").trim();
+      const accessibleIds = new Set(
+        accessibleCourses(data, request.user).map((course) => course.id),
+      );
+      if (courseId) requireCourse(data, request.user, courseId, "access");
+      const quiz = [...data.quizzes]
         .reverse()
-        .find((item) => item.status === "open");
+        .find(
+          (item) =>
+            item.status === "open" &&
+            accessibleIds.has(item.courseId) &&
+            (!courseId || item.courseId === courseId),
+        );
       if (!quiz) return response.json({ quiz: null });
       if (request.user.role === "student") {
-        return response.json({
-          quiz: {
-            ...quiz,
-            questions: quiz.questions.map(({ answer, ...question }) => question),
-            responses: undefined,
-            responded: quiz.responses.some((item) => item.userId === request.user.id),
-          },
-        });
+        return response.json({ quiz: safeQuizForStudent(quiz, request.user.id) });
       }
       response.json({ quiz });
     } catch (error) {
@@ -608,6 +1058,19 @@ function createApp(options = {}) {
             error.status = 409;
             throw error;
           }
+          const validAnswers =
+            answers.length === quiz.questions.length &&
+            answers.every(
+              (answer, index) =>
+                Number.isInteger(answer) &&
+                answer >= 0 &&
+                answer < quiz.questions[index].options.length,
+            );
+          if (!validAnswers) {
+            const error = new Error("Submit one valid answer for every question");
+            error.status = 400;
+            throw error;
+          }
           const score = quiz.questions.reduce(
             (total, question, index) =>
               total + (Number(question.answer) === answers[index] ? 1 : 0),
@@ -641,8 +1104,10 @@ function createApp(options = {}) {
             error.status = 404;
             throw error;
           }
+          requireCourse(database, request.user, current.courseId, "run");
           current.status = "closed";
           current.closedAt = new Date().toISOString();
+          current.closedBy = request.user.id;
           return current;
         });
         response.json({ quiz });
@@ -652,59 +1117,18 @@ function createApp(options = {}) {
     },
   );
 
-  app.get(
-    "/api/erp/attendance.csv",
-    authenticate,
-    requireRoles("faculty"),
-    async (_request, response, next) => {
-      try {
-        const data = await store.read();
-        const attendance = [...data.attendanceSessions].reverse().find(Boolean);
-        if (!attendance)
-          return response.status(404).json({ error: "No attendance record available" });
-        const course = data.courses.find((item) => item.id === attendance.courseId);
-        const presentIds = new Set(attendance.present.map((item) => item.userId));
-        const enrolledUsers = data.enrollments
-          .filter((item) => item.courseId === attendance.courseId)
-          .map((item) => data.users.find((user) => user.id === item.userId))
-          .filter(Boolean);
-        const rows = [
-          [
-            "COURSE_CODE",
-            "COURSE_NAME",
-            "LECTURE_DATE",
-            "STUDENT_EMAIL",
-            "STUDENT_NAME",
-            "STATUS",
-          ],
-          ...enrolledUsers.map((user) => [
-            course.courseCode.replace(/\s+/g, ""),
-            course.name,
-            attendance.startedAt.slice(0, 10),
-            user.email,
-            user.name,
-            presentIds.has(user.id) ? "P" : "A",
-          ]),
-        ];
-        response.setHeader("Content-Type", "text/csv; charset=utf-8");
-        response.setHeader(
-          "Content-Disposition",
-          `attachment; filename="${course.courseCode.replace(/\s+/g, "")}-attendance.csv"`,
-        );
-        response.send(asCsv(rows));
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
+  app.use("/api", (_request, response) => {
+    response.status(404).json({ error: "API endpoint not found" });
+  });
 
   const clientPath = path.resolve(__dirname, "../../public");
   app.use(express.static(clientPath, { maxAge: "5m", etag: true }));
   app.get(/.*/, (_request, response) => response.sendFile(path.join(clientPath, "index.html")));
 
   app.use((error, _request, response, _next) => {
-    console.error(error);
-    response.status(error.status || 500).json({
+    const status = error.status || 500;
+    if (status >= 500) console.error(error);
+    response.status(status).json({
       error: error.status ? error.message : "Unexpected server error",
     });
   });

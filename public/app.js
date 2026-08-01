@@ -1,11 +1,4 @@
-const roster = [
-  ["Student 01", "DEMO001"], ["Student 02", "DEMO002"], ["Student 03", "DEMO003"],
-  ["Student 04", "DEMO004"], ["Student 05", "DEMO005"], ["Student 06", "DEMO006"],
-  ["Student 07", "DEMO007"], ["Student 08", "DEMO008"], ["Student 09", "DEMO009"],
-  ["Student 10", "DEMO010"], ["Student 11", "DEMO011"], ["Student 12", "DEMO012"]
-];
-
-const APP_VERSION = "9";
+const APP_VERSION = "1.2.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -51,38 +44,58 @@ const defaultState = {
   backendAttendanceId: "",
   attendanceCheckedIn: false,
   backendQuizId: "",
+  backendQuizCourseId: "",
+  backendQuizTitle: "",
   backendQuizQuestions: [],
   quizResponded: false,
   attendanceStatus: "not_started",
   checks: { wifi: false, bluetooth: false },
-  present: [],
   quizPublished: false,
   quizResponses: 0,
-  erpStatus: "pending",
   courses: [
-    { id: "soft401", code: "SC401A", name: "Soft Computing", courseCode: "CSE 401", section: "Section A", room: "Room 304", students: 42 }
+    { id: "soft401", code: "", name: "Soft Computing", courseCode: "MF41601", section: "Autumn 2026-2027", room: "NR221", students: 310 },
+    { id: "kbs60353", code: "", name: "Knowledge Based Systems in Engineering", courseCode: "ME60353", section: "Autumn 2026-2027", room: "Room TBA", students: 22 }
   ],
   enrolledCourses: [],
+  selectedCourseId: "soft401",
   importedSchedule: []
 };
 
-let state = { ...defaultState, ...JSON.parse(localStorage.getItem("campusPulseState") || "{}") };
-const storedAppVersion = state.appVersion;
+function loadStoredState() {
+  try {
+    return JSON.parse(localStorage.getItem("campusPulseState") || "{}");
+  } catch {
+    localStorage.removeItem("campusPulseState");
+    return {};
+  }
+}
+
+let state = { ...defaultState, ...loadStoredState() };
 state.courses = defaultState.courses;
-state.enrolledCourses = Array.isArray(state.enrolledCourses) && state.enrolledCourses.includes("soft401") ? ["soft401"] : [];
+state.enrolledCourses = Array.isArray(state.enrolledCourses)
+  ? state.enrolledCourses.filter(courseId => defaultState.courses.some(course => course.id === courseId))
+  : [];
+state.selectedCourseId = defaultState.courses.some(course => course.id === state.selectedCourseId)
+  ? state.selectedCourseId
+  : "soft401";
+delete state.present;
 state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedSchedule : [];
 state.backendSchedule = Array.isArray(state.backendSchedule) ? state.backendSchedule : [];
 state.backendQuizQuestions = Array.isArray(state.backendQuizQuestions) ? state.backendQuizQuestions : [];
 state.attendanceCheckedIn = Boolean(state.attendanceCheckedIn);
 state.quizResponded = Boolean(state.quizResponded);
 state.accounts = Array.isArray(state.accounts) ? state.accounts.filter(account => account?.email && account?.passwordHash && account?.role) : [];
-state.authenticated = storedAppVersion === APP_VERSION && Boolean(state.authenticated);
+state.authenticated = Boolean(state.authenticated);
 if (!state.authenticated) {
   state.accountName = "";
   state.authEmail = "";
 }
 let scanTimer;
 let quizTimer;
+let activeAttendance = null;
+let courseRosters = new Map();
+let managedCourseId = "";
+let modalReturnFocus = null;
 let selectedLoginRole = state.userRole || "faculty";
 let authMode = state.accounts.length ? "login" : "signup";
 let pendingSignup = null;
@@ -93,26 +106,187 @@ const pageTitle = document.querySelector("#pageTitle");
 const pageEyebrow = document.querySelector("#pageEyebrow");
 const quickAction = document.querySelector("#quickAction");
 const roleLabel = document.querySelector("#roleLabel");
-const erpNav = document.querySelector("#erpNav");
+const attendanceNav = document.querySelector("#attendanceNav");
 const profileAvatar = document.querySelector("#profileAvatar");
 const profileName = document.querySelector("#profileName");
 const profileMeta = document.querySelector("#profileMeta");
+const updateBanner = document.querySelector("#updateBanner");
+const updateBannerMessage = document.querySelector("#updateBannerMessage");
+const updateManager = window.CAMPUSPULSE_UPDATES || null;
+
+function updateStatusLabel(status) {
+  return {
+    checking: "Checking",
+    downloading: "Downloading",
+    ready: "Restart ready",
+    applying: "Applying",
+    current: "Up to date",
+    error: "Embedded fallback",
+    idle: "Automatic",
+    unavailable: "Web deployment",
+  }[status] || "Automatic";
+}
+
+function syncUpdateUi(updateState = updateManager?.state || {}) {
+  if (updateBanner) {
+    updateBanner.hidden = updateState.status !== "ready";
+    if (updateBannerMessage && updateState.message) {
+      updateBannerMessage.textContent = updateState.message;
+    }
+  }
+  const status = document.querySelector("#webUpdateStatus");
+  const detail = document.querySelector("#webUpdateDetail");
+  if (status) status.textContent = updateStatusLabel(updateState.status);
+  if (detail && updateState.message) detail.textContent = updateState.message;
+}
+
+updateManager?.subscribe(syncUpdateUi);
 
 function icon(id) {
   return `<svg aria-hidden="true"><use href="#${id}"/></svg>`;
 }
 
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function selectedCourse() {
+  return state.courses.find(course => course.id === state.selectedCourseId) || state.courses[0] || null;
+}
+
+function softComputingCourse() {
+  return state.courses.find(course => course.id === "soft401") || state.courses[0] || defaultState.courses[0];
+}
+
+function courseCapabilities(course = selectedCourse()) {
+  return course?.capabilities || {};
+}
+
+function canManageCourse(course = selectedCourse()) {
+  return Boolean(courseCapabilities(course).canManageCourse);
+}
+
+function canRunAttendance(course = selectedCourse()) {
+  return Boolean(courseCapabilities(course).canRunAttendance);
+}
+
+function canPublishQuiz(course = selectedCourse()) {
+  return Boolean(courseCapabilities(course).canPublishQuiz);
+}
+
+function attendanceCourse() {
+  return state.courses.find(course => course.id === activeAttendance?.courseId) || selectedCourse();
+}
+
+async function loadCourseRoster(courseId, { force = false } = {}) {
+  const course = state.courses.find(item => item.id === courseId);
+  if (!courseCapabilities(course).canViewAttendanceRoster) {
+    throw new Error("You do not have roster access for this course");
+  }
+  if (!force && courseRosters.has(courseId)) return courseRosters.get(courseId);
+  const result = await apiRequest(`/api/courses/${encodeURIComponent(courseId)}/roster`);
+  const roster = result.students || [];
+  courseRosters.set(courseId, roster);
+  return roster;
+}
+
+function currentAttendanceRecords() {
+  return Array.isArray(activeAttendance?.records) ? activeAttendance.records : [];
+}
+
+function currentPresentCount() {
+  return currentAttendanceRecords().filter(record => record.present).length;
+}
+
+function applyAttendanceSnapshot(attendance) {
+  activeAttendance = attendance || null;
+  state.backendAttendanceId = attendance?.id || "";
+  state.attendanceStatus = attendance
+    ? attendance.status === "open" ? "scanning" : "complete"
+    : "not_started";
+  if (attendance?.courseId) state.selectedCourseId = attendance.courseId;
+}
+
+async function selectAttendanceCourse(courseId) {
+  const course = state.courses.find(item => item.id === courseId);
+  if (!course) throw new Error("Course not found");
+  if (!canRunAttendance(course)) throw new Error("You cannot run attendance for this course");
+  state.selectedCourseId = course.id;
+  if (activeAttendance?.courseId === course.id) return;
+  if (!backendConfigured() || !apiToken) {
+    applyAttendanceSnapshot(null);
+    return;
+  }
+  const payload = await apiRequest(
+    `/api/attendance/current?courseId=${encodeURIComponent(course.id)}`
+  );
+  applyAttendanceSnapshot(payload.attendance);
+}
+
+function applyQuizSnapshot(quiz) {
+  state.backendQuizId = quiz?.id || "";
+  state.backendQuizCourseId = quiz?.courseId || "";
+  state.backendQuizTitle = quiz?.title || "";
+  state.backendQuizQuestions = quiz?.questions || [];
+  state.quizPublished = quiz?.status === "open";
+  state.quizResponses = Array.isArray(quiz?.responses) ? quiz.responses.length : 0;
+  state.quizResponded = Boolean(quiz?.responded);
+}
+
+async function selectQuizCourse(courseId) {
+  const course = state.courses.find(item => item.id === courseId);
+  if (!course) throw new Error("Course not found");
+  if (state.userRole !== "student" && !canPublishQuiz(course)) {
+    throw new Error("You cannot publish quizzes for this course");
+  }
+  state.selectedCourseId = course.id;
+  if (!backendConfigured() || !apiToken) {
+    applyQuizSnapshot(null);
+    return;
+  }
+  const payload = await apiRequest(
+    `/api/quizzes/current?courseId=${encodeURIComponent(course.id)}`
+  );
+  applyQuizSnapshot(payload.quiz);
+}
+
+function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
+  clearInterval(scanTimer);
+  clearTimeout(quizTimer);
+  courseRosters = new Map();
+  activeAttendance = null;
+  managedCourseId = "";
+  state.backendAttendanceId = "";
+  state.attendanceStatus = "not_started";
+  state.attendanceCheckedIn = false;
+  state.backendQuizId = "";
+  state.backendQuizCourseId = "";
+  state.backendQuizTitle = "";
+  state.backendQuizQuestions = [];
+  state.quizPublished = false;
+  state.quizResponded = false;
+  state.courses = defaultState.courses;
+  state.enrolledCourses = [];
+  state.backendSchedule = [];
+  if (clearImportedSchedule) state.importedSchedule = [];
+  if (view) view.innerHTML = "";
+}
+
 function persist() {
   state.appVersion = APP_VERSION;
   localStorage.setItem("campusPulseState", JSON.stringify(state));
-  document.querySelector("#syncDot").classList.toggle("visible", state.userRole === "faculty" && state.erpStatus === "pending" && state.attendanceStatus === "complete");
 }
 
 const loginProfiles = {
   faculty: {
     title: "Professor login",
     shortTitle: "Professor",
-    description: "Manage Soft Computing, attendance, quizzes, and ERP uploads.",
+    description: "Create and manage your exclusive courses, rosters, attendance, and quizzes.",
     idLabel: "Verified faculty email",
     placeholder: "professor@iitkgp.ac.in",
     initials: "PF",
@@ -121,7 +295,7 @@ const loginProfiles = {
   ta: {
     title: "Teaching Assistant login",
     shortTitle: "TA",
-    description: "Start attendance and update quizzes for assigned courses.",
+    description: "Join assigned courses by code, run attendance, and publish quizzes without changing course settings.",
     idLabel: "Verified TA email",
     placeholder: "ta@iitkgp.ac.in",
     initials: "TA",
@@ -130,7 +304,7 @@ const loginProfiles = {
   student: {
     title: "Student login",
     shortTitle: "Student",
-    description: "Join Soft Computing, check in, take quizzes, and view your calendar.",
+    description: "Join professor-owned courses by code, take quizzes, and view your calendar. Attendance is teaching-team managed.",
     idLabel: "Verified institute email",
     placeholder: "student@kgpian.iitkgp.ac.in",
     initials: "ST",
@@ -139,6 +313,10 @@ const loginProfiles = {
 };
 
 function renderLogin(role = selectedLoginRole, mode = authMode) {
+  courseRosters = new Map();
+  activeAttendance = null;
+  managedCourseId = "";
+  if (view) view.innerHTML = "";
   selectedLoginRole = loginProfiles[role] ? role : "faculty";
   authMode = mode === "login" ? "login" : "signup";
   const profile = loginProfiles[selectedLoginRole];
@@ -151,12 +329,12 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
         <div class="auth-story-copy">
           <span class="auth-kicker">ONE CAMPUS · THREE WORKSPACES</span>
           <h1>Your classroom, on schedule.</h1>
-          <p>Proximity attendance, short quizzes, and a shared Soft Computing calendar for every member of the course team.</p>
+          <p>Professor-owned courses, teaching-team attendance, short quizzes, and a shared academic calendar.</p>
         </div>
         <div class="auth-feature-row">
           <span>${icon("i-calendar")} Shared calendar</span>
-          <span>${icon("i-wifi")} Wi-Fi + Bluetooth</span>
-          <span>${icon("i-cloud")} Professor ERP export</span>
+          <span>${icon("i-users")} Official course rosters</span>
+          <span>${icon("i-lock")} Private course access</span>
         </div>
       </section>
       <section class="auth-panel">
@@ -187,6 +365,8 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
               <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
               <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="8" required /></div>
             </div>
+            ${selectedLoginRole === "faculty" ? `<label for="facultyInviteCode">Professor invitation code</label><input id="facultyInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
+            ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-send")} Check email & continue</button>
           </form>
           <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. You will verify it before the account is created.</p></div>` : `
@@ -199,6 +379,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
           </form>
           <div class="auth-demo-note"><span>Verified accounts only</span><p>${state.accounts.length ? "Use the email and password from your completed sign-up." : "No account exists yet. Create and verify an account before signing in."}</p></div>`}
+          <p class="auth-description" style="margin-top:18px"><a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a> · <a href="delete-account.html" target="_blank" rel="noopener">Delete an account</a></p>
         </div>
       </section>
     </div>`;
@@ -227,7 +408,7 @@ function renderEmailVerification() {
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-check")} Verify email</button>
           </form>
           <div class="verification-actions"><button type="button" class="text-btn" data-action="back-to-signup">Change details</button><button type="button" class="text-btn" data-action="resend-code">Resend code</button></div>
-          <div class="auth-demo-note code-note"><span>${pendingSignup.remote ? "Email verification" : "Prototype email delivery"}</span><p>${pendingSignup.code ? `Your verification code is <strong>${pendingSignup.code}</strong>.` : "The backend sent a verification code to your institutional email."}</p></div>
+          <div class="auth-demo-note code-note"><span>Email verification</span><p>Check your inbox and spam folder for the verification email. CampusPulse will never display the code on this page.</p></div>
         </div>
       </section>
     </div>`;
@@ -262,6 +443,7 @@ function showApp() {
   authRoot.hidden = true;
   authRoot.innerHTML = "";
   appShell.hidden = false;
+  setNavigationState(state.route);
   render();
 }
 
@@ -271,38 +453,18 @@ async function syncBackendState() {
   state.userRole = payload.user.role;
   state.accountName = payload.user.name;
   state.authEmail = payload.user.email;
-  state.courses = Array.isArray(payload.courses) && payload.courses.length
+  state.courses = Array.isArray(payload.courses)
     ? payload.courses.map((course) => ({ ...course, code: course.code || "" }))
-    : defaultState.courses;
+    : [];
+  if (!state.courses.some(course => course.id === state.selectedCourseId)) {
+    state.selectedCourseId = state.courses[0]?.id || "";
+  }
   state.enrolledCourses = payload.enrolledCourseIds || [];
   state.backendSchedule = payload.schedule || [];
-  if (payload.attendance) {
-    state.backendAttendanceId = payload.attendance.id;
-    state.attendanceStatus = payload.attendance.status === "open" ? "scanning" : state.attendanceStatus;
-    state.attendanceCheckedIn = Boolean(payload.attendance.checkedIn);
-    if (Array.isArray(payload.attendance.present)) {
-      state.present = Array.from(
-        { length: Math.min(roster.length, payload.attendance.present.length) },
-        (_, index) => index
-      );
-    }
-  } else {
-    state.backendAttendanceId = "";
-    state.attendanceCheckedIn = false;
-    if (state.attendanceStatus === "scanning") state.attendanceStatus = "not_started";
-  }
-  if (payload.quiz) {
-    state.backendQuizId = payload.quiz.id;
-    state.quizPublished = payload.quiz.status === "open";
-    if (Array.isArray(payload.quiz.responses)) state.quizResponses = payload.quiz.responses.length;
-    state.backendQuizQuestions = payload.quiz.questions || [];
-    state.quizResponded = Boolean(payload.quiz.responded);
-  } else {
-    state.backendQuizId = "";
-    state.backendQuizQuestions = [];
-    state.quizPublished = false;
-    state.quizResponded = false;
-  }
+  courseRosters = new Map();
+  applyAttendanceSnapshot(null);
+  state.attendanceCheckedIn = false;
+  applyQuizSnapshot(payload.quiz);
   persist();
 }
 
@@ -320,7 +482,11 @@ async function restoreBackendSession() {
   } catch {
     apiToken = "";
     localStorage.removeItem("campusPulseApiToken");
+    clearSensitiveClientState({ clearImportedSchedule: true });
     state.authenticated = false;
+    state.accountName = "";
+    state.authEmail = "";
+    persist();
     return false;
   }
 }
@@ -336,7 +502,8 @@ function toast(message, type = "success") {
 function setHeader(title, eyebrow, showQuick = true) {
   pageTitle.textContent = title;
   pageEyebrow.textContent = eyebrow;
-  quickAction.style.display = showQuick ? "" : "none";
+  const attendanceCourse = selectedCourse() || state.courses.find(canRunAttendance);
+  quickAction.style.display = showQuick && canRunAttendance(attendanceCourse) ? "" : "none";
   const profiles = {
     faculty: { label: "Professor view", initials: "PF", name: "Professor Demo", meta: "Instructor · CSE" },
     ta: { label: "TA view", initials: "TA", name: "Teaching Assistant", meta: "Course team · CSE" },
@@ -347,17 +514,29 @@ function setHeader(title, eyebrow, showQuick = true) {
   profileAvatar.textContent = profile.initials;
   profileName.textContent = roleDisplayName(state.userRole, state.accountName || profile.name);
   profileMeta.textContent = profile.meta;
-  erpNav.style.display = state.userRole === "faculty" ? "" : "none";
+  if (attendanceNav) {
+    attendanceNav.style.display = state.courses.some(canRunAttendance) ? "" : "none";
+  }
+}
+
+function setNavigationState(route) {
+  document.querySelectorAll(".nav-item").forEach(btn => {
+    const active = btn.dataset.route === route;
+    btn.classList.toggle("active", active);
+    if (active) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
+  });
 }
 
 function navigate(route) {
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
   state.route = route;
-  document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === route));
+  setNavigationState(route);
   render();
   persist();
   window.scrollTo({ top: 0, behavior: "smooth" });
+  pageTitle.focus({ preventScroll: true });
 }
 
 function render() {
@@ -366,30 +545,38 @@ function render() {
   if (state.route === "schedule") return renderSchedule();
   if (state.route === "attendance") return renderAttendance();
   if (state.route === "quizzes") return renderQuiz();
-  if (state.route === "erp") return state.userRole === "faculty" ? renderERP() : renderRestrictedERP();
   return renderPlaceholder(state.route);
 }
 
 function renderDashboard() {
   if (state.userRole === "student") return renderStudentDashboard();
-  setHeader(`Good morning, ${roleDisplayName()}`, "THURSDAY, 30 JULY");
-  const attendanceLabel = state.attendanceStatus === "complete" ? "Attendance recorded" : state.attendanceStatus === "scanning" ? "Check-in is live" : "Ready to begin";
-  const statusClass = state.attendanceStatus === "complete" ? "green" : "amber";
+  const course = selectedCourse() || state.courses[0];
+  if (!course) {
+    setHeader(`Good morning, ${roleDisplayName()}`, state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TA WORKSPACE", false);
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>${state.userRole === "faculty" ? "Create your first course" : "Join your assigned course"}</h2><p>${state.userRole === "faculty" ? "Courses are private to their professor owner. Create a course, then share its join code with students and teaching assistants." : "Enter the private course code shared by the professor before accessing attendance or quizzes."}</p><button class="btn btn-primary" ${state.userRole === "faculty" ? 'data-action="open-course-modal"' : 'data-route-link="classes"'}>${icon("i-plus")} ${state.userRole === "faculty" ? "Create course" : "Enter course code"}</button></div></article>`;
+    return;
+  }
+  const attendanceMatchesCourse = activeAttendance?.courseId === course.id;
+  const courseAttendanceStatus = attendanceMatchesCourse ? state.attendanceStatus : "not_started";
+  const coursePresentCount = attendanceMatchesCourse ? currentPresentCount() : 0;
+  setHeader(`Good morning, ${roleDisplayName()}`, "MONDAY, 3 AUGUST");
+  const attendanceLabel = courseAttendanceStatus === "complete" ? "Attendance recorded" : courseAttendanceStatus === "scanning" ? "Attendance in progress" : "Ready to begin";
+  const statusClass = courseAttendanceStatus === "complete" ? "green" : "amber";
   view.innerHTML = `
     <div class="dashboard-grid">
       <div class="left-stack">
         <article class="hero-session">
           <div class="hero-copy">
-            <span class="live-tag">NEXT CLASS · 10:00 AM</span>
-            <h2>Soft Computing</h2>
-            <p>CSE 401 · Section A</p>
+            <span class="live-tag">YOUR COURSE</span>
+            <h2>${escapeHtml(course.name)}</h2>
+            <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p>
             <div class="hero-meta">
-              <span>${icon("i-clock")} 10:00 – 10:50 AM</span>
-              <span>${icon("i-users")} 42 students</span>
-              <span>${icon("i-calendar")} Room 304</span>
+              <span>${icon("i-clock")} 3:00 – 5:00 PM</span>
+              <span>${icon("i-users")} ${course.students} students</span>
+              <span>${icon("i-calendar")} ${escapeHtml(course.room || "Room TBA")}</span>
             </div>
           </div>
-          <div class="hero-action"><button class="btn" data-action="attendance">${icon("i-play")} ${state.attendanceStatus === "complete" ? "View attendance" : "Start attendance"}</button></div>
+          <div class="hero-action">${canRunAttendance(course) ? `<button class="btn" data-action="open-dashboard-attendance" data-course-id="${escapeHtml(course.id)}">${icon("i-play")} ${courseAttendanceStatus === "not_started" ? "Take attendance" : "View attendance"}</button>` : `<span class="badge gray">Attendance unavailable</span>`}</div>
         </article>
 
         <div class="stat-grid">
@@ -410,24 +597,24 @@ function renderDashboard() {
         <article class="card card-pad">
           <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="classes">View schedule</button></div>
           <div class="class-list">
-            ${classRow("10:00", "10:50 AM", "Soft Computing", "CSE 401 · Section A · Room 304", attendanceLabel, statusClass, "attendance")}
+            ${classRow("3:00", "5:00 PM", course.name, `${course.courseCode} · ${course.section} · ${course.room}`, attendanceLabel, statusClass, canRunAttendance(course) ? "attendance" : "", course.id)}
           </div>
         </article>
       </div>
 
       <div class="right-stack">
         <article class="card date-card">
-          <div class="date-top"><div><div class="date-day">Thursday</div><div class="date-number">30</div></div><div class="date-month">July 2026</div></div>
+          <div class="date-top"><div><div class="date-day">Monday</div><div class="date-number">3</div></div><div class="date-month">August 2026</div></div>
           <div class="week-strip">
-            <span>M<b>27</b></span><span>T<b>28</b></span><span>W<b>29</b></span><span class="selected">T<b>30</b></span><span>F<b>31</b></span><span>S<b>1</b></span><span>S<b>2</b></span>
+            <span class="selected">M<b>3</b></span><span>T<b>4</b></span><span>W<b>5</b></span><span>T<b>6</b></span><span>F<b>7</b></span><span>S<b>8</b></span><span>S<b>9</b></span>
           </div>
         </article>
         <article class="card card-pad">
-          <div class="section-head"><h3>Recent activity</h3><button class="icon-btn">${icon("i-more")}</button></div>
+          <div class="section-head"><h3>Recent activity</h3></div>
           <div class="activity-list">
-            <div class="activity"><span class="activity-icon">${icon("i-check")}</span><div><strong>Attendance synced to ERP</strong><p>Soft Computing · Section A</p></div><time>9:14</time></div>
-            <div class="activity"><span class="activity-icon purple">${icon("i-quiz")}</span><div><strong>Quiz results published</strong><p>Soft Computing · Quiz 04</p></div><time>Wed</time></div>
-            <div class="activity"><span class="activity-icon">${icon("i-users")}</span><div><strong>38 of 42 students present</strong><p>Soft Computing</p></div><time>Tue</time></div>
+            <div class="activity"><span class="activity-icon">${icon("i-check")}</span><div><strong>Attendance workspace ready</strong><p>${escapeHtml(course.name)} · ${escapeHtml(course.section)}</p></div><time>Now</time></div>
+            <div class="activity"><span class="activity-icon purple">${icon("i-quiz")}</span><div><strong>Quiz publishing enabled</strong><p>${escapeHtml(course.name)}</p></div><time>Course team</time></div>
+            <div class="activity"><span class="activity-icon">${icon("i-users")}</span><div><strong>${attendanceMatchesCourse ? `${coursePresentCount} of ${course.students} students present` : `${course.students} rostered students`}</strong><p>${escapeHtml(course.name)}</p></div><time>Latest</time></div>
           </div>
         </article>
       </div>
@@ -441,28 +628,37 @@ function renderStudentDashboard() {
     <div class="left-stack">
       <section class="student-welcome">
         <h2>${enrolled.length ? "Your classroom is ready" : "Join your first course"}</h2>
-        <p>${enrolled.length ? "Access attendance check-ins, quick quizzes, and class updates from every course you have joined." : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
+        <p>${enrolled.length ? "Access your schedule, quick quizzes, and class updates. Attendance records are maintained by the course teaching team." : "Enter the private course code shared by your faculty. Course content is available only after enrollment."}</p>
         <button class="btn" data-route-link="${enrolled.length ? "schedule" : "classes"}">${icon(enrolled.length ? "i-calendar" : "i-plus")} ${enrolled.length ? "View my schedule" : "Join a course"}</button>
       </section>
       <div class="course-grid">
         ${enrolled.length ? enrolled.map(course => studentCourseCard(course)).join("") : `
-          <article class="card empty-state" style="min-height:260px;grid-column:1/-1"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>No courses yet</h2><p>Ask your faculty for a six-character join code, then enter it on the Courses page.</p><button class="btn btn-primary" data-route-link="classes">Enter join code</button></div></article>`}
+          <article class="card empty-state" style="min-height:260px;grid-column:1/-1"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>No courses yet</h2><p>Ask your faculty for the course join code, then enter it on the Courses page.</p><button class="btn btn-primary" data-route-link="classes">Enter join code</button></div></article>`}
       </div>
     </div>`;
 }
 
 function renderSchedule() {
   const isStudent = state.userRole === "student";
-  const enrolled = state.enrolledCourses.includes("soft401");
+  const course = selectedCourse();
+  if (!course) {
+    setHeader("Schedule", "COURSE ACCESS", false);
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-calendar")}</span><h2>No course schedule yet</h2><p>${state.userRole === "faculty" ? "Create a course to begin." : "Join a course with the code shared by its professor."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
+    return;
+  }
+  const enrolled = state.enrolledCourses.includes(course.id);
   const imported = isStudent && state.importedSchedule.length > 0;
   const calendarDays = [
-    ["MON", "27"], ["TUE", "28"], ["WED", "29"], ["THU", "30"], ["FRI", "31"], ["SAT", "1"], ["SUN", "2"]
+    ["MON", "3"], ["TUE", "4"], ["WED", "5"], ["THU", "6"], ["FRI", "7"], ["SAT", "8"], ["SUN", "9"]
   ];
-  const defaultEvents = [
-    { dayIndex: 1, day: "Tuesday", date: "28 Jul", start: "10:00 AM", end: "11:00 AM", topic: "Foundations of Soft Computing", room: "Room 304", status: "Completed" },
-    { dayIndex: 3, day: "Thursday", date: "30 Jul", start: "10:00 AM", end: "10:50 AM", topic: "Fuzzy Sets & Membership", room: "Room 304", status: "Today", today: true },
-    { dayIndex: 5, day: "Saturday", date: "1 Aug", start: "09:00 AM", end: "10:00 AM", topic: "Neural Network Models", room: "Room 304", status: "Upcoming" }
-  ];
+  const courseSchedule = state.backendSchedule.filter(item => item.courseId === course.id);
+  const defaultEvents = (courseSchedule.length ? courseSchedule : [
+    { day: "Monday", date: "3 Aug", start: "3:00 PM", end: "5:00 PM", topic: course.name, room: course.room, status: "Upcoming" }
+  ]).map((item, index) => ({
+    ...item,
+    dayIndex: dayIndexFromName(item.day),
+    status: item.status || (index === 0 ? "Next" : "Upcoming")
+  }));
   const importedEvents = state.importedSchedule.map((item, index) => ({
     ...item,
     dayIndex: dayIndexFromName(item.day),
@@ -482,12 +678,12 @@ function renderSchedule() {
       ? backendEvents
       : defaultEvents;
   const scheduleLabel = imported
-    ? "My ERP timetable"
+    ? "My imported timetable"
     : hasBackendSchedule
       ? "Campus schedule"
-      : "27 July – 2 August 2026";
+      : "3–9 August 2026";
   const scheduleBadge = imported
-    ? "ERP file imported"
+    ? "Timetable file imported"
     : hasBackendSchedule
       ? "Synced from CampusPulse"
       : `${state.userRole === "faculty" ? "Professor" : state.userRole === "ta" ? "Teaching Assistant" : "Student"} view`;
@@ -496,33 +692,32 @@ function renderSchedule() {
   view.innerHTML = `
     <article class="card page-card calendar-page">
       <div class="calendar-titlebar">
-        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${scheduleLabel}</h2><p>${imported ? "Imported locally from your timetable file" : "Soft Computing · CSE 401 · Section A"}</p></div>
+        <div><span class="calendar-kicker">${icon("i-calendar")} WEEK CALENDAR</span><h2>${scheduleLabel}</h2><p>${imported ? "Imported locally from your timetable file" : `${escapeHtml(course.name)} · ${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}`}</p></div>
         <div class="calendar-title-actions"><span class="badge ${imported ? "green" : "purple"}">${scheduleBadge}</span><button class="btn btn-soft" data-action="calendar-today">Today</button></div>
       </div>
       <div class="calendar-scroll" aria-label="Weekly class calendar">
         <div class="calendar-board">
-          <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(([day, date], index) => `<span class="${index === 3 ? "is-today" : ""}"><small>${day}</small><strong>${date}</strong></span>`).join("")}</div>
+          <div class="calendar-days"><span class="calendar-zone">IST</span>${calendarDays.map(([day, date], index) => `<span class="${index === 0 ? "is-today" : ""}"><small>${day}</small><strong>${date}</strong></span>`).join("")}</div>
           <div class="calendar-body">
             <div class="calendar-times">${["8 AM", "9 AM", "10 AM", "11 AM", "12 PM", "1 PM", "2 PM", "3 PM", "4 PM", "5 PM"].map(time => `<span>${time}</span>`).join("")}</div>
             <div class="calendar-lanes">
-              ${calendarDays.map((_, index) => `<div class="calendar-lane ${index === 3 ? "is-today" : ""}">${events.filter(event => event.dayIndex === index).map(event => calendarEvent(event)).join("")}</div>`).join("")}
+              ${calendarDays.map((_, index) => `<div class="calendar-lane ${index === 0 ? "is-today" : ""}">${events.filter(event => event.dayIndex === index).map(event => calendarEvent(event)).join("")}</div>`).join("")}
             </div>
           </div>
         </div>
       </div>
       <div class="calendar-agenda">
         <div class="section-head"><div><h3>Class agenda</h3><p class="stat-label">All scheduled sessions for this week</p></div><span class="badge gray">${events.length} sessions</span></div>
-        <div class="schedule-week">${events.map(event => scheduleDay(event, isStudent, enrolled)).join("")}</div>
+        <div class="schedule-week">${events.map(event => scheduleDay(event, course, isStudent, enrolled)).join("")}</div>
       </div>
       ${isStudent ? `
         <div class="setup-actions">
           ${imported ? `<button class="btn btn-danger" data-action="clear-imported-schedule">Clear imported schedule</button>` : ""}
-          <a class="btn" href="https://erp.iitkgp.ac.in/IIT_ERP3/home.htm" target="_blank" rel="noopener noreferrer">${icon("i-cloud")} Open IIT KGP ERP</a>
           <button class="btn btn-primary" data-action="import-schedule">${icon("i-download")} Import CSV / ICS</button>
           <input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />
         </div>
-        <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser. CampusPulse never receives your ERP password or session cookie.</span></div>` : ""}
-      ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Join Soft Computing with code <strong>SC401A</strong> to unlock attendance and quiz activities. The calendar remains visible to everyone.</span></div>` : ""}
+        <div class="security-note"><span class="lock">⌾</span><span>Your timetable file is parsed only in this browser and is not uploaded to CampusPulse.</span></div>` : ""}
+      ${isStudent && !enrolled ? `<div class="security-note"><span class="lock">⌾</span><span>Ask the course professor for the private join code to unlock activities. Attendance remains teaching-team managed.</span></div>` : ""}
     </article>`;
 }
 
@@ -548,20 +743,24 @@ function calendarEvent(event) {
   const top = ((start - 8 * 60) / (10 * 60)) * 100;
   const height = Math.max(8, ((end - start) / (10 * 60)) * 100);
   return `<article class="calendar-event ${event.today ? "current" : ""}" style="--event-top:${top}%;--event-height:${height}%">
-    <strong>${event.topic}</strong><span>${event.start} · ${event.room || "Room TBA"}</span>
+    <strong>${escapeHtml(event.topic)}</strong><span>${escapeHtml(event.start)} · ${escapeHtml(event.room || "Room TBA")}</span>
   </article>`;
 }
 
-function scheduleDay(event, isStudent, enrolled) {
+function scheduleDay(event, course, isStudent, enrolled) {
   const action = event.today
     ? isStudent
-      ? `<button class="btn ${enrolled ? "btn-soft" : ""}" data-route-link="${enrolled ? "attendance" : "classes"}">${icon(enrolled ? "i-wifi" : "i-plus")} ${enrolled ? "View check-in" : "Join course"}</button>`
-      : `<button class="btn btn-primary" data-route-link="attendance">${icon("i-play")} Start attendance</button>`
+      ? enrolled
+        ? `<span class="badge gray">Teaching-team attendance</span>`
+        : `<button class="btn" data-route-link="classes">${icon("i-plus")} Join course</button>`
+      : canRunAttendance(course)
+        ? `<button class="btn btn-primary" data-route-link="attendance" data-course-id="${escapeHtml(course.id)}">${icon("i-play")} Take attendance</button>`
+        : `<span class="badge gray">Attendance unavailable</span>`
     : `<span class="badge ${event.status === "Completed" ? "green" : "gray"}">${event.status}</span>`;
   return `<div class="schedule-day ${event.today ? "today" : ""}">
-    <div class="schedule-date"><strong>${event.day}</strong><span>${event.date}</span></div>
-    <div class="schedule-time"><strong>${event.start}</strong><span>${event.end}</span></div>
-    <div class="schedule-info"><strong>${event.topic}</strong><span>Soft Computing · CSE 401 · ${event.room || "Room TBA"}</span></div>
+    <div class="schedule-date"><strong>${escapeHtml(event.day)}</strong><span>${escapeHtml(event.date)}</span></div>
+    <div class="schedule-time"><strong>${escapeHtml(event.start)}</strong><span>${escapeHtml(event.end)}</span></div>
+    <div class="schedule-info"><strong>${escapeHtml(event.topic)}</strong><span>${escapeHtml(course.name)} · ${escapeHtml(course.courseCode)} · ${escapeHtml(event.room || "Room TBA")}</span></div>
     <div class="schedule-action">${action}</div>
   </div>`;
 }
@@ -569,161 +768,197 @@ function scheduleDay(event, isStudent, enrolled) {
 function studentCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge green">Enrolled</span>
-    <h3 style="margin-top:12px">${course.name}</h3><p>${course.courseCode} · ${course.section} · ${course.room}</p>
-    <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-route-link="quizzes">Open course</button></div>
+    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Open course</button></div>
   </article>`;
 }
 
-function classRow(time, suffix, title, meta, badge, color, route) {
+function classRow(time, suffix, title, meta, badge, color, route, courseId = "") {
   return `<div class="class-row">
-    <div class="time">${time}<small>${suffix}</small></div>
-    <div class="course"><strong>${title}</strong><span>${meta}</span></div>
-    <span class="badge ${color}">${badge}</span>
-    <button class="chevron" data-route-link="${route}" aria-label="Open ${title}">${icon("i-arrow")}</button>
+    <div class="time">${escapeHtml(time)}<small>${escapeHtml(suffix)}</small></div>
+    <div class="course"><strong>${escapeHtml(title)}</strong><span>${escapeHtml(meta)}</span></div>
+    <span class="badge ${color}">${escapeHtml(badge)}</span>
+    ${route ? `<button class="chevron" data-route-link="${route}" ${courseId ? `data-course-id="${escapeHtml(courseId)}"` : ""} aria-label="Open ${escapeHtml(title)}">${icon("i-arrow")}</button>` : `<span class="badge gray">Read only</span>`}
   </div>`;
 }
 
 function renderAttendance() {
-  if (state.userRole === "student") return renderStudentAttendanceAccess();
-  setHeader("Attendance session", "SOFT COMPUTING · CSE 401", false);
-  if (state.attendanceStatus === "not_started") return renderAttendanceSetup();
+  const course = selectedCourse();
+  if (!course || !canRunAttendance(course)) return renderRestrictedAttendance();
+  setHeader("Attendance session", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
+  if (!backendConfigured() || state.attendanceStatus === "not_started" || !activeAttendance) {
+    return renderAttendanceSetup();
+  }
   return renderLiveAttendance();
 }
 
-function renderStudentAttendanceAccess() {
-  setHeader("Class check-in", "STUDENT ACCESS", false);
-  const hasAccess = state.enrolledCourses.includes("soft401");
-  view.innerHTML = hasAccess ? `
-    <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
-    <article class="card join-panel">
-      <div class="setup-radar">${icon("i-bluetooth")}</div><span class="badge green">Course access verified</span>
-      <h2 style="margin:15px 0 7px">Soft Computing check-in</h2>
-      <p class="stat-label">When your faculty opens attendance, keep Bluetooth and internet on. CampusPulse will verify that your device is inside the classroom.</p>
-      <button class="btn btn-primary" style="margin-top:20px" data-action="student-check-in" ${state.attendanceStatus === "scanning" && !state.attendanceCheckedIn ? "" : "disabled"}>${icon(state.attendanceCheckedIn ? "i-check" : "i-wifi")} ${state.attendanceCheckedIn ? "Presence recorded" : state.attendanceStatus === "scanning" ? "Verify my presence" : "Waiting for faculty"}</button>
-    </article>` : `
-    <article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Join the course first</h2><p>Attendance check-in is available only to students enrolled in Soft Computing.</p><button class="btn btn-primary" data-route-link="classes">Join with course code</button></div></article>`;
+function renderRestrictedAttendance() {
+  setHeader("Attendance access restricted", "COURSE TEAM ONLY", false);
+  view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Course-team access required</h2><p>Attendance is available only to the professor who owns the course and teaching assistants enrolled in it. Students and unrelated staff cannot view or change attendance.</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
 }
 
 function renderAttendanceSetup() {
-  const ready = state.checks.wifi && state.checks.bluetooth;
+  if (!backendConfigured()) {
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h2>Connect the secure API</h2><p>The official student rosters are kept on the server and are never bundled into the public app. Connect CampusPulse before taking attendance.</p><button class="btn btn-primary" data-route-link="settings">Open settings</button></div></article>`;
+    return;
+  }
+  const availableCourses = state.courses.filter(canRunAttendance);
+  const course = selectedCourse();
+  if (!course || !canRunAttendance(course)) return renderRestrictedAttendance();
+  if (!courseRosters.has(course.id)) {
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Loading official roster</h2><p>Checking your course-scoped attendance access.</p></div></article>`;
+    loadCourseRoster(course.id)
+      .then(() => {
+        if (state.route === "attendance" && state.selectedCourseId === course.id) {
+          renderAttendanceSetup();
+        }
+      })
+      .catch((error) => {
+        view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Roster unavailable</h2><p>${escapeHtml(error.message || "Could not load this roster")}</p><button class="btn" data-route-link="classes">Back to courses</button></div></article>`;
+      });
+    return;
+  }
+  const roster = courseRosters.get(course.id) || [];
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        ${sessionHeading("Ready your classroom", "Attendance has not started yet", "amber")}
+        ${sessionHeading("Choose the official roster", "Attendance has not started yet", "amber")}
         ${stepper(1)}
-        <div class="setup-hero">
-          <div class="setup-radar">${icon("i-bluetooth")}</div>
-          <h3>Verify classroom proximity</h3>
-          <p>Students are checked in only when both the classroom Wi‑Fi and the secure Bluetooth beacon are detected.</p>
+        <div class="roster-picker">
+          <label for="attendanceCourseSelect">Course roster</label>
+          <select class="select" id="attendanceCourseSelect">
+            ${availableCourses.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)} (${item.students})</option>`).join("")}
+          </select>
+          <div class="roster-source-card">
+            <span class="student-avatar">${roster.length}</span>
+            <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${roster.length} students</p></div>
+            <span class="badge green">Official roster ready</span>
+          </div>
         </div>
-        <div class="check-grid">
-          <button class="device-check ${state.checks.wifi ? "ready" : ""}" data-check="wifi">
-            <span class="device-icon">${icon("i-wifi")}</span><span><strong>Campus Wi‑Fi</strong><span>${state.checks.wifi ? "Connected · CAMPUS_SECURE" : "Tap to verify connection"}</span></span><span class="checkmark">${icon("i-check")}</span>
-          </button>
-          <button class="device-check ${state.checks.bluetooth ? "ready" : ""}" data-check="bluetooth">
-            <span class="device-icon">${icon("i-bluetooth")}</span><span><strong>Bluetooth beacon</strong><span>${state.checks.bluetooth ? "Ready · Room 304" : "Tap to enable beacon"}</span></span><span class="checkmark">${icon("i-check")}</span>
-          </button>
-        </div>
+        <div class="security-note"><span class="lock">⌾</span><span>This list is visible only to the course-owning professor and enrolled teaching assistants. Each session stores a roster snapshot so marks stay linked to roll numbers.</span></div>
         <div class="setup-actions">
           <button class="btn" data-route-link="dashboard">Cancel</button>
-          <button class="btn btn-primary" data-action="start-scan" ${ready ? "" : "disabled"}>${icon("i-play")} Open check-in</button>
+          <button class="btn btn-primary" data-action="start-scan" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button>
         </div>
       </article>
-      ${attendanceSidePanel(0)}
+      ${attendanceSidePanel(roster.map(student => ({ ...student, present: false })))}
     </div>`;
 }
 
 function sessionHeading(title, subtitle, color) {
-  return `<div class="session-title"><div><h2>${title}</h2><p>${subtitle} · Room 304 · 10:00–10:50 AM</p></div><span class="badge ${color}">${state.attendanceStatus === "complete" ? "Completed" : state.attendanceStatus === "scanning" ? "Live now" : "Setup"}</span></div>`;
+  const course = selectedCourse();
+  return `<div class="session-title"><div><h2>${title}</h2><p>${subtitle} · ${escapeHtml(course.courseCode)} · ${escapeHtml(course.room || "Room TBA")}</p></div><span class="badge ${color}">${state.attendanceStatus === "complete" ? "Completed" : state.attendanceStatus === "scanning" ? "In progress" : "Setup"}</span></div>`;
 }
 
 function stepper(current) {
-  return `<div class="stepper"><div class="step ${current === 1 ? "active" : current > 1 ? "done" : ""}">1. Device check</div><div class="step ${current === 2 ? "active" : current > 2 ? "done" : ""}">2. Student check-in</div><div class="step ${current === 3 ? "active" : ""}">3. Review & sync</div></div>`;
+  return `<div class="stepper"><div class="step ${current === 1 ? "active" : current > 1 ? "done" : ""}">1. Choose roster</div><div class="step ${current === 2 ? "active" : current > 2 ? "done" : ""}">2. Mark students</div><div class="step ${current === 3 ? "active" : ""}">3. Review</div></div>`;
 }
 
-function attendanceSidePanel(count) {
-  const percent = Math.round((count / 42) * 100);
+function attendanceSidePanel(records) {
+  const total = records.length;
+  const count = records.filter(record => record.present).length;
+  const percent = total ? Math.round((count / total) * 100) : 0;
+  const startedAt = activeAttendance?.startedAt
+    ? new Date(activeAttendance.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "—";
+  const missingLabel = state.attendanceStatus === "not_started" ? "Unmarked" : "Absent";
   return `<aside class="card page-card">
-    <div class="section-head"><h3>Session summary</h3><span class="badge purple">CSE 401</span></div>
-    <div class="summary-ring" style="--progress:${percent}%"><div><strong>${count}</strong><span>of 42 checked in</span></div></div>
+    <div class="section-head"><h3>Session summary</h3><span class="badge purple">${escapeHtml(selectedCourse().courseCode)}</span></div>
+    <div class="summary-ring" style="--progress:${percent}%"><div><strong>${count}</strong><span>of ${total} present</span></div></div>
     <div class="summary-list">
       <div class="summary-item"><span>Present</span><strong>${count}</strong></div>
-      <div class="summary-item"><span>Not checked in</span><strong>${42 - count}</strong></div>
+      <div class="summary-item"><span>${missingLabel}</span><strong>${total - count}</strong></div>
       <div class="summary-item"><span>Flagged</span><strong>0</strong></div>
-      <div class="summary-item"><span>Started at</span><strong>${state.attendanceStatus === "not_started" ? "—" : "10:00 AM"}</strong></div>
+      <div class="summary-item"><span>Started at</span><strong>${startedAt}</strong></div>
     </div>
-    <div class="security-note"><span class="lock">⌾</span><span>Presence is validated using two signals. No location history is retained after the session.</span></div>
+    <div class="security-note"><span class="lock">⌾</span><span>The course professor and enrolled TAs can mark and close attendance. Students cannot change attendance records.</span></div>
   </aside>`;
 }
 
 function renderLiveAttendance() {
   clearInterval(scanTimer);
+  const previousRoster = view.querySelector(".roster-scroll");
+  const previousScrollTop = previousRoster?.scrollTop || 0;
+  const focusedRollNumber = document.activeElement?.dataset?.rollNumber || "";
   const complete = state.attendanceStatus === "complete";
-  const count = state.present.length;
+  const records = currentAttendanceRecords();
+  const count = records.filter(record => record.present).length;
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        ${sessionHeading(complete ? "Review attendance" : "Student check-in", complete ? "Session closed and ready for sync" : "Students are joining now", complete ? "green" : "purple")}
+        ${sessionHeading(complete ? "Review attendance" : "Mark attendance", complete ? "Session closed and saved" : "Select each student who is present", complete ? "green" : "purple")}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
-          <div class="scan-status">${complete ? icon("i-check") + " Check-in closed" : '<span class="pulse"></span> Scanning for nearby students'}</div>
+          <div class="scan-status">${complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
           <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
         </div>
-        <div class="roster">
-          ${roster.map((student, i) => studentRow(student, i, i < count)).join("")}
+        ${complete ? "" : `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>`}
+        <div class="roster roster-scroll">
+          ${records.map((student, index) => studentRow(student, index, !complete)).join("")}
         </div>
         <div class="setup-actions">
-          ${complete ? `<button class="btn" data-action="download">${icon("i-download")} Export CSV</button>${state.userRole === "faculty" ? `<button class="btn btn-primary" data-route-link="erp">${icon("i-cloud")} Review ERP sync</button>` : ""}` : `<button class="btn btn-danger" data-action="end-session">End check-in</button>`}
+          ${complete ? `<button class="btn" data-action="new-attendance-session">${icon("i-play")} New attendance</button>` : `<button class="btn btn-danger" data-action="end-session">Close attendance</button>`}
         </div>
       </article>
-      ${attendanceSidePanel(count)}
+      ${attendanceSidePanel(records)}
     </div>`;
+
+  const nextRoster = view.querySelector(".roster-scroll");
+  if (nextRoster) nextRoster.scrollTop = previousScrollTop;
+  if (focusedRollNumber) {
+    [...view.querySelectorAll("[data-roll-number]")]
+      .find(element => element.dataset.rollNumber === focusedRollNumber)
+      ?.focus({ preventScroll: true });
+  }
 
   if (!complete && backendConfigured() && state.backendAttendanceId) {
     scanTimer = setInterval(async () => {
       if (state.route !== "attendance" || state.attendanceStatus !== "scanning") return;
       try {
-        const result = await apiRequest("/api/attendance/current");
-        const backendCount = result.attendance?.present?.length || 0;
-        if (backendCount !== state.present.length) {
-          state.present = Array.from(
-            { length: Math.min(roster.length, backendCount) },
-            (_, index) => index
-          );
+        const result = await apiRequest(`/api/attendance/${state.backendAttendanceId}`);
+        if (result.attendance?.status === "closed") {
+          activeAttendance = result.attendance;
+          state.attendanceStatus = "complete";
           persist();
+          return renderLiveAttendance();
+        }
+        const backendRecords = result.attendance?.records || [];
+        const signature = backendRecords.map(record => `${record.rollNumber}:${record.present}`).join("|");
+        const currentSignature = records.map(record => `${record.rollNumber}:${record.present}`).join("|");
+        if (signature && signature !== currentSignature) {
+          activeAttendance = result.attendance;
           renderLiveAttendance();
         }
       } catch {}
-    }, 3000);
-  } else if (!complete && count < roster.length) {
-    scanTimer = setInterval(() => {
-      const remaining = roster.filter((_, i) => !state.present.includes(i));
-      if (!remaining.length) return clearInterval(scanTimer);
-      const nextIndex = roster.indexOf(remaining[0]);
-      state.present.push(nextIndex);
-      persist();
-      renderLiveAttendance();
-      toast(`${roster[nextIndex][0]} checked in`);
-    }, 1500);
+    }, 4000);
   }
 }
 
-function studentRow(student, index, present) {
-  const initials = student[0].split(" ").map(n => n[0]).join("");
-  return `<div class="student-row">
-    <span class="student-avatar">${initials}</span>
-    <div class="student-name"><strong>${student[0]}</strong><span>${student[1]}</span></div>
-    <span class="signal ${present ? (index % 4 === 0 ? "mid" : "good") : ""}"><i></i><i></i><i></i><i></i></span>
-    <span class="badge ${present ? "green" : "gray"}">${present ? "Present" : "Waiting"}</span>
-  </div>`;
+function studentRow(student, index, interactive = false, rosterOnly = false) {
+  const present = Boolean(student.present);
+  const initials = student.name.split(" ").filter(Boolean).map(part => part[0]).join("").slice(0, 3);
+  const tag = interactive ? "button" : "div";
+  const action = interactive ? `type="button" data-action="toggle-attendance" data-roll-number="${escapeHtml(student.rollNumber)}" aria-pressed="${present}"` : "";
+  return `<${tag} class="student-row attendance-row ${interactive ? "is-interactive" : ""}" ${action}>
+    <span class="student-avatar">${escapeHtml(initials)}</span>
+    <div class="student-name"><strong>${escapeHtml(student.name)}</strong><span>${escapeHtml(student.rollNumber)} · No. ${student.serial || index + 1}</span></div>
+    <span class="signal ${present ? "good" : ""}"><i></i><i></i><i></i><i></i></span>
+    <span class="badge ${present ? "green" : rosterOnly ? "purple" : "gray"}">${present ? "Present" : rosterOnly ? "Rostered" : "Absent"}</span>
+  </${tag}>`;
 }
 
 function renderQuiz() {
   if (state.userRole === "student") return renderStudentQuizAccess();
-  setHeader("Quick quiz", "SOFT COMPUTING · CSE 401", false);
-  if (state.quizPublished) return renderLiveQuiz();
+  const course = selectedCourse();
+  if (!course || !canPublishQuiz(course)) {
+    setHeader("Quick quizzes", "COURSE ACCESS", false);
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>${state.userRole === "ta" ? "Join the professor's course before publishing quizzes." : "Create a course before publishing quizzes."}</p><button class="btn btn-primary" data-route-link="classes">Open courses</button></div></article>`;
+    return;
+  }
+  setHeader("Quick quiz", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
+  if (state.quizPublished && state.backendQuizCourseId === course.id) return renderLiveQuiz();
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
@@ -738,77 +973,77 @@ function renderQuiz() {
       </article>
       <aside class="card page-card quiz-settings">
         <div class="section-head"><h3>Quiz settings</h3></div>
+        <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
         <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" value="Concept check · Relations & Trees" />
         <label for="duration">Time limit</label><select class="select" id="duration"><option>3 minutes</option><option>5 minutes</option><option>No limit</option></select>
         <label for="reveal">Results</label><select class="select" id="reveal"><option>Reveal after quiz ends</option><option>Reveal after each answer</option><option>Keep private</option></select>
-        <div class="security-note"><span class="lock">✦</span><span>Quiz responses are linked to the active class roster and included in the ERP export.</span></div>
+        <div class="security-note"><span class="lock">✦</span><span>Quiz responses are linked to the active course and visible only to its teaching team.</span></div>
       </aside>
     </div>`;
 }
 
 function renderStudentQuizAccess() {
   setHeader("Course activities", "STUDENT ACCESS", false);
-  const hasAccess = state.enrolledCourses.includes("soft401");
+  const course = state.courses.find(item => item.id === state.backendQuizCourseId) || selectedCourse();
+  const hasAccess = Boolean(course && state.enrolledCourses.includes(course.id));
   view.innerHTML = hasAccess ? `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>Soft Computing</h2><p>CSE 401 · Section A</p></div><span class="badge green">Enrolled</span></div>
-        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>Concept check · Relations & Trees</h3><p class="stat-label" style="margin-top:5px">${state.backendQuizQuestions.length || 2} questions · 3 minutes</p></div><span class="badge ${state.quizPublished ? "purple" : "gray"}">${state.quizResponded ? "Submitted" : state.quizPublished ? "Available now" : "Not started"}</span></div>
+        <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge green">Enrolled</span></div>
+        <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(state.backendQuizTitle || "Quick quiz")}</h3><p class="stat-label" style="margin-top:5px">${state.backendQuizQuestions.length} questions</p></div><span class="badge ${state.quizPublished ? "purple" : "gray"}">${state.quizResponded ? "Submitted" : state.quizPublished ? "Available now" : "Not started"}</span></div>
         ${state.quizPublished && !state.quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
           ${(state.backendQuizQuestions.length ? state.backendQuizQuestions : [
             { text: "Which property is central to fuzzy membership?", options: ["Binary membership only", "Degrees of membership", "No membership", "Random membership"] },
             { text: "A neural network learns primarily by adjusting what?", options: ["Room numbers", "Weights", "Course codes", "Calendar dates"] }
-          ]).map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${question.text || question.question}</strong></legend>${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${option}</span></label>`).join("")}</fieldset>`).join("")}
+          ]).map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question)}</strong></legend>${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
           <button class="btn btn-primary" type="submit">${icon("i-send")} Submit quiz</button>
         </form>` : `<button class="btn btn-primary" disabled>${icon(state.quizResponded ? "i-check" : "i-play")} ${state.quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
       </article>
-      <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>CSE 401</strong></div><div class="summary-item"><span>Attendance eligibility</span><strong>Enabled</strong></div></div><div class="security-note"><span class="lock">⌾</span><span>You can access these activities because you joined this course with its private code.</span></div></aside>
+      <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>${escapeHtml(course.courseCode)}</strong></div><div class="summary-item"><span>Attendance</span><strong>Teaching-team managed</strong></div></div><div class="security-note"><span class="lock">⌾</span><span>You can access course activities, but only the owning professor and enrolled TAs can view or change attendance.</span></div></aside>
     </div>` : `
-    <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join Soft Computing before opening its quizzes or attendance check-ins.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
+    <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join a course before opening its quizzes.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
 }
 
 function questionBlock(number, question, options, answer) {
   return `<div class="question-card">
-    <div class="question-top"><span class="q-number">${number}</span><input value="${question}" aria-label="Question ${number}" /><button class="icon-btn" aria-label="Question options">${icon("i-more")}</button></div>
-    <div class="options">${options.map((opt, i) => `<label class="option-input"><input type="radio" name="q${number}" ${i === answer ? "checked" : ""}/><input type="text" value="${opt}" aria-label="Option ${i + 1}" /></label>`).join("")}</div>
+    <div class="question-top"><span class="q-number">${number}</span><input value="${escapeHtml(question)}" aria-label="Question ${number}" /><button class="icon-btn" aria-label="Question options">${icon("i-more")}</button></div>
+    <div class="options">${options.map((opt, i) => `<div class="option-input"><input type="radio" name="q${number}" aria-label="Mark option ${i + 1} correct" ${i === answer ? "checked" : ""}/><input type="text" value="${escapeHtml(opt)}" aria-label="Option ${i + 1} text" /></div>`).join("")}</div>
   </div>`;
 }
 
 function renderLiveQuiz() {
   clearTimeout(quizTimer);
   if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
+  const course = selectedCourse();
+  if (!course || !canPublishQuiz(course) || state.backendQuizCourseId !== course.id) return renderQuiz();
   const responses = state.quizResponses;
-  const percentage = Math.round((responses / 42) * 100);
+  const totalStudents = course.students;
+  const percentage = totalStudents ? Math.round((responses / totalStudents) * 100) : 0;
+  const questionCount = state.backendQuizQuestions.length;
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>Concept check · Relations & Trees</h2><p>2 questions · 3 minute limit</p></div><span class="badge green">Live now</span></div>
+        <div class="session-title"><div><h2>${escapeHtml(state.backendQuizTitle || "Quick quiz")}</h2><p>${questionCount} ${questionCount === 1 ? "question" : "questions"}</p></div><span class="badge green">Live now</span></div>
         <div class="quiz-live">
-          <div class="response-count">${responses}</div><p class="stat-label">of 42 students responded</p>
+          <div class="response-count">${responses}</div><p class="stat-label">of ${totalStudents} students responded</p>
           <div class="response-track"><span style="width:${percentage}%"></span></div>
           <p class="stat-label">${percentage}% response rate</p>
-        </div>
-        <div class="question-card"><div class="section-head"><h3>Live response mix</h3><span class="badge purple">Question 1 of 2</span></div>
-          ${resultBar("Reflexive only", 12, "#d88b1d")}
-          ${resultBar("Symmetric only", 7, "#9b9cac")}
-          ${resultBar("Reflexive, symmetric & transitive", 68, "#169b73")}
-          ${resultBar("Transitive only", 13, "#d85555")}
         </div>
         <div class="setup-actions"><button class="btn btn-danger" data-action="end-quiz">End quiz</button></div>
       </article>
       <aside class="card page-card">
-        <div class="section-head"><h3>Response quality</h3></div>
-        <div class="summary-ring" style="--progress:68%"><div><strong>68%</strong><span>correct</span></div></div>
-        <div class="summary-list"><div class="summary-item"><span>Average response time</span><strong>18 sec</strong></div><div class="summary-item"><span>Questions</span><strong>2</strong></div><div class="summary-item"><span>Time remaining</span><strong>01:42</strong></div></div>
+        <div class="section-head"><h3>Live summary</h3></div>
+        <div class="summary-ring" style="--progress:${percentage}%"><div><strong>${percentage}%</strong><span>responded</span></div></div>
+        <div class="summary-list"><div class="summary-item"><span>Questions</span><strong>${questionCount}</strong></div><div class="summary-item"><span>Responses</span><strong>${responses}</strong></div><div class="summary-item"><span>Status</span><strong>Open</strong></div></div>
       </aside>
     </div>`;
   if (backendConfigured() && state.backendQuizId) {
     quizTimer = setTimeout(async () => {
       if (state.route !== "quizzes" || state.userRole === "student" || !state.authenticated) return;
       try {
-        const result = await apiRequest("/api/quizzes/current");
+        const result = await apiRequest(`/api/quizzes/current?courseId=${encodeURIComponent(course.id)}`);
         const responseCount = result.quiz?.responses?.length || 0;
         if (responseCount !== state.quizResponses) {
           state.quizResponses = responseCount;
@@ -826,51 +1061,14 @@ function renderLiveQuiz() {
   }
 }
 
-function resultBar(label, value, color) {
-  return `<div style="margin-top:12px"><div class="summary-item"><span>${label}</span><strong>${value}%</strong></div><div class="response-track" style="height:6px;margin-top:6px"><span style="width:${value}%;background:${color}"></span></div></div>`;
-}
-
-function renderERP() {
-  if (state.userRole !== "faculty") return renderRestrictedERP();
-  setHeader("ERP sync center", "CAMPUS RECORDS");
-  const hasSession = state.attendanceStatus === "complete";
-  view.innerHTML = `
-    <div class="page-grid">
-      <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Attendance upload</h2><p class="stat-label">Prepare the attendance file, then upload it through the official IIT KGP ERP.</p></div><span class="badge ${hasSession ? "amber" : "green"}">${hasSession ? "Ready to export" : "No pending class"}</span></div>
-        ${hasSession ? `
-          <div class="sync-record">
-            <span class="sync-symbol">${icon("i-cloud")}</span>
-            <div><strong>Soft Computing · 30 Jul 2026</strong><p>${state.present.length} present · ${42 - state.present.length} absent · Quiz ${state.quizPublished ? "included" : "not included"}</p></div>
-            <button class="btn btn-primary" data-action="prepare-erp-upload">${icon("i-download")} Download CSV</button>
-          </div>` : `
-          <div class="empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h2>No records waiting</h2><p>Complete an attendance session and it will appear here for review and upload.</p><button class="btn btn-primary" data-route-link="attendance">Start attendance</button></div></div>`}
-      </article>
-      <aside class="card page-card">
-        <div class="section-head"><h3>IIT KGP ERP</h3><span class="badge amber">Manual upload</span></div>
-        <div class="summary-list">
-          <div class="summary-item"><span>Provider</span><strong>IIT Kharagpur ERP</strong></div>
-          <div class="summary-item"><span>Access</span><strong>Professor only</strong></div>
-          <div class="summary-item"><span>Mode</span><strong>CSV export + manual upload</strong></div>
-        </div>
-        <a class="btn btn-soft" style="width:100%;margin-top:18px" href="https://erp.iitkgp.ac.in/IIT_ERP3/home.htm" target="_blank" rel="noopener noreferrer">${icon("i-cloud")} Open official ERP</a>
-        <div class="security-note"><span class="lock">⌾</span><span>CampusPulse does not store professor ERP credentials. Direct upload can be enabled later with an institute-approved API.</span></div>
-      </aside>
-    </div>`;
-}
-
-function renderRestrictedERP() {
-  setHeader("ERP access restricted", "FACULTY ONLY", false);
-  view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-cloud")}</span><h2>Professor access required</h2><p>Only the course professor can review or sync attendance and quiz records with the ERP.</p><button class="btn btn-primary" data-route-link="dashboard">Back to dashboard</button></div></article>`;
-}
-
 function renderClasses() {
   if (state.userRole === "student") return renderStudentClasses();
-  const isTA = state.userRole === "ta";
-  setHeader(isTA ? "Courses you assist" : "My courses", isTA ? "TEACHING ASSISTANT WORKSPACE" : "FACULTY WORKSPACE", false);
+  if (state.userRole === "ta") return renderTAClasses();
+  if (state.userRole === "faculty" && managedCourseId) return renderCourseRoster(managedCourseId);
+  setHeader("My courses", "PROFESSOR WORKSPACE", false);
   view.innerHTML = `
     <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">${isTA ? "Assigned course" : "Course you teach"}</h2><p class="stat-label">${isTA ? "You can run attendance and update live quizzes for this course." : "Soft Computing is the only active course in this prototype."}</p></div><span class="badge ${isTA ? "purple" : "green"}">${isTA ? "TA access" : "1 active course"}</span></div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you own</h2><p class="stat-label">Only you can manage these courses, join codes, and official rosters.</p></div><button class="btn btn-primary" data-action="open-course-modal">${icon("i-plus")} Create course</button></div>
       <div class="course-grid">${state.courses.map(facultyCourseCard).join("")}</div>
     </article>
     ${weeklySchedule()}`;
@@ -878,9 +1076,56 @@ function renderClasses() {
 
 function facultyCourseCard(course) {
   return `<article class="course-card">
-    <div class="course-accent"></div><h3>${course.name}</h3><p>${course.courseCode} · ${course.section} · ${course.room}</p>
-    <div class="course-code"><span>Student join code</span><strong>${course.code}</strong><button class="icon-btn" data-copy="${course.code}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
-    <div class="course-footer"><span>${icon("i-users")} ${course.students} students joined</span><button class="text-btn">Manage</button></div>
+    <div class="course-accent"></div><h3>${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
+    <div class="course-footer"><span>${icon("i-users")} ${Number(course.students) || 0} rostered students</span><button class="text-btn" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">Manage roster</button></div>
+  </article>`;
+}
+
+function renderCourseRoster(courseId) {
+  const course = state.courses.find(item => item.id === courseId);
+  const roster = courseRosters.get(courseId) || [];
+  if (!course) {
+    managedCourseId = "";
+    return renderClasses();
+  }
+  setHeader(`${course.name} roster`, "PROFESSOR WORKSPACE", false);
+  view.innerHTML = `
+    <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to courses</button>
+    <article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · active course roster</p></div><span class="badge green">${roster.length} students</span></div>
+      <div class="roster-toolbar roster-search-toolbar">
+        <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
+        <div class="setup-actions"><button class="btn" data-action="choose-roster-upload">${icon("i-download")} Upload roster</button><button class="btn btn-primary" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}" ${roster.length ? "" : "disabled"}>${icon("i-play")} Take attendance</button><input id="rosterUploadFile" type="file" accept=".csv,.json,text/csv,application/json" hidden /></div>
+      </div>
+      <div class="roster roster-scroll professor-roster" id="professorRoster">
+        ${roster.map((student, index) => studentRow({ ...student, present: false }, index, false, true)).join("")}
+      </div>
+      <div class="security-note"><span class="lock">⌾</span><span>Only you can replace this official roster. Enrolled TAs may see its snapshot only while running attendance; students never receive it.</span></div>
+    </article>`;
+}
+
+function renderTAClasses() {
+  setHeader("Courses you assist", "TEACHING ASSISTANT WORKSPACE", false);
+  view.innerHTML = `
+    <div class="left-stack">
+      <article class="card join-panel">
+        <span class="empty-icon">${icon("i-plus")}</span><h2>Join an assigned course</h2>
+        <p class="stat-label">Enter the private code shared by the course professor. Your TA account must also be administrator-approved.</p>
+        <form class="join-code" id="joinForm"><div class="join-code-field"><label for="taJoinCode">Private course code</label><input id="taJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
+      </article>
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled TA courses</h2><p class="stat-label">You can run attendance and publish quizzes, but cannot change course settings, rosters, or join codes.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
+        <div class="course-grid">${state.courses.map(taCourseCard).join("") || `<div class="empty-state"><div><p>No course joined yet.</p></div></div>`}</div>
+      </article>
+    </div>`;
+}
+
+function taCourseCard(course) {
+  return `<article class="course-card">
+    <div class="course-accent"></div><span class="badge purple">Teaching assistant</span>
+    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button></div>
   </article>`;
 }
 
@@ -891,8 +1136,8 @@ function renderStudentClasses() {
     <div class="left-stack">
     <article class="card join-panel">
       <span class="empty-icon">${icon("i-plus")}</span><h2>Enter your course code</h2>
-      <p class="stat-label">Your faculty will share a six-character code. You only need to join once.</p>
-      <form class="join-code" id="joinForm"><input name="joinCode" maxlength="8" placeholder="e.g. SC401A" autocomplete="off" required/><button class="btn btn-primary">Join course</button></form>
+      <p class="stat-label">Your faculty will share a private course code. You only need to join once.</p>
+      <form class="join-code" id="joinForm"><div class="join-code-field"><label for="studentJoinCode">Private course code</label><input id="studentJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
     </article>
     ${weeklySchedule()}
@@ -900,35 +1145,36 @@ function renderStudentClasses() {
 }
 
 function weeklySchedule() {
-  const sessions = [
-    ["TUE", "10:00", "11:00 AM", "Foundations of Soft Computing", "Room 304"],
-    ["THU", "10:00", "10:50 AM", "Fuzzy Sets & Membership", "Room 304"],
-    ["SAT", "09:00", "10:00 AM", "Neural Network Models", "Room 304"]
-  ];
+  const course = selectedCourse();
+  if (!course) return "";
+  const configured = state.backendSchedule.filter(item => item.courseId === course.id);
+  const sessions = (configured.length ? configured : [{ day: "Class", start: "—", end: "—", topic: course.name, room: course.room }])
+    .map(item => [String(item.day || "Class").slice(0, 3).toUpperCase(), item.start || "—", item.end || "—", item.topic || course.name, item.room || course.room]);
   return `<article class="card page-card">
-    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly schedule</h2><p class="stat-label">Soft Computing · CSE 401 · Section A</p></div><span class="badge purple">${icon("i-calendar")} 3 sessions</span></div>
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Weekly schedule</h2><p class="stat-label">${escapeHtml(course.name)} · ${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge purple">${icon("i-calendar")} ${sessions.length} sessions</span></div>
     <div class="class-list">
       ${sessions.map(([day, time, end, type, room]) => `<div class="class-row">
-        <div class="time">${day}<small>${time}</small></div>
-        <div class="course"><strong>${type}</strong><span>Soft Computing · ${room}</span></div>
-        <span class="badge gray">${time} – ${end}</span>
-        <button class="chevron" data-route-link="attendance" aria-label="Open ${day} session">${icon("i-arrow")}</button>
+        <div class="time">${escapeHtml(day)}<small>${escapeHtml(time)}</small></div>
+        <div class="course"><strong>${escapeHtml(type)}</strong><span>${escapeHtml(course.name)} · ${escapeHtml(room)}</span></div>
+        <span class="badge gray">${escapeHtml(time)} – ${escapeHtml(end)}</span>
+        ${canRunAttendance(course) ? `<button class="text-btn" data-route-link="attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button>` : `<span class="badge gray">Teaching-team attendance</span>`}
       </div>`).join("")}
     </div>
   </article>`;
 }
 
 function openCourseModal() {
+  modalReturnFocus = document.activeElement;
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
-      <form class="modal" id="courseForm">
-        <div class="modal-head"><div><h2>Add a new course</h2><p>Students will use the generated code to enroll.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+      <form class="modal" id="courseForm" role="dialog" aria-modal="true" aria-labelledby="courseModalTitle" aria-describedby="courseModalDescription">
+        <div class="modal-head"><div><h2 id="courseModalTitle">Add a new course</h2><p id="courseModalDescription">Students will use the generated code to enroll.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
         <div class="field-grid">
           <div class="field full"><label for="courseName">Course name</label><input id="courseName" name="name" placeholder="e.g. Computer Networks" required /></div>
           <div class="field"><label for="courseCode">Course code</label><input id="courseCode" name="courseCode" placeholder="CSE 308" required /></div>
           <div class="field"><label for="section">Section</label><input id="section" name="section" placeholder="Section A" required /></div>
           <div class="field"><label for="room">Classroom</label><input id="room" name="room" placeholder="Room 205" required /></div>
-          <div class="field"><label for="capacity">Class strength</label><input id="capacity" name="students" type="number" min="1" max="300" value="40" required /></div>
+          <div class="field full"><p class="stat-label">After creation, open the course to upload its official CSV or JSON roster. TA and student enrollment never changes that roster.</p></div>
         </div>
         <div class="setup-actions"><button type="button" class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary">${icon("i-plus")} Create course</button></div>
       </form>
@@ -937,17 +1183,25 @@ function openCourseModal() {
 }
 
 function openRoleModal() {
+  modalReturnFocus = document.activeElement;
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="roleModalTitle">
         <div class="modal-head"><div><h2 id="roleModalTitle">Switch account</h2><p>You will return to the secure role-specific login.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
         <div class="role-options">
-          ${roleOption("faculty", "PF", "Professor / Faculty", "Courses, quizzes, attendance, and ERP")}
-          ${roleOption("ta", "TA", "Teaching Assistant", "Update quizzes and start attendance")}
+          ${roleOption("faculty", "PF", "Professor / Faculty", "Courses, rosters, quizzes, and attendance")}
+          ${roleOption("ta", "TA", "Teaching Assistant", "Enroll, run attendance, and publish quizzes")}
           ${roleOption("student", "ST", "Student", "Join courses and participate in activities")}
         </div>
       </div>
     </div>`;
+  setTimeout(() => document.querySelector(".role-option")?.focus(), 0);
+}
+
+function closeModal() {
+  document.querySelector("#modalRoot").innerHTML = "";
+  modalReturnFocus?.focus?.();
+  modalReturnFocus = null;
 }
 
 function roleOption(role, initials, title, description) {
@@ -959,7 +1213,7 @@ function renderPlaceholder(route) {
   if (route === "settings") return renderSettings();
   const config = {
     classes: ["Classes", "Manage your timetable", "i-calendar"],
-    settings: ["Settings", "Configure campus network, Bluetooth beacons, and ERP access.", "i-settings"]
+    settings: ["Settings", "Configure the secure API connection, privacy, and account access.", "i-settings"]
   }[route] || ["Coming soon", "This workspace is ready for its next module.", "i-grid"];
   setHeader(config[0], "CAMPUSPULSE");
   view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon(config[2])}</span><h2>${config[0]}</h2><p>${config[1]}</p><button class="btn btn-primary" data-route-link="dashboard">Back to overview</button></div></article>`;
@@ -967,84 +1221,82 @@ function renderPlaceholder(route) {
 
 function renderSettings() {
   setHeader("Settings", "CAMPUSPULSE", false);
+  const updateState = updateManager?.state || { status: "unavailable" };
   view.innerHTML = `
     <div class="page-grid">
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Backend connection</h2><p class="stat-label">Connect this device to the deployed CampusPulse API.</p></div><span class="badge ${backendConfigured() ? "green" : "amber"}">${backendConfigured() ? "Configured" : "Offline demo"}</span></div>
         <form id="apiSettingsForm" class="login-form" style="margin-top:22px">
           <label for="apiBaseUrl">API base URL</label>
-          <input id="apiBaseUrl" name="apiBaseUrl" type="url" placeholder="https://your-api.example.com" value="${API_BASE}" />
-          <div class="setup-actions"><button type="button" class="btn" data-action="clear-api-url">Use offline demo</button><button class="btn btn-primary" type="submit">${icon("i-cloud")} Save and reconnect</button></div>
+          <input id="apiBaseUrl" name="apiBaseUrl" type="url" placeholder="https://your-api.example.com" value="${escapeHtml(API_BASE)}" />
+          <div class="setup-actions"><button type="button" class="btn" data-action="clear-api-url">Disconnect API</button><button class="btn btn-primary" type="submit">${icon("i-cloud")} Save and reconnect</button></div>
         </form>
-        <div class="security-note"><span class="lock">⌾</span><span>The Android app and web app use this HTTPS endpoint for accounts, course enrollment, attendance, quizzes, and ERP exports.</span></div>
+        <div class="security-note"><span class="lock">⌾</span><span>The Android app and web app use this HTTPS endpoint for accounts, course enrollment, attendance, and quizzes.</span></div>
       </article>
       <aside class="card page-card">
-        <div class="section-head"><h3>Connection details</h3></div>
+        <div class="section-head"><h3>Account & privacy</h3></div>
         <div class="summary-list"><div class="summary-item"><span>Mode</span><strong>${backendConfigured() ? "Persistent API" : "This-device prototype"}</strong></div><div class="summary-item"><span>Account session</span><strong>${apiToken ? "Signed in" : "Not connected"}</strong></div><div class="summary-item"><span>App version</span><strong>${APP_VERSION}</strong></div></div>
+        <div class="setup-actions" style="margin-top:20px"><a class="btn" href="privacy.html" target="_blank" rel="noopener">Privacy policy</a><button class="btn" type="button" data-action="logout">Sign out</button><button class="btn btn-danger" type="button" data-action="delete-account">Delete my account</button></div>
       </aside>
+      <article class="card page-card update-settings-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">App updates</h2><p id="webUpdateDetail" class="stat-label">${escapeHtml(updateState.message || "Updates are delivered with the website")}</p></div><span id="webUpdateStatus" class="badge ${updateState.status === "error" ? "amber" : "green"}">${updateStatusLabel(updateState.status)}</span></div>
+        <p class="update-explainer">Web features, fixes, and styling are downloaded securely in the Android app and applied after a restart. Native Android changes still require a newly signed APK.</p>
+        ${updateState.supported ? `<div class="setup-actions"><button class="btn" type="button" data-action="check-for-updates">Check now</button>${updateState.status === "ready" ? `<button class="btn btn-primary" type="button" data-action="restart-to-update">Restart and update</button>` : ""}</div>` : ""}
+      </article>
     </div>`;
 }
 
-async function verifyDevice(type) {
-  if (type === "wifi") {
-    if (!navigator.onLine) return toast("Connect to a network, then try again");
-    state.checks.wifi = true;
-    toast("Campus Wi‑Fi connection verified");
-  } else {
-    if (navigator.bluetooth?.requestDevice) {
-      try {
-        await navigator.bluetooth.requestDevice({ acceptAllDevices: true });
-      } catch (error) {
-        if (error.name === "NotFoundError") return;
-      }
+function nativeDeviceStatus() {
+  return window.Capacitor?.Plugins?.DeviceStatus || null;
+}
+
+async function attendanceSignals({ requestWebBluetooth = false } = {}) {
+  const nativePlugin = nativeDeviceStatus();
+  if (nativePlugin) {
+    const [wifi, bluetooth] = await Promise.all([
+      nativePlugin.checkWifi(),
+      nativePlugin.checkBluetooth()
+    ]);
+    return {
+      wifi: Boolean(wifi.connected),
+      bluetooth: Boolean(bluetooth.available && bluetooth.enabled)
+    };
+  }
+
+  let bluetooth = state.checks.bluetooth;
+  if (requestWebBluetooth && navigator.bluetooth?.requestDevice) {
+    try {
+      await navigator.bluetooth.requestDevice({ acceptAllDevices: true });
+      bluetooth = true;
+    } catch (error) {
+      if (error.name === "NotFoundError") bluetooth = false;
+      else throw error;
     }
-    state.checks.bluetooth = true;
-    toast(navigator.bluetooth ? "Bluetooth beacon ready" : "Bluetooth ready in prototype mode");
+  } else if (!navigator.bluetooth) {
+    bluetooth = true;
+  }
+  return { wifi: navigator.onLine, bluetooth };
+}
+
+async function verifyDevice(type) {
+  try {
+    const signals = await attendanceSignals({
+      requestWebBluetooth: type === "bluetooth"
+    });
+    if (type === "wifi") {
+      if (!signals.wifi) return toast("Connect to Wi‑Fi, then try again", "error");
+      state.checks.wifi = true;
+      toast("Wi‑Fi connection verified");
+    } else {
+      if (!signals.bluetooth) return toast("Turn on Bluetooth, then try again", "error");
+      state.checks.bluetooth = true;
+      toast(nativeDeviceStatus() ? "Bluetooth status verified" : "Bluetooth beacon ready");
+    }
+  } catch (error) {
+    return toast(error.message || "Device verification permission was denied", "error");
   }
   persist();
   renderAttendanceSetup();
-}
-
-function downloadCSV() {
-  const rows = [["Student", "Roll Number", "Status"], ...roster.map((s, i) => [...s, state.present.includes(i) ? "Present" : "Absent"])];
-  const blob = new Blob([rows.map(r => r.join(",")).join("\n")], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "CSE401-soft-computing-attendance-2026-07-30.csv";
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-function downloadERPAttendance() {
-  const rows = [
-    ["COURSE_CODE", "COURSE_NAME", "LECTURE_DATE", "ROLL_NUMBER", "STUDENT_NAME", "STATUS"],
-    ...roster.map((student, index) => ["CSE401", "Soft Computing", "2026-07-30", student[1], student[0], state.present.includes(index) ? "P" : "A"])
-  ];
-  const csv = rows.map(row => row.map(value => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv" });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "IITKGP-CSE401-attendance-2026-07-30.csv";
-  link.click();
-  URL.revokeObjectURL(link.href);
-}
-
-async function downloadBackendERP() {
-  const response = await fetch(`${API_BASE}/api/erp/attendance.csv`, {
-    headers: { Authorization: `Bearer ${apiToken}` }
-  });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.error || `ERP export failed (${response.status})`);
-  }
-  const blob = await response.blob();
-  const disposition = response.headers.get("content-disposition") || "";
-  const filename = disposition.match(/filename="?([^"]+)"?/i)?.[1] || "CampusPulse-attendance.csv";
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(link.href);
 }
 
 function parseScheduleCSV(text) {
@@ -1059,13 +1311,57 @@ function parseScheduleCSV(text) {
     const values = line.split(",");
     return {
       day: get(values, "day", "weekday") || "Class",
-      date: get(values, "date") || "ERP",
+      date: get(values, "date") || "Imported",
       start: get(values, "start", "start_time", "time") || "—",
       end: get(values, "end", "end_time") || "—",
       topic: get(values, "course", "subject", "topic", "summary") || "Scheduled class",
       room: get(values, "room", "location", "venue") || "Room TBA"
     };
   }).filter(item => item.topic);
+}
+
+function parseCSVRow(line) {
+  const values = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && quoted && line[index + 1] === '"') {
+      value += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      values.push(value.trim());
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  values.push(value.trim());
+  return values;
+}
+
+function parseRosterUpload(text, filename = "") {
+  if (filename.toLowerCase().endsWith(".json")) {
+    const parsed = JSON.parse(text);
+    const students = Array.isArray(parsed) ? parsed : parsed.students;
+    if (!Array.isArray(students)) throw new Error("JSON roster must be an array or contain a students array");
+    return students.map(student => ({
+      rollNumber: student.rollNumber || student.roll || student.roll_no,
+      name: student.name || student.studentName || student.student_name
+    }));
+  }
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2) throw new Error("Roster CSV must include a header and at least one student");
+  const headers = parseCSVRow(lines[0]).map(header => header.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const rollIndex = headers.findIndex(header => ["roll", "rollno", "rollnumber", "studentroll"].includes(header));
+  const nameIndex = headers.findIndex(header => ["name", "studentname", "fullname"].includes(header));
+  if (rollIndex < 0 || nameIndex < 0) throw new Error("Roster CSV needs roll number and name columns");
+  return lines.slice(1).map(line => {
+    const values = parseCSVRow(line);
+    return { rollNumber: values[rollIndex], name: values[nameIndex] };
+  });
 }
 
 function parseScheduleICS(text) {
@@ -1086,6 +1382,36 @@ function parseScheduleICS(text) {
   });
 }
 
+document.addEventListener("keydown", event => {
+  const dialog = document.querySelector("#modalRoot [role='dialog']");
+  if (!dialog) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...dialog.querySelectorAll(
+    "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+  )].filter(element => !element.hidden && element.getClientRects().length);
+  if (!focusable.length) {
+    event.preventDefault();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!dialog.contains(document.activeElement)) {
+    event.preventDefault();
+    first.focus();
+  } else if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+});
+
 document.addEventListener("click", async event => {
   const authRole = event.target.closest("[data-auth-role]");
   if (authRole) return renderLogin(authRole.dataset.authRole, authMode);
@@ -1102,6 +1428,7 @@ document.addEventListener("click", async event => {
       apiToken = "";
       localStorage.removeItem("campusPulseApiToken");
     }
+    clearSensitiveClientState({ clearImportedSchedule: true });
     state.authenticated = false;
     state.userRole = switchButton.dataset.switchRole;
     state.accountName = "";
@@ -1111,6 +1438,7 @@ document.addEventListener("click", async event => {
     pendingSignup = null;
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
+    modalReturnFocus = null;
     return renderLogin(state.userRole);
   }
   const copyButton = event.target.closest("[data-copy]");
@@ -1119,86 +1447,214 @@ document.addEventListener("click", async event => {
     return toast(`Join code ${copyButton.dataset.copy} copied`);
   }
   const routeButton = event.target.closest("[data-route], [data-route-link]");
-  if (routeButton) return navigate(routeButton.dataset.route || routeButton.dataset.routeLink);
+  if (routeButton) {
+    const route = routeButton.dataset.route || routeButton.dataset.routeLink;
+    if (route === "attendance") {
+      const courseId = routeButton.dataset.courseId
+        || selectedCourse()?.id
+        || state.courses.find(canRunAttendance)?.id;
+      if (!courseId) return toast("Join or create a course first", "error");
+      try {
+        await selectAttendanceCourse(courseId);
+      } catch (error) {
+        return toast(error.message || "Could not open course attendance", "error");
+      }
+    }
+    return navigate(route);
+  }
   const check = event.target.closest("[data-check]");
   if (check) return verifyDevice(check.dataset.check);
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!action) return;
 
-  if (action === "open-course-modal") openCourseModal();
+  if (action === "check-for-updates") {
+    if (!updateManager?.state.supported) return toast("Updates are automatic on the web");
+    const result = await updateManager.checkForUpdate({ manual: true });
+    syncUpdateUi(result);
+    if (result.status === "current") return toast("CampusPulse is up to date");
+    if (result.status === "ready") return toast("Update downloaded and ready to apply");
+    return toast(result.message || "Could not check for updates", "error");
+  }
+  if (action === "restart-to-update") {
+    try {
+      await updateManager?.restartToUpdate();
+    } catch (error) {
+      return toast(error.message || "Could not apply the update", "error");
+    }
+    return;
+  }
+
+  if (action === "open-course-modal") {
+    if (state.userRole !== "faculty") return toast("Only professors can create courses", "error");
+    openCourseModal();
+  }
   if (action === "close-modal") {
     const isBackdropClick = event.target.classList.contains("modal-backdrop");
     const isCloseButton = Boolean(event.target.closest("button[data-action='close-modal']"));
-    if (isBackdropClick || isCloseButton) document.querySelector("#modalRoot").innerHTML = "";
+    if (isBackdropClick || isCloseButton) closeModal();
+  }
+  if (action === "view-course-roster") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    const course = state.courses.find(item => item.id === courseId);
+    if (!canManageCourse(course)) return toast("Only the course owner can manage this roster", "error");
+    try {
+      await loadCourseRoster(courseId);
+    } catch (error) {
+      return toast(error.message || "Could not load the course roster", "error");
+    }
+    managedCourseId = courseId;
+    return renderClasses();
+  }
+  if (action === "close-course-roster") {
+    managedCourseId = "";
+    return renderClasses();
+  }
+  if (action === "choose-roster-upload") {
+    const course = state.courses.find(item => item.id === managedCourseId);
+    if (!canManageCourse(course)) return toast("Only the course owner can upload a roster", "error");
+    return document.querySelector("#rosterUploadFile")?.click();
+  }
+  if (action === "open-course-quiz") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    try {
+      await selectQuizCourse(courseId);
+    } catch (error) {
+      return toast(error.message || "Could not open course quizzes", "error");
+    }
+    return navigate("quizzes");
+  }
+  if (action === "start-course-attendance") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    const course = state.courses.find(item => item.id === courseId);
+    if (!canRunAttendance(course)) return toast("Course-team attendance access required", "error");
+    try {
+      await selectAttendanceCourse(courseId);
+    } catch (error) {
+      return toast(error.message || "Could not open course attendance", "error");
+    }
+    managedCourseId = "";
+    return navigate("attendance");
+  }
+  if (action === "open-dashboard-attendance") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
+    const course = state.courses.find(item => item.id === courseId);
+    if (!canRunAttendance(course)) return toast("Course-team attendance access required", "error");
+    try {
+      await selectAttendanceCourse(courseId);
+    } catch (error) {
+      return toast(error.message || "Could not open course attendance", "error");
+    }
+    return navigate("attendance");
   }
   if (action === "attendance") navigate("attendance");
+  if (action === "new-attendance-session") {
+    if (!canRunAttendance(attendanceCourse())) return toast("Course-team attendance access required", "error");
+    applyAttendanceSnapshot(null);
+    persist();
+    return renderAttendanceSetup();
+  }
   if (action === "start-scan") {
-    if (backendConfigured()) {
-      try {
-        const result = await apiRequest("/api/attendance/sessions", {
-          method: "POST",
-          body: { courseId: "soft401", scheduleId: "schedule-2" }
-        });
-        state.backendAttendanceId = result.attendance.id;
-      } catch (error) {
-        return toast(error.message || "Could not open attendance", "error");
-      }
+    if (!canRunAttendance(selectedCourse())) return toast("Course-team attendance access required", "error");
+    if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
+    try {
+      const result = await apiRequest("/api/attendance/sessions", {
+        method: "POST",
+        body: { courseId: state.selectedCourseId }
+      });
+      activeAttendance = result.attendance;
+      state.backendAttendanceId = result.attendance.id;
+    } catch (error) {
+      return toast(error.message || "Could not open attendance", "error");
     }
     state.attendanceStatus = "scanning";
-    state.present = [];
-    persist(); renderLiveAttendance(); toast("Check-in is now open");
+    persist(); renderLiveAttendance(); toast(`Attendance opened with ${currentAttendanceRecords().length} rostered students`);
+  }
+  if (action === "toggle-attendance") {
+    if (!canRunAttendance(attendanceCourse()) || !state.backendAttendanceId) return toast("Course-team attendance session required", "error");
+    const rollNumber = event.target.closest("[data-roll-number]")?.dataset.rollNumber;
+    const record = currentAttendanceRecords().find(item => item.rollNumber === rollNumber);
+    if (!record) return toast("That student is not in the active roster", "error");
+    try {
+      const result = await apiRequest(`/api/attendance/${state.backendAttendanceId}/records`, {
+        method: "PATCH",
+        body: { records: [{ rollNumber, present: !record.present }] }
+      });
+      activeAttendance = result.attendance;
+      renderLiveAttendance();
+    } catch (error) {
+      return toast(error.message || "Could not update attendance", "error");
+    }
+  }
+  if (action === "mark-all-attendance" || action === "clear-attendance") {
+    if (!canRunAttendance(attendanceCourse()) || !state.backendAttendanceId) return toast("Course-team attendance session required", "error");
+    const present = action === "mark-all-attendance";
+    try {
+      const result = await apiRequest(`/api/attendance/${state.backendAttendanceId}/records`, {
+        method: "PATCH",
+        body: { records: currentAttendanceRecords().map(record => ({ rollNumber: record.rollNumber, present })) }
+      });
+      activeAttendance = result.attendance;
+      renderLiveAttendance();
+      toast(present ? "All rostered students marked present" : "Attendance marks cleared");
+    } catch (error) {
+      return toast(error.message || "Could not update attendance", "error");
+    }
   }
   if (action === "end-session") {
-    if (backendConfigured() && state.backendAttendanceId) {
-      try {
-        await apiRequest(`/api/attendance/${state.backendAttendanceId}/close`, {
-          method: "POST",
-          body: {}
-        });
-      } catch (error) {
-        return toast(error.message || "Could not close attendance", "error");
-      }
+    if (!canRunAttendance(attendanceCourse())) return toast("Course-team attendance access required", "error");
+    const total = currentAttendanceRecords().length;
+    const present = currentPresentCount();
+    if (!window.confirm(`Close attendance with ${present} present and ${total - present} absent? Marks cannot be changed after closing.`)) return;
+    try {
+      const result = await apiRequest(`/api/attendance/${state.backendAttendanceId}/close`, {
+        method: "POST",
+        body: {}
+      });
+      activeAttendance = result.attendance;
+    } catch (error) {
+      return toast(error.message || "Could not close attendance", "error");
     }
     clearInterval(scanTimer);
     state.attendanceStatus = "complete";
-    state.erpStatus = "pending";
-    persist(); renderLiveAttendance(); toast(`Attendance saved for ${state.present.length} students`);
-  }
-  if (action === "student-check-in") {
-    if (!backendConfigured() || !state.backendAttendanceId) {
-      state.present = state.present.length ? state.present : [0];
-      persist();
-      renderStudentAttendanceAccess();
-      return toast("Your prototype check-in was recorded on this device");
-    }
-    try {
-      await apiRequest(`/api/attendance/${state.backendAttendanceId}/check-in`, {
-        method: "POST",
-        body: { wifi: navigator.onLine, bluetooth: true }
-      });
-      state.attendanceCheckedIn = true;
-      persist();
-      renderStudentAttendanceAccess();
-      return toast("Your presence was verified and recorded");
-    } catch (error) {
-      return toast(error.message || "Could not record your presence", "error");
-    }
-  }
-  if (action === "download") downloadCSV();
-  if (action === "prepare-erp-upload") {
-    if (state.userRole !== "faculty") return toast("Only the professor can prepare an ERP upload");
-    try {
-      if (backendConfigured()) await downloadBackendERP();
-      else downloadERPAttendance();
-      toast("ERP attendance CSV prepared");
-    } catch (error) {
-      return toast(error.message || "Could not prepare ERP attendance", "error");
-    }
+    persist(); renderLiveAttendance(); toast(`Attendance saved for ${currentPresentCount()} students`);
   }
   if (action === "clear-api-url") {
     localStorage.setItem("campusPulseApiBase", "offline");
     localStorage.removeItem("campusPulseApiToken");
+    clearSensitiveClientState({ clearImportedSchedule: true });
+    state.authenticated = false;
+    state.accountName = "";
+    state.authEmail = "";
+    persist();
     location.reload();
+  }
+  if (action === "delete-account") {
+    const confirmed = window.confirm(
+      "Delete your CampusPulse account, enrollment, and quiz response data? Official rosters and teaching-team-recorded attendance remain course records. This cannot be undone."
+    );
+    if (!confirmed) return;
+    try {
+      if (backendConfigured() && apiToken) {
+        await apiRequest("/api/account", { method: "DELETE" });
+      } else {
+        state.accounts = state.accounts.filter(
+          (account) => account.email !== state.authEmail
+        );
+      }
+      apiToken = "";
+      localStorage.removeItem("campusPulseApiToken");
+      clearSensitiveClientState({ clearImportedSchedule: true });
+      state.authenticated = false;
+      state.accountName = "";
+      state.authEmail = "";
+      state.enrolledCourses = [];
+      state.route = "dashboard";
+      localStorage.removeItem("campusPulseState");
+      renderLogin(state.userRole, "signup");
+      return toast("Your CampusPulse account was deleted");
+    } catch (error) {
+      return toast(error.message || "Could not delete the account", "error");
+    }
   }
   if (action === "import-schedule") document.querySelector("#scheduleFile")?.click();
   if (action === "clear-imported-schedule") {
@@ -1218,6 +1674,7 @@ document.addEventListener("click", async event => {
       apiToken = "";
       localStorage.removeItem("campusPulseApiToken");
     }
+    clearSensitiveClientState({ clearImportedSchedule: true });
     state.authenticated = false;
     state.accountName = "";
     state.authEmail = "";
@@ -1226,6 +1683,7 @@ document.addEventListener("click", async event => {
     pendingSignup = null;
     persist();
     document.querySelector("#modalRoot").innerHTML = "";
+    modalReturnFocus = null;
     renderLogin(state.userRole);
   }
   if (action === "back-to-signup") {
@@ -1234,28 +1692,25 @@ document.addEventListener("click", async event => {
     renderLogin(role, "signup");
   }
   if (action === "resend-code" && pendingSignup) {
-    if (pendingSignup.remote) {
-      try {
-        const result = await apiRequest("/api/auth/signup/resend", {
-          method: "POST",
-          auth: false,
-          body: { email: pendingSignup.email }
-        });
-        pendingSignup.code = result.devCode || "";
-      } catch (error) {
-        return toast(error.message || "Could not resend the code", "error");
-      }
-    } else {
-      pendingSignup.code = String(Math.floor(100000 + Math.random() * 900000));
+    try {
+      await apiRequest("/api/auth/signup/resend", {
+        method: "POST",
+        auth: false,
+        body: { email: pendingSignup.email }
+      });
+    } catch (error) {
+      return toast(error.message || "Could not resend the code", "error");
     }
     renderEmailVerification();
-    toast(pendingSignup.remote ? "A new verification email was requested" : "A new verification code was generated");
+    toast("A new verification email was requested");
   }
   if (action === "add-question") {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1, "Type your question here", ["Option A", "Option B", "Option C", "Option D"], 0));
   }
   if (action === "publish-quiz") {
+    const course = selectedCourse();
+    if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
     if (backendConfigured()) {
       const questions = [...document.querySelectorAll("#quizBuilder .question-card")].map((card) => {
         const options = [...card.querySelectorAll(".option-input input[type='text']")].map((input) => input.value.trim());
@@ -1270,22 +1725,23 @@ document.addEventListener("click", async event => {
         const result = await apiRequest("/api/quizzes", {
           method: "POST",
           body: {
-            courseId: "soft401",
+            courseId: course.id,
             title: document.querySelector("#quizTitle")?.value || "Quick quiz",
             questions
           }
         });
-        state.backendQuizId = result.quiz.id;
-        state.backendQuizQuestions = result.quiz.questions;
+        applyQuizSnapshot(result.quiz);
       } catch (error) {
         return toast(error.message || "Could not publish the quiz", "error");
       }
     }
     state.quizPublished = true;
     state.quizResponses = backendConfigured() ? 0 : 3;
-    persist(); renderLiveQuiz(); toast("Quiz published to Soft Computing");
+    persist(); renderLiveQuiz(); toast(`Quiz published to ${course.name}`);
   }
   if (action === "end-quiz") {
+    const course = selectedCourse();
+    if (!course || !canPublishQuiz(course) || state.backendQuizCourseId !== course.id) return toast("Course quiz permission required", "error");
     if (backendConfigured() && state.backendQuizId) {
       try {
         await apiRequest(`/api/quizzes/${state.backendQuizId}/close`, {
@@ -1305,6 +1761,46 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", async event => {
+  if (event.target.id === "quizCourseSelect") {
+    try {
+      await selectQuizCourse(event.target.value);
+    } catch (error) {
+      return toast(error.message || "Could not switch quiz course", "error");
+    }
+    persist();
+    return renderQuiz();
+  }
+  if (event.target.id === "attendanceCourseSelect") {
+    try {
+      await selectAttendanceCourse(event.target.value);
+    } catch (error) {
+      return toast(error.message || "Could not switch course attendance", "error");
+    }
+    persist();
+    return renderAttendance();
+  }
+  if (event.target.id === "rosterUploadFile") {
+    const file = event.target.files?.[0];
+    const course = state.courses.find(item => item.id === managedCourseId);
+    if (!file || !canManageCourse(course)) return;
+    try {
+      const students = parseRosterUpload(await file.text(), file.name);
+      if (!window.confirm(`Replace the official ${course.courseCode} roster with ${students.length} uploaded students? Existing attendance snapshots will remain unchanged.`)) return;
+      const result = await apiRequest(`/api/courses/${encodeURIComponent(course.id)}/roster`, {
+        method: "PUT",
+        body: { students }
+      });
+      courseRosters.set(course.id, result.students || []);
+      state.courses = state.courses.map(item => item.id === course.id ? { ...item, ...result.course } : item);
+      persist();
+      renderCourseRoster(course.id);
+      return toast(`${result.students.length} roster entries uploaded`);
+    } catch (error) {
+      return toast(error.message || "Could not upload that roster", "error");
+    } finally {
+      event.target.value = "";
+    }
+  }
   if (event.target.id !== "scheduleFile" || !event.target.files?.[0]) return;
   const file = event.target.files[0];
   try {
@@ -1320,7 +1816,26 @@ document.addEventListener("change", async event => {
   }
 });
 
-quickAction.addEventListener("click", () => navigate("attendance"));
+document.addEventListener("input", event => {
+  if (event.target.id !== "rosterSearch") return;
+  const query = event.target.value.trim().toLowerCase();
+  document.querySelectorAll("#professorRoster .student-row").forEach(row => {
+    row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+  });
+});
+
+quickAction.addEventListener("click", async () => {
+  if (state.route === "dashboard") {
+    const course = selectedCourse() || state.courses.find(canRunAttendance);
+    if (!course || !canRunAttendance(course)) return toast("Join or create a course first", "error");
+    try {
+      await selectAttendanceCourse(course.id);
+    } catch (error) {
+      return toast(error.message || "Could not open course attendance", "error");
+    }
+  }
+  navigate("attendance");
+});
 document.querySelector("#roleSwitch").addEventListener("click", openRoleModal);
 
 document.addEventListener("submit", async event => {
@@ -1333,6 +1848,11 @@ document.addEventListener("submit", async event => {
     if (value) localStorage.setItem("campusPulseApiBase", value);
     else localStorage.setItem("campusPulseApiBase", "offline");
     localStorage.removeItem("campusPulseApiToken");
+    clearSensitiveClientState({ clearImportedSchedule: true });
+    state.authenticated = false;
+    state.accountName = "";
+    state.authEmail = "";
+    persist();
     location.reload();
     return;
   }
@@ -1340,81 +1860,49 @@ document.addEventListener("submit", async event => {
     const data = Object.fromEntries(new FormData(event.target));
     const email = String(data.email || "").trim().toLowerCase();
     const name = String(data.name || "").trim().replace(/\s+/g, " ");
+    if (!backendConfigured()) {
+      return toast("Connect CampusPulse to its API before creating an account", "error");
+    }
     if (name.length < 2) return toast("Enter your full name", "error");
     if (!isCampusEmail(email)) return toast("Use a valid IIT KGP institutional email", "error");
     if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
-    if (!backendConfigured() && state.accounts.some(account => account.email === email)) return toast("An account already exists for this email", "error");
     try {
-      if (backendConfigured()) {
-        const result = await apiRequest("/api/auth/signup/request", {
-          method: "POST",
-          auth: false,
-          body: { role: data.role, name, email, password: data.password }
-        });
-        pendingSignup = {
-          remote: true,
-          role: data.role,
-          name,
-          email,
-          code: result.devCode || ""
-        };
-      } else {
-        pendingSignup = {
-          remote: false,
-          role: data.role,
-          name,
-          email,
-          passwordHash: await credentialHash(email, data.password),
-          code: String(Math.floor(100000 + Math.random() * 900000))
-        };
-      }
+      await apiRequest("/api/auth/signup/request", {
+        method: "POST",
+        auth: false,
+        body: { role: data.role, name, email, password: data.password, roleCode: data.roleCode || undefined }
+      });
+      pendingSignup = {
+        remote: true,
+        role: data.role,
+        name,
+        email
+      };
     } catch (error) {
       return toast(error.message || "Could not start sign-up", "error");
     }
     selectedLoginRole = data.role;
     renderEmailVerification();
-    return toast(backendConfigured() ? "Verification email requested" : "Verification code created for your email check");
+    return toast("Verification email requested");
   }
   if (event.target.id === "verificationForm") {
     if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
     const code = String(new FormData(event.target).get("code") || "").trim();
-    if (pendingSignup.remote) {
-      try {
-        await apiRequest("/api/auth/signup/verify", {
-          method: "POST",
-          auth: false,
-          body: { email: pendingSignup.email, code }
-        });
-        const role = pendingSignup.role;
-        pendingSignup = null;
-        authMode = "login";
-        renderLogin(role, "login");
-        return toast("Email verified. Sign in with your new credentials");
-      } catch (error) {
-        return toast(error.message || "Could not verify that email", "error");
-      }
+    try {
+      await apiRequest("/api/auth/signup/verify", {
+        method: "POST",
+        auth: false,
+        body: { email: pendingSignup.email, code }
+      });
+      const role = pendingSignup.role;
+      pendingSignup = null;
+      authMode = "login";
+      renderLogin(role, "login");
+      return toast("Email verified. Sign in with your new credentials");
+    } catch (error) {
+      return toast(error.message || "Could not verify that email", "error");
     }
-    if (code !== pendingSignup.code) return toast("That verification code is incorrect", "error");
-    const account = {
-      id: `account-${Date.now()}`,
-      role: pendingSignup.role,
-      name: pendingSignup.name,
-      email: pendingSignup.email,
-      passwordHash: pendingSignup.passwordHash,
-      verifiedAt: new Date().toISOString()
-    };
-    state.accounts.push(account);
-    state.userRole = account.role;
-    state.authenticated = false;
-    state.accountName = "";
-    state.authEmail = "";
-    selectedLoginRole = account.role;
-    pendingSignup = null;
-    authMode = "login";
-    persist();
-    renderLogin(account.role, "login");
-    return toast("Email verified. Sign in with your new credentials");
   }
   if (event.target.id === "loginForm") {
     const data = Object.fromEntries(new FormData(event.target));
@@ -1436,7 +1924,7 @@ document.addEventListener("submit", async event => {
         state.authEmail = loggedIn.user.email;
         state.route = "dashboard";
         await syncBackendState();
-        document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
+        setNavigationState("dashboard");
         showApp();
         return toast(`Signed in to the ${profile.shortTitle} workspace`);
       } catch (error) {
@@ -1453,54 +1941,51 @@ document.addEventListener("submit", async event => {
     state.authEmail = account.email;
     state.route = "dashboard";
     persist();
-    document.querySelectorAll(".nav-item").forEach(btn => btn.classList.toggle("active", btn.dataset.route === "dashboard"));
+    setNavigationState("dashboard");
     showApp();
     return toast(`Signed in to the ${profile.shortTitle} workspace`);
   }
   if (event.target.id === "courseForm") {
-    if (backendConfigured()) {
-      document.querySelector("#modalRoot").innerHTML = "";
-      return toast("This rollout is currently limited to Soft Computing");
-    }
+    if (state.userRole !== "faculty") return toast("Only professors can create courses", "error");
+    if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
     const data = Object.fromEntries(new FormData(event.target));
-    const token = data.courseCode.replace(/[^a-z0-9]/gi, "").slice(0, 3).toUpperCase();
-    const code = `${token}${Math.random().toString(36).slice(2, 5)}`.toUpperCase();
-    state.courses.push({
-      id: `course-${Date.now()}`,
-      code,
-      name: data.name,
-      courseCode: data.courseCode.toUpperCase(),
-      section: data.section,
-      room: data.room,
-      students: Number(data.students)
-    });
+    let result;
+    try {
+      result = await apiRequest("/api/courses", {
+        method: "POST",
+        body: {
+          name: data.name,
+          courseCode: data.courseCode,
+          section: data.section,
+          room: data.room
+        }
+      });
+      await syncBackendState();
+      state.selectedCourseId = result.course.id;
+    } catch (error) {
+      return toast(error.message || "Could not create the course", "error");
+    }
     persist();
-    document.querySelector("#modalRoot").innerHTML = "";
+    closeModal();
     renderClasses();
-    toast(`${data.name} created · Code ${code}`);
+    toast(`${result.course.name} created · Code ${result.course.code}`);
   }
   if (event.target.id === "joinForm") {
     const code = new FormData(event.target).get("joinCode").trim().toUpperCase();
-    if (backendConfigured()) {
-      try {
-        const result = await apiRequest("/api/courses/join", {
-          method: "POST",
-          body: { code }
-        });
-        await syncBackendState();
-        renderStudentClasses();
-        return toast(`You joined ${result.course.name}`);
-      } catch (error) {
-        return toast(error.message || "Could not join that course", "error");
-      }
+    if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
+    try {
+      const result = await apiRequest("/api/courses/join", {
+        method: "POST",
+        body: { code }
+      });
+      await syncBackendState();
+      state.selectedCourseId = result.course.id;
+      persist();
+      renderClasses();
+      return toast(`You joined ${result.course.name}`);
+    } catch (error) {
+      return toast(error.message || "Could not join that course", "error");
     }
-    const course = state.courses.find(item => item.code === code);
-    if (!course) return toast("That course code was not found");
-    if (state.enrolledCourses.includes(course.id)) return toast("You already joined this course");
-    state.enrolledCourses.push(course.id);
-    persist();
-    renderStudentClasses();
-    toast(`You joined ${course.name}`);
   }
   if (event.target.id === "studentQuizForm") {
     const questions = state.backendQuizQuestions.length

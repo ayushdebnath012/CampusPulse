@@ -7,5 +7,12 @@
   },
   "android": {
     "allowMixedContent": false
+  },
+  "plugins": {
+    "CapacitorUpdater": {
+      "autoUpdate": "off",
+      "appReadyTimeout": 10000,
+      "keepUrlPathAfterReload": true
+    }
   }
 }

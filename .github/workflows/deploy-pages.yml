@@ -25,10 +25,28 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
+      - name: Package versioned Android web update
+        shell: bash
+        run: |
+          set -euo pipefail
+          update_version="${{ github.run_number }}-${GITHUB_SHA::12}"
+          bundle_name="campuspulse-web-${update_version}.zip"
+          mkdir -p _site/updates
+          cp -R public/. _site/
+          (
+            cd public
+            zip -q -r "../_site/updates/${bundle_name}" .
+          )
+          checksum="$(sha256sum "_site/updates/${bundle_name}" | cut -d ' ' -f 1)"
+          UPDATE_VERSION="${update_version}" \
+          UPDATE_URL="https://ayushdebnath012.github.io/CampusPulse/updates/${bundle_name}" \
+          UPDATE_CHECKSUM="${checksum}" \
+          node -e 'const fs=require("fs"); fs.writeFileSync("_site/updates/latest.json", JSON.stringify({version:process.env.UPDATE_VERSION,url:process.env.UPDATE_URL,checksum:process.env.UPDATE_CHECKSUM,publishedAt:new Date().toISOString()}, null, 2)+"\n")'
+
       - name: Upload static CampusPulse app
         uses: actions/upload-pages-artifact@v4
         with:
-          path: ./public
+          path: ./_site
 
   deploy:
     environment:
