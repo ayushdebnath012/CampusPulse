@@ -139,6 +139,7 @@ let myQuizId = "";
 let attendanceHistory = null;
 let attendanceDayId = "";
 let proximityCode = null;
+let beaconToken = "";
 let proximityTimer = null;
 let courseNotices = [];
 let quizResults = null;
@@ -396,6 +397,7 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearInterval(openAttendanceTimer);
   clearInterval(proximityTimer);
   proximityCode = null;
+  stopAttendanceBeacon();
   attendanceHistory = null;
   attendanceDayId = "";
   myQuizzes = [];
@@ -624,7 +626,7 @@ async function refreshOpenAttendance({ rerender = true } = {}) {
     const next = Array.isArray(payload.sessions) ? payload.sessions : [];
     const changed = JSON.stringify(next) !== JSON.stringify(openAttendance);
     openAttendance = next;
-    if (changed && rerender && state.route === "dashboard") render();
+    if (changed && rerender && (state.route === "dashboard" || state.route === "attendance")) render();
   } catch {
     // A failed poll must never disrupt the screen the student is using.
   }
@@ -818,7 +820,10 @@ function navigate(route, { fromHistory = false } = {}) {
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
   if (route === "attendance" && state.userRole === "student") {
-    refreshAttendanceHistory(state.selectedCourseId).then(() => {
+    Promise.all([
+      refreshAttendanceHistory(state.selectedCourseId),
+      refreshOpenAttendance({ rerender: false })
+    ]).then(() => {
       if (state.route === "attendance") renderStudentAttendance();
     });
   }
@@ -1165,8 +1170,53 @@ function startProximityCodeTicker(sessionId) {
     }
     const previous = proximityCode?.code;
     await refreshProximityCode(sessionId);
+    if (proximityCode?.code && proximityCode.code !== beaconToken) {
+      await startAttendanceBeacon(proximityCode.code);
+    }
     if (proximityCode?.code !== previous) renderLiveAttendance();
   }, 5000);
+}
+
+function proximityPlugin() {
+  return window.Capacitor?.Plugins?.Proximity || null;
+}
+
+// The teaching device broadcasts the rotating session token so students in the
+// room can pick it up over Bluetooth without anyone reading a code aloud.
+async function startAttendanceBeacon(token) {
+  const plugin = proximityPlugin();
+  if (!plugin || !token) return false;
+  try {
+    await plugin.startBeacon({ token });
+    beaconToken = token;
+    return true;
+  } catch (error) {
+    beaconToken = "";
+    return false;
+  }
+}
+
+async function stopAttendanceBeacon() {
+  const plugin = proximityPlugin();
+  beaconToken = "";
+  if (!plugin) return;
+  try {
+    await plugin.stopBeacon();
+  } catch {
+    // Nothing useful to do if the radio already went away.
+  }
+}
+
+// Students listen for the class beacon; a weak signal is treated as elsewhere.
+async function findAttendanceBeacon() {
+  const plugin = proximityPlugin();
+  if (!plugin) return { found: false, unsupported: true };
+  try {
+    const result = await plugin.scanForBeacon({ timeoutMs: 8000, minRssi: -85 });
+    return { found: Boolean(result?.found), token: result?.token || "", rssi: result?.rssi };
+  } catch (error) {
+    return { found: false, error: error?.message || "Bluetooth scan failed" };
+  }
 }
 
 function attendanceCallCard(session) {
@@ -1191,8 +1241,10 @@ function attendanceCallCard(session) {
       ? `<p class="attendance-call-roll">Roll number <strong>${escapeHtml(session.rollNumber)}</strong></p>`
       : `<label class="attendance-call-label" for="rollNumber-${escapeHtml(session.id)}">Your roll number</label>
          <input class="text-input" id="rollNumber-${escapeHtml(session.id)}" data-roll-for="${escapeHtml(session.id)}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
-    <label class="attendance-call-label" for="proximity-${escapeHtml(session.id)}">Code on the class screen</label>
-    <input class="text-input attendance-code" id="proximity-${escapeHtml(session.id)}" data-code-for="${escapeHtml(session.id)}" type="text" maxlength="6" placeholder="6 characters" autocomplete="off" inputmode="latin" />
+    ${proximityPlugin()
+      ? `<p class="attendance-call-copy">Your phone finds the class over Bluetooth — stay in the room and tap below.</p>`
+      : `<label class="attendance-call-label" for="proximity-${escapeHtml(session.id)}">Code on the class screen</label>
+         <input class="text-input attendance-code" id="proximity-${escapeHtml(session.id)}" data-code-for="${escapeHtml(session.id)}" type="text" maxlength="6" placeholder="6 characters" autocomplete="off" inputmode="latin" />`}
     <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}">${icon("i-check")} Mark me present</button>
   </article>`;
 }
@@ -1731,8 +1783,16 @@ function renderStudentAttendance() {
   const sessions = attendanceHistory?.sessions || [];
   const percentage = summary?.percentage ?? 0;
   const classDays = studentClassDays(course, sessions);
+  const liveSession = openAttendance.find(item => item.courseId === course.id) || null;
   view.innerHTML = `
     <div class="left-stack">
+      ${liveSession
+        ? attendanceCallCard(liveSession)
+        : `<article class="card page-card attendance-call is-idle">
+            <div class="section-head"><h3>Mark attendance</h3><span class="badge gray">Closed</span></div>
+            <p class="attendance-call-copy">Attendance is not open for ${escapeHtml(course.courseCode)}. This turns on the moment your professor or TA starts it, and your phone will find the class over Bluetooth.</p>
+            <button class="btn btn-primary attendance-call-submit" type="button" disabled>${icon("i-check")} Mark me present</button>
+          </article>`}
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">${escapeHtml(course.name)}</h2><p class="stat-label">${escapeHtml(course.courseCode)} · your attendance so far</p></div><span class="badge ${percentage >= 75 ? "green" : percentage >= 50 ? "amber" : "gray"}">${percentage}%</span></div>
         <div class="stat-grid" style="margin-top:18px">
@@ -1898,8 +1958,10 @@ function renderLiveAttendance() {
       <article class="card page-card">
         ${sessionHeading(complete ? "Review attendance" : "Mark attendance", complete ? "Session closed and saved" : "Select each student who is present", complete ? "green" : "purple")}
         ${!complete && proximityCode?.supported ? `<div class="proximity-code">
-          <div><span>Show this to the class</span><strong>${escapeHtml(proximityCode.code || "······")}</strong></div>
-          <p>Changes every 30 seconds. Students type it in to mark themselves present, so only people who can see this screen can check in.</p>
+          <div><span>${beaconToken ? "Broadcasting to the room" : "Backup code"}</span><strong>${escapeHtml(proximityCode.code || "······")}</strong></div>
+          <p>${beaconToken
+            ? "Students nearby pick this up over Bluetooth automatically — nothing to read out. It changes every 30 seconds."
+            : "This device cannot broadcast over Bluetooth, so students enter this code instead. It changes every 30 seconds."}</p>
         </div>` : ""}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
@@ -1926,7 +1988,8 @@ function renderLiveAttendance() {
   }
 
   if (!complete && backendConfigured() && state.backendAttendanceId && !proximityCode) {
-    refreshProximityCode(state.backendAttendanceId).then(() => {
+    refreshProximityCode(state.backendAttendanceId).then(async () => {
+      if (proximityCode?.code) await startAttendanceBeacon(proximityCode.code);
       if (state.route === "attendance") renderLiveAttendance();
     });
   }
@@ -4114,8 +4177,7 @@ document.addEventListener("click", async event => {
     const rollInput = document.querySelector(`[data-roll-for="${sessionId}"]`);
     const rollNumber = session.rollNumber || rollInput?.value.trim().toUpperCase() || "";
     if (!rollNumber) return toast("Enter your roll number", "error");
-    const code = document.querySelector(`[data-code-for="${sessionId}"]`)?.value.trim().toUpperCase() || "";
-    if (!code) return toast("Enter the code shown on the class screen", "error");
+    let code = document.querySelector(`[data-code-for="${sessionId}"]`)?.value.trim().toUpperCase() || "";
 
     button.disabled = true;
     try {
@@ -4126,6 +4188,18 @@ document.addEventListener("click", async event => {
           .join(" and ");
         return toast(`Turn on ${missing}, then mark attendance again`, "error");
       }
+      if (!code && proximityPlugin()) {
+        toast("Looking for the class over Bluetooth…");
+        const beacon = await findAttendanceBeacon();
+        if (!beacon.found) {
+          return toast(
+            beacon.error || "The class was not found nearby. Move closer and try again.",
+            "error"
+          );
+        }
+        code = String(beacon.token || "").trim().toUpperCase();
+      }
+      if (!code) return toast("Enter the code shown on the class screen", "error");
       await apiRequest(`/api/attendance/${sessionId}/check-in`, {
         method: "POST",
         body: { rollNumber, signals, code }
@@ -4139,6 +4213,7 @@ document.addEventListener("click", async event => {
       button.disabled = false;
     }
     await refreshOpenAttendance({ rerender: false });
+    if (state.route === "attendance") await refreshAttendanceHistory(state.selectedCourseId);
     return render();
   }
   if (action === "remove-question") {

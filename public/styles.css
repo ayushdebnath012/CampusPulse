@@ -721,3 +721,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 
 .class-row.is-unrecorded { opacity: .72; }
 .class-row.is-unrecorded .badge { font-weight: 700; }
+
+.attendance-call.is-idle { border-color: var(--line); box-shadow: none; }
+.attendance-call.is-idle .attendance-call-submit { opacity: .55; }
