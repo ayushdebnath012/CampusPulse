@@ -3602,7 +3602,8 @@ document.addEventListener("click", async event => {
   const routeButton = event.target.closest("[data-route], [data-route-link]");
   if (routeButton) {
     const route = routeButton.dataset.route || routeButton.dataset.routeLink;
-    if (route === "attendance") {
+    // Students open their own record here; only the team opens a session.
+    if (route === "attendance" && state.userRole !== "student") {
       const courseId = routeButton.dataset.courseId
         || selectedCourse()?.id
         || state.courses.find(canRunAttendance)?.id;
