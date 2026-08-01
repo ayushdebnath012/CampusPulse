@@ -789,6 +789,17 @@ function navigate(route, { fromHistory = false } = {}) {
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
   if (route === "quizzes") quizResults = null;
+  if (route === "quizmarks" && state.selectedCourseId) {
+    // The panel lists the class even before a quiz is chosen.
+    Promise.all([
+      courseRosters.has(state.selectedCourseId)
+        ? Promise.resolve()
+        : loadCourseRoster(state.selectedCourseId).catch(() => {}),
+      refreshQuizHistory(state.selectedCourseId)
+    ]).then(() => {
+      if (state.route === "quizmarks") renderQuizMarks();
+    });
+  }
   if (route === "notices") {
     refreshNotices(state.selectedCourseId).then(() => {
       if (state.route === "notices") renderNotices();
@@ -1916,30 +1927,67 @@ function quizResultsPicker(selectedId = "") {
 function renderQuizMarks() {
   const course = selectedCourse();
   if (!course) return navigate("quizzes");
-  if (!quizResults) return renderPastQuizList(course);
-  const { quiz } = quizResults;
+  const roster = courseRosters.get(course.id) || [];
+  const quiz = quizResults?.quiz || null;
+  const summary = quizResults?.summary || null;
+  // With no quiz chosen the panel still lists the class, marks blank.
+  const rows = quizResults
+    ? quizResults.results
+    : roster.map(student => ({
+        serial: student.serial,
+        rollNumber: student.rollNumber,
+        name: student.name,
+        attempted: false,
+        score: null,
+        total: null,
+        submittedAt: null,
+      }));
   setHeader(
-    `${quiz.title || "Past quiz"} · marks`,
-    `${course.courseCode} · ${formatQuizDate(quiz.quizDate || quiz.publishedAt) || "PAST QUIZ"}`,
+    "Past quiz",
+    quiz
+      ? `${course.courseCode} · ${formatQuizDate(quiz.quizDate || quiz.publishedAt) || "MARKS"}`
+      : `${course.courseCode} · MARKS BY DATE`,
     false
   );
   view.innerHTML = `
     <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
-    ${quizResultsCard()}
-    ${quizQuestionsCard()}`;
-}
-
-// The list of everything this course has run, newest first.
-function renderPastQuizList(course) {
-  setHeader("Past quiz", `${course.courseCode} · MARKS BY DATE`, false);
-  view.innerHTML = `
-    <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
-    <article class="card page-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Past quiz</h2><p class="stat-label">Choose a quiz to see who scored what.</p></div><span class="badge ${quizHistory.length ? "purple" : "gray"}">${quizHistory.length}</span></div>
-      ${quizHistory.length ? `<div class="roster-scroll">
+    <article class="card page-card" style="margin-bottom:22px">
+      <div class="section-head">
+        <div><h2 style="margin:0 0 5px">${quiz ? `${escapeHtml(quiz.title || "Past quiz")} · marks` : "Class marks"}</h2><p class="stat-label">${quiz && summary
+          ? [
+              formatQuizDate(quiz.quizDate || quiz.publishedAt),
+              quiz.classLabel || quiz.day,
+              `${summary.attempted} of ${summary.rostered} attempted`,
+              `average ${summary.averageScore}/${quiz.total}`
+            ].filter(Boolean).map(escapeHtml).join(" · ")
+          : `${rows.length} students · choose a quiz to fill in their marks`}</p></div>
+        <div class="setup-actions">
+          ${quizResultsPicker(quiz?.id || "")}
+          ${quiz ? `<button class="btn" type="button" data-action="export-quiz-results">${icon("i-download")} Excel</button>
+          <button class="text-btn danger" type="button" data-action="delete-quiz" data-quiz-id="${escapeHtml(quiz.id)}">Delete quiz</button>` : ""}
+        </div>
+      </div>
+      ${rows.length ? `<div class="roster-scroll">
+        <table class="roster-table">
+          <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th><th>Marks</th><th>Submitted</th></tr></thead>
+          <tbody>${rows.map(item => `<tr>
+            <td class="roster-serial">${item.serial}</td>
+            <td class="roster-roll">${escapeHtml(item.rollNumber)}</td>
+            <td>${escapeHtml(item.name)}</td>
+            <td>${item.attempted ? `${item.score}/${item.total}` : "—"}</td>
+            <td>${item.submittedAt
+              ? escapeHtml(new Date(item.submittedAt).toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }))
+              : quiz ? "Not attempted" : "—"}</td>
+          </tr>`).join("")}</tbody>
+        </table>
+      </div>` : `<p class="stat-label" style="padding:14px 2px">No roll list yet. Upload one from the Students tab.</p>`}
+    </article>
+    ${quizHistory.length ? `<article class="card page-card" style="margin-bottom:22px">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">All past quizzes</h2><p class="stat-label">Every quiz this course has run.</p></div><span class="badge purple">${quizHistory.length}</span></div>
+      <div class="roster-scroll">
         <table class="roster-table">
           <thead><tr><th>Date</th><th>Quiz</th><th>Class</th><th>Questions</th><th>Responses</th><th></th></tr></thead>
-          <tbody>${quizHistory.map(item => `<tr>
+          <tbody>${quizHistory.map(item => `<tr class="${item.id === quiz?.id ? "is-open-row" : ""}">
             <td>${escapeHtml(formatQuizDate(item.quizDate || item.publishedAt) || "—")}</td>
             <td>${escapeHtml(item.title || "Untitled quiz")}</td>
             <td>${escapeHtml(item.classLabel || item.day || "—")}</td>
@@ -1948,9 +1996,11 @@ function renderPastQuizList(course) {
             <td class="roster-actions"><button class="text-btn" type="button" data-action="open-quiz-results" data-quiz-id="${escapeHtml(item.id)}">View marks</button></td>
           </tr>`).join("")}</tbody>
         </table>
-      </div>` : `<p class="stat-label" style="padding:14px 2px">No quiz has run yet. Publish one from the Quizzes tab.</p>`}
-    </article>`;
+      </div>
+    </article>` : `<article class="card page-card" style="margin-bottom:22px"><p class="stat-label">No quiz has run yet. Publish one from the Quizzes tab.</p></article>`}
+    ${quizQuestionsCard()}`;
 }
+
 
 function quizQuestionsCard() {
   const questions = quizResults?.quiz?.questions || [];

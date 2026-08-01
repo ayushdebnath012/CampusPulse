@@ -685,3 +685,5 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .option-input:has(input[type="radio"]:checked) { border-color: #b9ead8; background: var(--green-soft); }
 .option-input:has(input[type="radio"]:checked) .option-flag { display: block; }
 .option-input:has(input[type="radio"]:checked) input[type="text"] { background: transparent; }
+
+.roster-table tr.is-open-row td { background: var(--primary-soft); }
