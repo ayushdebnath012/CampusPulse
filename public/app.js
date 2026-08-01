@@ -1778,18 +1778,21 @@ function renderQuiz() {
         <div class="setup-actions"><button class="btn" type="button" data-action="save-quiz-draft">${icon("i-check")} ${openDraft ? "Save changes" : "Save for later"}</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
       </article>
       <aside class="card page-card quiz-settings">
-        ${quizHistory.length ? `<div class="saved-quizzes">
-          <div class="section-head"><button class="section-link" type="button" data-action="open-past-quizzes"><h3>Past quiz</h3>${icon("i-arrow")}</button><span class="badge gray">${quizHistory.length}</span></div>
-          ${quizHistory.map(item => `<div class="saved-quiz ${quizResults?.quiz?.id === item.id ? "is-open-draft" : ""}">
+        <div class="saved-quizzes">
+          <div class="section-head"><button class="section-link" type="button" data-action="open-past-quizzes"><h3>Past quiz</h3>${icon("i-arrow")}</button><span class="badge ${quizHistory.length ? "gray" : "gray"}">${quizHistory.length}</span></div>
+          ${quizHistory.length
+            ? quizHistory.map(item => `<div class="saved-quiz ${quizResults?.quiz?.id === item.id ? "is-open-draft" : ""}">
             <button class="saved-quiz-open" type="button" data-action="open-quiz-results" data-quiz-id="${escapeHtml(item.id)}">
-              <strong>${escapeHtml(item.title || "Past quiz")}</strong>
+              <strong>${escapeHtml(item.title || "Untitled quiz")}</strong>
               <span>${item.responses} response${item.responses === 1 ? "" : "s"}${item.classLabel ? ` · ${escapeHtml(item.classLabel)}` : ""} · ${escapeHtml(formatQuizDate(item.quizDate || item.publishedAt))}</span>
             </button>
-          </div>`).join("")}
-        </div>` : ""}
-        ${quizDrafts.length ? `<div class="saved-quizzes">
-          <div class="section-head"><h3>Saved quiz</h3><span class="badge purple">${quizDrafts.length}</span></div>
-          ${quizDrafts.map(draft => `<div class="saved-quiz ${draft.id === editingDraftId ? "is-open-draft" : ""}">
+          </div>`).join("")
+            : `<p class="stat-label">No quiz has run yet. Open this to see the class list.</p>`}
+        </div>
+        <div class="saved-quizzes">
+          <div class="section-head"><h3>Saved quiz</h3><span class="badge ${quizDrafts.length ? "purple" : "gray"}">${quizDrafts.length}</span></div>
+          ${quizDrafts.length
+            ? quizDrafts.map(draft => `<div class="saved-quiz ${draft.id === editingDraftId ? "is-open-draft" : ""}">
             <button class="saved-quiz-open" type="button" data-action="open-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">
               <strong>${escapeHtml(draft.title || "Untitled quiz")}</strong>
               <span>${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${escapeHtml(draft.classLabel)}` : ""}${draft.id === editingDraftId ? " · open" : ""}</span>
@@ -1798,8 +1801,9 @@ function renderQuiz() {
               <button class="btn btn-primary" type="button" data-action="publish-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">${icon("i-send")} Publish</button>
               <button class="text-btn danger" type="button" data-action="delete-draft-quiz" data-quiz-id="${escapeHtml(draft.id)}">Delete</button>
             </div>
-          </div>`).join("")}
-        </div>` : ""}
+          </div>`).join("")
+            : `<p class="stat-label">Nothing saved yet. Build a quiz below and choose Save for later.</p>`}
+        </div>
         <div class="section-head"><h3>Quiz settings</h3></div>
         <label for="quizCourseSelect">Course</label><select class="select" id="quizCourseSelect">${state.courses.filter(canPublishQuiz).map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)}</option>`).join("")}</select>
         <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" value="${openDraft ? escapeHtml(openDraft.title || "") : ""}" />
