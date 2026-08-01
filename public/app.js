@@ -133,6 +133,8 @@ let openAttendanceTimer = null;
 let enrolledStudents = [];
 let quizDrafts = [];
 let editingDraftId = "";
+let quizHistory = [];
+let quizResults = null;
 let passwordResetEmail = "";
 // Reset by email is only offered when the server can actually send one.
 let emailDeliveryAvailable = false;
@@ -659,6 +661,10 @@ async function syncBackendState() {
   persist();
   await refreshOpenAttendance({ rerender: false });
   await refreshEnrolledStudents();
+  if (canPublishQuiz()) {
+    await refreshQuizDrafts(state.selectedCourseId);
+    await refreshQuizHistory(state.selectedCourseId);
+  }
   await syncClassReminders();
   startOpenAttendancePolling();
 }
@@ -781,7 +787,10 @@ function navigate(route, { fromHistory = false } = {}) {
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
   if (route === "quizzes" && canPublishQuiz()) {
-    refreshQuizDrafts(state.selectedCourseId).then(() => {
+    Promise.all([
+      refreshQuizDrafts(state.selectedCourseId),
+      refreshQuizHistory(state.selectedCourseId)
+    ]).then(() => {
       if (state.route === "quizzes" && !state.quizPublished) renderQuiz();
     });
   }
@@ -949,7 +958,13 @@ async function switchCourseContext(
   materialsCourseId = "";
   applyAttendanceSnapshot(null);
   applyQuizSnapshot(null);
+  editingDraftId = "";
   persist();
+  quizResults = null;
+  if (canPublishQuiz(course)) {
+    await refreshQuizDrafts(course.id);
+    await refreshQuizHistory(course.id);
+  }
 
   const refreshes = [];
   if (canRunAttendance(course)) refreshes.push(selectAttendanceCourse(course.id));
@@ -1716,6 +1731,7 @@ function renderQuiz() {
   if (state.quizPublished && state.backendQuizCourseId === course.id) return renderLiveQuiz();
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
+    ${quizResultsCard()}
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${openDraft ? escapeHtml(openDraft.title || "Saved quiz") : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft ? `Saved for ${escapeHtml(openDraft.classLabel || course.name)}. Edit it below, then publish when the class starts.` : `Goes only to ${escapeHtml(course.name)}. Pick another course on the right to build one for a different class.`}</p></div>${openDraft ? `<button class="text-btn" type="button" data-action="close-draft-quiz">Start a new quiz</button>` : `<span class="badge purple">Draft</span>`}</div>
@@ -1738,6 +1754,15 @@ function renderQuiz() {
         <div class="setup-actions"><button class="btn" type="button" data-action="save-quiz-draft">${icon("i-check")} ${openDraft ? "Save changes" : "Save for later"}</button><button class="btn btn-primary" data-action="publish-quiz">${icon("i-send")} Publish to class</button></div>
       </article>
       <aside class="card page-card quiz-settings">
+        ${quizHistory.length ? `<div class="saved-quizzes">
+          <div class="section-head"><h3>Past quizzes</h3><span class="badge gray">${quizHistory.length}</span></div>
+          ${quizHistory.map(item => `<div class="saved-quiz ${quizResults?.quiz?.id === item.id ? "is-open-draft" : ""}">
+            <button class="saved-quiz-open" type="button" data-action="open-quiz-results" data-quiz-id="${escapeHtml(item.id)}">
+              <strong>${escapeHtml(item.title || "Quiz")}</strong>
+              <span>${item.responses} response${item.responses === 1 ? "" : "s"}${item.classLabel ? ` · ${escapeHtml(item.classLabel)}` : ""} · ${escapeHtml(formatQuizDate(item.quizDate || item.publishedAt))}</span>
+            </button>
+          </div>`).join("")}
+        </div>` : ""}
         ${quizDrafts.length ? `<div class="saved-quizzes">
           <div class="section-head"><h3>Saved for later</h3><span class="badge purple">${quizDrafts.length}</span></div>
           ${quizDrafts.map(draft => `<div class="saved-quiz ${draft.id === editingDraftId ? "is-open-draft" : ""}">
@@ -1756,7 +1781,7 @@ function renderQuiz() {
         <label for="quizTitle">Quiz title</label><input class="text-input" id="quizTitle" placeholder="e.g. Lecture 4 concept check" value="${openDraft ? escapeHtml(openDraft.title || "") : ""}" />
         <label for="quizClassSelect">Quiz for which class</label>
         ${courseClasses.length ? `<select class="select" id="quizClassSelect">
-          <option value="">Not tied to a class</option>
+          <option value="" ${openDraft?.scheduleId ? "" : "selected"} disabled>Choose a class</option>
           ${courseClasses
             .map(item => {
               const label = scheduledClassLabel(item, course);
@@ -1764,8 +1789,10 @@ function renderQuiz() {
             })
             .join("")}
         </select>` : `<p class="stat-label">${escapeHtml(course.courseCode)} has no timetabled classes yet. Add them on the Schedule tab to tie a quiz to one.</p>`}
-        <label for="duration">Time limit</label><select class="select" id="duration"><option>3 minutes</option><option>5 minutes</option><option>No limit</option></select>
-        <label for="reveal">Results</label><select class="select" id="reveal"><option>Reveal after quiz ends</option><option>Reveal after each answer</option><option>Keep private</option></select>
+        <label for="quizDate">Date</label>
+        <input class="text-input" id="quizDate" type="date" value="${openDraft?.quizDate ? escapeHtml(openDraft.quizDate) : new Date().toISOString().slice(0, 10)}" />
+        <label for="duration">Time limit</label><select class="select" id="duration">${[[3, "3 minutes"], [5, "5 minutes"], [10, "10 minutes"], [0, "No limit"]].map(([value, label]) => `<option value="${value}" ${Number(openDraft?.timeLimitMinutes) === value ? "selected" : ""}>${label}</option>`).join("")}</select>
+        <label for="reveal">Results</label><select class="select" id="reveal">${[["after-quiz", "Reveal after quiz ends"], ["after-answer", "Reveal after each answer"], ["private", "Keep private"]].map(([value, label]) => `<option value="${value}" ${(openDraft?.reveal || "after-quiz") === value ? "selected" : ""}>${label}</option>`).join("")}</select>
         <div class="security-note"><span class="lock">✦</span><span>Quiz responses are linked to the active course and visible only to its teaching team.</span></div>
       </aside>
     </div>`;
@@ -1810,6 +1837,40 @@ function scheduledClassLabel(item, course) {
   return [item.day, time, code].filter(Boolean).join(" · ") + extra;
 }
 
+function formatQuizDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+}
+
+function quizResultsCard() {
+  if (!quizResults) return "";
+  const { quiz, summary, results } = quizResults;
+  return `<article class="card page-card" style="margin-bottom:22px">
+    <div class="section-head">
+      <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Quiz")} · marks</h2><p class="stat-label">${escapeHtml(quiz.classLabel || quiz.day || "")}${quiz.quizDate || quiz.publishedAt ? ` · ${escapeHtml(formatQuizDate(quiz.quizDate || quiz.publishedAt))}` : ""} · ${summary.attempted} of ${summary.rostered} attempted · average ${summary.averageScore}/${quiz.total}</p></div>
+      <div class="setup-actions">
+        <button class="btn" type="button" data-action="export-quiz-results">${icon("i-download")} Excel</button>
+        <button class="text-btn" type="button" data-action="close-quiz-results">Close</button>
+      </div>
+    </div>
+    <div class="roster-scroll">
+      <table class="roster-table">
+        <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th><th>Marks</th><th>Submitted</th></tr></thead>
+        <tbody>${results.map(item => `<tr>
+          <td class="roster-serial">${item.serial}</td>
+          <td class="roster-roll">${escapeHtml(item.rollNumber)}</td>
+          <td>${escapeHtml(item.name)}</td>
+          <td>${item.attempted ? `${item.score}/${item.total}` : "—"}</td>
+          <td>${item.submittedAt ? escapeHtml(new Date(item.submittedAt).toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })) : "Not attempted"}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>
+  </article>`;
+}
+
 function readQuizBuilder() {
   return [...document.querySelectorAll("#quizBuilder .question-card")].map(card => {
     const options = [...card.querySelectorAll(".option-input input[type='text']")].map(input => input.value.trim());
@@ -1822,6 +1883,19 @@ function readQuizBuilder() {
       ...(image ? { image } : {})
     };
   });
+}
+
+async function refreshQuizHistory(courseId) {
+  if (!backendConfigured() || !apiToken || !courseId) {
+    quizHistory = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest(`/api/quizzes/history?courseId=${encodeURIComponent(courseId)}`);
+    quizHistory = Array.isArray(payload.quizzes) ? payload.quizzes : [];
+  } catch {
+    quizHistory = [];
+  }
 }
 
 async function refreshQuizDrafts(courseId) {
@@ -1837,16 +1911,40 @@ async function refreshQuizDrafts(courseId) {
   }
 }
 
-function quizClassSelection() {
+function quizSettingsPayload() {
+  const title = document.querySelector("#quizTitle")?.value.trim() || "";
   const select = document.querySelector("#quizClassSelect");
   const option = select?.selectedOptions?.[0];
-  if (!select || !select.value || !option) return {};
-  const day = option.dataset.day || "";
-  const classLabel = option.dataset.label || "";
+  const quizDate = document.querySelector("#quizDate")?.value || "";
+  const timeLimit = document.querySelector("#duration")?.value ?? "";
+  const reveal = document.querySelector("#reveal")?.value || "";
+  if (title.length < 2) {
+    toast("Give the quiz a title", "error");
+    return null;
+  }
+  if (!select || !select.value || !option) {
+    toast(
+      select ? "Choose which class this quiz is for" : "Add a class to the timetable first",
+      "error"
+    );
+    return null;
+  }
+  if (!quizDate) {
+    toast("Pick the date this quiz is for", "error");
+    return null;
+  }
+  if (timeLimit === "" || !reveal) {
+    toast("Choose a time limit and when results are revealed", "error");
+    return null;
+  }
   return {
+    title,
     scheduleId: select.value,
-    ...(day ? { day } : {}),
-    ...(classLabel ? { classLabel } : {})
+    day: option.dataset.day || "",
+    classLabel: option.dataset.label || "",
+    quizDate,
+    timeLimitMinutes: Number(timeLimit),
+    reveal
   };
 }
 
@@ -3485,6 +3583,45 @@ document.addEventListener("click", async event => {
     const button = event.target.closest("[data-action]");
     button.insertAdjacentHTML("beforebegin", questionBlock(document.querySelectorAll(".question-card").length + 1));
   }
+  if (action === "open-quiz-results") {
+    const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
+    try {
+      quizResults = await apiRequest(`/api/quizzes/${encodeURIComponent(quizId)}/results`);
+    } catch (error) {
+      quizResults = null;
+      return toast(error.message || "Could not load those marks", "error");
+    }
+    renderQuiz();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    return;
+  }
+  if (action === "close-quiz-results") {
+    quizResults = null;
+    renderQuiz();
+    return;
+  }
+  if (action === "export-quiz-results") {
+    if (!quizResults) return toast("Open a quiz first", "error");
+    const { quiz, results } = quizResults;
+    const stamp = (quiz.quizDate || quiz.publishedAt || new Date().toISOString()).slice(0, 10);
+    const safeTitle = String(quiz.title || "quiz").replace(/[^A-Za-z0-9]+/g, "-").slice(0, 40);
+    downloadXlsx(
+      `CampusPulse-${safeTitle}-${stamp}.xlsx`,
+      ["Sl.No.", "Roll No", "Name", "Email", "Marks", "Out of", "Submitted", "Class", "Date"],
+      results.map(item => [
+        item.serial,
+        item.rollNumber,
+        item.name,
+        item.email,
+        item.attempted ? item.score : "",
+        item.total,
+        item.submittedAt ? new Date(item.submittedAt).toLocaleString() : "Not attempted",
+        quiz.classLabel || quiz.day || "",
+        formatQuizDate(quiz.quizDate || quiz.publishedAt)
+      ])
+    );
+    return toast(`${results.length} rows exported`);
+  }
   if (action === "open-draft-quiz") {
     const quizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
     if (!quizDrafts.some(item => item.id === quizId)) {
@@ -3503,11 +3640,12 @@ document.addEventListener("click", async event => {
     const course = selectedCourse();
     if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
+    const settings = quizSettingsPayload();
+    if (!settings) return;
     const body = {
       courseId: course.id,
       status: "draft",
-      title: document.querySelector("#quizTitle")?.value || "Saved quiz",
-      ...quizClassSelection(),
+      ...settings,
       questions: readQuizBuilder()
     };
     try {
@@ -3564,15 +3702,13 @@ document.addEventListener("click", async event => {
   if (action === "publish-quiz") {
     const course = selectedCourse();
     if (!course || !canPublishQuiz(course)) return toast("Course quiz permission required", "error");
+    const settings = quizSettingsPayload();
+    if (!settings) return;
     if (backendConfigured() && editingDraftId) {
       try {
         await apiRequest(`/api/quizzes/${encodeURIComponent(editingDraftId)}`, {
           method: "PUT",
-          body: {
-            title: document.querySelector("#quizTitle")?.value || "Quick quiz",
-            ...quizClassSelection(),
-            questions: readQuizBuilder()
-          }
+          body: { ...settings, questions: readQuizBuilder() }
         });
         const result = await apiRequest(
           `/api/quizzes/${encodeURIComponent(editingDraftId)}/publish`,
@@ -3594,12 +3730,7 @@ document.addEventListener("click", async event => {
       try {
         const result = await apiRequest("/api/quizzes", {
           method: "POST",
-          body: {
-            courseId: course.id,
-            title: document.querySelector("#quizTitle")?.value || "Quick quiz",
-            ...quizClassSelection(),
-            questions
-          }
+          body: { courseId: course.id, ...settings, questions }
         });
         applyQuizSnapshot(result.quiz);
       } catch (error) {
@@ -3632,6 +3763,7 @@ document.addEventListener("click", async event => {
     state.backendQuizQuestions = [];
     state.quizResponses = 0;
     persist();
+    await refreshQuizHistory(course.id);
     renderQuiz();
     toast(
       `Quiz ended with ${finalResponses} ${finalResponses === 1 ? "response" : "responses"}. Build the next one below.`

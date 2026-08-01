@@ -135,6 +135,32 @@ async function createCourse(baseUrl, token, options = {}) {
   return { ...course, students };
 }
 
+// Committing a quiz needs a class, a time limit and a reveal mode.
+async function addClass(baseUrl, token, courseId, revision = 0) {
+  const saved = await request(baseUrl, `/api/courses/${courseId}/schedule`, {
+    method: "PUT",
+    token,
+    body: {
+      revision,
+      classes: [{ day: "Monday", start: "3:00 PM", end: "5:00 PM", topic: "Lecture" }],
+    },
+  });
+  assert.equal(saved.response.status, 200);
+  return saved.body.schedule[0].id;
+}
+
+function quizSettings(scheduleId, overrides = {}) {
+  return {
+    scheduleId,
+    day: "Monday",
+    classLabel: "Monday · 3:00 PM–5:00 PM",
+    timeLimitMinutes: 5,
+    reveal: "after-quiz",
+    quizDate: "2026-08-03",
+    ...overrides,
+  };
+}
+
 test("CampusPulse API connects professor attendance to the authoritative rosters", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
@@ -177,6 +203,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     room: "Room TBA",
     students: rosterOf(22, "METEST", "KBS Student"),
   });
+  const softClassId = await addClass(testServer.baseUrl, professor.token, soft.id);
 
   const softRoster = await request(
     testServer.baseUrl,
@@ -254,7 +281,8 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.deepEqual(bootstrap.body.enrolledCourseIds, [soft.id]);
   assert.equal("attendance" in bootstrap.body, false);
   assert.equal("attendanceByCourse" in bootstrap.body, false);
-  assert.equal(bootstrap.body.schedule.length, 0);
+  // The one class added above so a quiz can be tied to it.
+  assert.equal(bootstrap.body.schedule.length, 1);
   assert.equal(bootstrap.body.courses[0].room, "NR221");
   assert.equal(bootstrap.body.courses[0].courseCode, "MF41601");
   assert.equal(bootstrap.body.courses[0].students, 310);
@@ -317,7 +345,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
       method: "PUT",
       token: teachingAssistant.token,
       body: {
-        revision: 0,
+        revision: 1,
         classes: [
           {
             day: "Tuesday",
@@ -444,6 +472,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: {
       courseId: soft.id,
       title: "Soft Computing check",
+      ...quizSettings(softClassId),
       questions: [
         {
           prompt: "Which set has partial membership?",
@@ -461,6 +490,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: {
       courseId: soft.id,
       title: "Invalid quiz",
+      ...quizSettings(softClassId),
       questions: [{ text: "Invalid", options: ["Only one"], answer: 0 }],
     },
   });
@@ -1684,6 +1714,7 @@ test("a quiz can carry image questions and name the class it belongs to", async 
     body: {
       courseId: course.id,
       title: "Diagram check",
+      ...quizSettings(scheduleId),
       questions: [
         { text: "Which diagram?", options: ["A", "B"], answer: 0, image: "https://example.com/x.png" },
       ],
@@ -1697,7 +1728,7 @@ test("a quiz can carry image questions and name the class it belongs to", async 
     body: {
       courseId: course.id,
       title: "Diagram check",
-      scheduleId: "schedule-not-here",
+      ...quizSettings("schedule-not-here"),
       questions: [{ text: "Which diagram?", options: ["A", "B"], answer: 0 }],
     },
   });
@@ -1709,9 +1740,7 @@ test("a quiz can carry image questions and name the class it belongs to", async 
     body: {
       courseId: course.id,
       title: "Diagram check",
-      scheduleId,
-      day: "Monday",
-      classLabel: "Monday · 3:00 PM–5:00 PM · Fuzzy sets",
+      ...quizSettings(scheduleId, { classLabel: "Monday · 3:00 PM–5:00 PM · Fuzzy sets" }),
       questions: [
         { text: "Which diagram shows a fuzzy set?", options: ["A", "B"], answer: 1, image: pixel },
         // A question may be the image alone, with no text.
@@ -1761,6 +1790,7 @@ test("a quiz can be saved for a class ahead of time and published later", async 
     token: student.token,
     body: { code: course.code },
   });
+  const draftClassId = await addClass(testServer.baseUrl, professor.token, course.id);
 
   const saved = await request(testServer.baseUrl, "/api/quizzes", {
     method: "POST",
@@ -1769,6 +1799,7 @@ test("a quiz can be saved for a class ahead of time and published later", async 
       courseId: course.id,
       status: "draft",
       title: "Week 4 check",
+      ...quizSettings(draftClassId),
       questions: [{ text: "Ready?", options: ["Yes", "No"], answer: 0 }],
     },
   });
@@ -1805,6 +1836,7 @@ test("a quiz can be saved for a class ahead of time and published later", async 
     token: professor.token,
     body: {
       title: "Week 4 check (revised)",
+      ...quizSettings(draftClassId),
       questions: [
         { text: "Ready now?", options: ["Yes", "No", "Maybe"], answer: 2 },
         { text: "Second question", options: ["A", "B"], answer: 0 },
@@ -1852,6 +1884,7 @@ test("a quiz can be saved for a class ahead of time and published later", async 
       courseId: course.id,
       status: "draft",
       title: "Spare",
+      ...quizSettings(draftClassId),
       questions: [{ text: "Spare?", options: ["A", "B"], answer: 1 }],
     },
   });
@@ -1864,6 +1897,114 @@ test("a quiz can be saved for a class ahead of time and published later", async 
     token: student.token,
   });
   assert.equal(stillLive.body.quiz.id, saved.body.quiz.id);
+});
+
+test("quiz results list every rostered student with their marks", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Marks Professor",
+    email: "marks-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [
+      { rollNumber: "23ME10001", name: "Sat The Quiz" },
+      { rollNumber: "23ME10002", name: "Never Attempted" },
+    ],
+  });
+  const classId = await addClass(testServer.baseUrl, professor.token, course.id);
+  const student = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Sat The Quiz",
+    email: "sat@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10001",
+  });
+  await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: student.token,
+    body: { code: course.code },
+  });
+
+  const quiz = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Week 1 check",
+      ...quizSettings(classId),
+      questions: [
+        { text: "One?", options: ["A", "B"], answer: 0 },
+        { text: "Two?", options: ["A", "B"], answer: 1 },
+      ],
+    },
+  });
+  const quizId = quiz.body.quiz.id;
+
+  const answered = await request(testServer.baseUrl, `/api/quizzes/${quizId}/respond`, {
+    method: "POST",
+    token: student.token,
+    body: { answers: [0, 0] },
+  });
+  assert.equal(answered.response.status, 201);
+  assert.deepEqual(answered.body, { score: 1, total: 2 });
+
+  const results = await request(testServer.baseUrl, `/api/quizzes/${quizId}/results`, {
+    token: professor.token,
+  });
+  assert.equal(results.response.status, 200);
+  assert.equal(results.body.quiz.title, "Week 1 check");
+  assert.equal(results.body.quiz.total, 2);
+  assert.deepEqual(results.body.summary, {
+    attempted: 1,
+    rostered: 2,
+    averageScore: 1,
+  });
+  // The whole roll list appears, so a student who never sat it is visible.
+  assert.deepEqual(
+    results.body.results.map((item) => [item.rollNumber, item.attempted, item.score]),
+    [
+      ["23ME10001", true, 1],
+      ["23ME10002", false, null],
+    ],
+  );
+
+  const history = await request(
+    testServer.baseUrl,
+    `/api/quizzes/history?courseId=${course.id}`,
+    { token: professor.token },
+  );
+  assert.equal(history.body.quizzes.length, 1);
+  assert.equal(history.body.quizzes[0].responses, 1);
+  assert.equal(history.body.quizzes[0].classLabel, "Monday · 3:00 PM–5:00 PM");
+  assert.equal(history.body.quizzes[0].quizDate, "2026-08-03");
+
+  // The date is required, and only a real calendar date is accepted.
+  for (const quizDate of ["", "03-08-2026", "2026-13-45"]) {
+    const rejected = await request(testServer.baseUrl, "/api/quizzes", {
+      method: "POST",
+      token: professor.token,
+      body: {
+        courseId: course.id,
+        title: "Dateless",
+        ...quizSettings(classId, { quizDate }),
+        questions: [{ text: "One?", options: ["A", "B"], answer: 0 }],
+      },
+    });
+    assert.equal(rejected.response.status, 400);
+  }
+
+  // Marks are for the course team only.
+  for (const route of [`/api/quizzes/${quizId}/results`, "/api/quizzes/history"]) {
+    const denied = await request(testServer.baseUrl, route, { token: student.token });
+    assert.equal(denied.response.status, 403);
+  }
 });
 
 test("professors sign up from department subdomains, students do not", async (t) => {

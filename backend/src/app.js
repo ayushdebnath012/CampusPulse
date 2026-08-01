@@ -148,6 +148,9 @@ function safeQuizForStudent(quiz, userId) {
     createdAt: quiz.createdAt,
     ...(quiz.day ? { day: quiz.day } : {}),
     ...(quiz.classLabel ? { classLabel: quiz.classLabel } : {}),
+    timeLimitMinutes: quiz.timeLimitMinutes ?? 0,
+    reveal: quiz.reveal || "after-quiz",
+    ...(quiz.quizDate ? { quizDate: quiz.quizDate } : {}),
     questions: quiz.questions.map(({ answer, ...question }) => question),
     responded: quiz.responses.some((item) => item.userId === userId),
   };
@@ -287,6 +290,55 @@ function normalizeRosterUpload(students, courseId) {
       name,
     };
   });
+}
+
+const QUIZ_TIME_LIMITS = [3, 5, 10, 0];
+const QUIZ_REVEAL_MODES = ["after-quiz", "after-answer", "private"];
+
+// Title, class, time limit and reveal mode are all required to commit a quiz.
+function normalizeQuizSettings(body, { courseId, database }) {
+  const title = String(body.title || "").trim().replace(/\s+/g, " ").slice(0, 100);
+  if (title.length < 2) {
+    const error = new Error("Give the quiz a title");
+    error.status = 400;
+    throw error;
+  }
+  const scheduleId = String(body.scheduleId || "").trim();
+  const scheduled = database.schedule.find(
+    (item) => item.id === scheduleId && item.courseId === courseId,
+  );
+  if (!scheduled) {
+    const error = new Error("Choose which class this quiz is for");
+    error.status = 400;
+    throw error;
+  }
+  const timeLimitMinutes = Number(body.timeLimitMinutes);
+  if (!QUIZ_TIME_LIMITS.includes(timeLimitMinutes)) {
+    const error = new Error("Choose a time limit for the quiz");
+    error.status = 400;
+    throw error;
+  }
+  const reveal = String(body.reveal || "");
+  if (!QUIZ_REVEAL_MODES.includes(reveal)) {
+    const error = new Error("Choose when results are revealed");
+    error.status = 400;
+    throw error;
+  }
+  const quizDate = String(body.quizDate || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(quizDate) || Number.isNaN(Date.parse(quizDate))) {
+    const error = new Error("Pick the date this quiz is for");
+    error.status = 400;
+    throw error;
+  }
+  return {
+    title,
+    scheduleId,
+    day: scheduled.day,
+    classLabel: String(body.classLabel || "").trim().slice(0, 120) || scheduled.day,
+    quizDate,
+    timeLimitMinutes,
+    reveal,
+  };
 }
 
 const WEEKDAYS = [
@@ -2045,31 +2097,11 @@ function createApp(options = {}) {
               item.closedBy = request.user.id;
             }
           });
-          const scheduledDay = WEEKDAYS.find(
-            (day) =>
-              day.toLowerCase() ===
-              String(request.body.day || "").trim().toLowerCase(),
-          ) || "";
-          const scheduleId = String(request.body.scheduleId || "").trim();
-          if (
-            scheduleId &&
-            !database.schedule.some(
-              (item) => item.id === scheduleId && item.courseId === courseId,
-            )
-          ) {
-            const error = new Error("That class is not on this course timetable");
-            error.status = 400;
-            throw error;
-          }
+          const settings = normalizeQuizSettings(request.body, { courseId, database });
           const created = {
             id: `quiz-${Date.now()}`,
             courseId,
-            title: String(request.body.title || "Quick quiz").slice(0, 100),
-            ...(scheduledDay ? { day: scheduledDay } : {}),
-            ...(scheduleId ? { scheduleId } : {}),
-            ...(request.body.classLabel
-              ? { classLabel: String(request.body.classLabel).trim().slice(0, 120) }
-              : {}),
+            ...settings,
             questions,
             status: asDraft ? "draft" : "open",
             createdBy: request.user.id,
@@ -2129,34 +2161,133 @@ function createApp(options = {}) {
             throw error;
           }
           requireCourse(database, request.user, draft.courseId, "run");
-          const scheduleId = String(request.body.scheduleId || "").trim();
-          if (
-            scheduleId &&
-            !database.schedule.some(
-              (item) => item.id === scheduleId && item.courseId === draft.courseId,
-            )
-          ) {
-            const error = new Error("That class is not on this course timetable");
-            error.status = 400;
-            throw error;
-          }
-          draft.title = String(request.body.title || draft.title).slice(0, 100);
-          draft.questions = questions;
-          const day = WEEKDAYS.find(
-            (item) =>
-              item.toLowerCase() === String(request.body.day || "").trim().toLowerCase(),
+          Object.assign(
+            draft,
+            normalizeQuizSettings(request.body, {
+              courseId: draft.courseId,
+              database,
+            }),
           );
-          if (day) draft.day = day;
-          else delete draft.day;
-          if (scheduleId) draft.scheduleId = scheduleId;
-          else delete draft.scheduleId;
-          if (request.body.classLabel) {
-            draft.classLabel = String(request.body.classLabel).trim().slice(0, 120);
-          } else delete draft.classLabel;
+          draft.questions = questions;
           draft.updatedAt = new Date().toISOString();
           return draft;
         });
         response.json({ quiz });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Every quiz the course team has run, newest first, for picking results from.
+  app.get(
+    "/api/quizzes/history",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courseId = String(request.query.courseId || "").trim();
+        if (courseId) requireCourse(data, request.user, courseId, "run");
+        const accessibleIds = new Set(
+          accessibleCourses(data, request.user).map((course) => course.id),
+        );
+        const quizzes = data.quizzes
+          .filter(
+            (quiz) =>
+              quiz.status !== "draft" &&
+              accessibleIds.has(quiz.courseId) &&
+              (!courseId || quiz.courseId === courseId),
+          )
+          .map((quiz) => ({
+            id: quiz.id,
+            courseId: quiz.courseId,
+            title: quiz.title,
+            status: quiz.status,
+            day: quiz.day || "",
+            classLabel: quiz.classLabel || "",
+            quizDate: quiz.quizDate || "",
+            questions: quiz.questions.length,
+            responses: quiz.responses.length,
+            createdAt: quiz.createdAt,
+            publishedAt: quiz.publishedAt || quiz.createdAt,
+            closedAt: quiz.closedAt || null,
+          }))
+          .reverse();
+        response.json({ quizzes });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/quizzes/:id/results",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const quiz = data.quizzes.find((item) => item.id === request.params.id);
+        if (!quiz || quiz.status === "draft") {
+          return response.status(404).json({ error: "Quiz not found" });
+        }
+        requireCourse(data, request.user, quiz.courseId, "run");
+        const total = quiz.questions.length;
+        const byUser = new Map(
+          quiz.responses.map((response_) => [response_.userId, response_]),
+        );
+        // The whole roll list appears, so absentees are visible as blanks.
+        const roster = courseRoster(data, quiz.courseId);
+        const enrolmentByRoll = new Map(
+          data.enrollments
+            .filter((item) => item.courseId === quiz.courseId && item.rollNumber)
+            .map((item) => [item.rollNumber, item]),
+        );
+        const results = roster.map((student) => {
+          const enrolment = enrolmentByRoll.get(student.rollNumber);
+          const user = enrolment
+            ? data.users.find((item) => item.id === enrolment.userId)
+            : null;
+          const answered = user ? byUser.get(user.id) : null;
+          return {
+            serial: student.serial,
+            rollNumber: student.rollNumber,
+            name: user?.name || student.name,
+            email: user?.email || "",
+            attempted: Boolean(answered),
+            score: answered ? Number(answered.score) || 0 : null,
+            total,
+            submittedAt: answered?.submittedAt || null,
+          };
+        });
+        const attempted = results.filter((item) => item.attempted);
+        response.json({
+          quiz: {
+            id: quiz.id,
+            courseId: quiz.courseId,
+            title: quiz.title,
+            status: quiz.status,
+            day: quiz.day || "",
+            classLabel: quiz.classLabel || "",
+            quizDate: quiz.quizDate || "",
+            total,
+            publishedAt: quiz.publishedAt || quiz.createdAt,
+            closedAt: quiz.closedAt || null,
+          },
+          summary: {
+            attempted: attempted.length,
+            rostered: results.length,
+            averageScore: attempted.length
+              ? Math.round(
+                  (attempted.reduce((sum, item) => sum + item.score, 0) /
+                    attempted.length) *
+                    100,
+                ) / 100
+              : 0,
+          },
+          results,
+        });
       } catch (error) {
         next(error);
       }
