@@ -134,6 +134,10 @@ let enrolledStudents = [];
 let quizDrafts = [];
 let editingDraftId = "";
 let quizHistory = [];
+let myQuizzes = [];
+let myQuizId = "";
+let attendanceHistory = null;
+let attendanceDayId = "";
 let proximityCode = null;
 let proximityTimer = null;
 let courseNotices = [];
@@ -392,6 +396,10 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearInterval(openAttendanceTimer);
   clearInterval(proximityTimer);
   proximityCode = null;
+  attendanceHistory = null;
+  attendanceDayId = "";
+  myQuizzes = [];
+  myQuizId = "";
   openAttendance = [];
   enrolledStudents = [];
   quizDrafts = [];
@@ -739,7 +747,7 @@ function syncNavVisibility() {
     notices: true,
     students: team,
     materials: true,
-    attendance: team && runsAttendance,
+    attendance: state.userRole === "student" || (team && runsAttendance),
     quizzes: true,
     settings: true,
   };
@@ -809,7 +817,17 @@ function navigate(route, { fromHistory = false } = {}) {
   syncBackButton();
   if (route === "dashboard") refreshOpenAttendance();
   if (route === "students") refreshEnrolledStudents().then(() => { if (state.route === "students") renderStudents(); });
+  if (route === "attendance" && state.userRole === "student") {
+    refreshAttendanceHistory(state.selectedCourseId).then(() => {
+      if (state.route === "attendance") renderStudentAttendance();
+    });
+  }
   if (route === "quizzes") quizResults = null;
+  if (route === "quizzes" && state.userRole === "student") {
+    refreshMyQuizzes(state.selectedCourseId).then(() => {
+      if (state.route === "quizzes") renderStudentQuizAccess();
+    });
+  }
   if (route === "quizmarks" && state.selectedCourseId) {
     // The panel lists the class even before a quiz is chosen.
     Promise.all([
@@ -846,6 +864,8 @@ function render() {
   if (state.route === "notices") return renderNotices();
   if (state.route === "quizmarks") return renderQuizMarks();
   if (state.route === "quizquestions") return renderQuizQuestions();
+  if (state.route === "attendanceday") return renderAttendanceDay();
+  if (state.route === "myquiz") return renderMyQuiz();
   if (state.route === "materials") return renderMaterials();
   return renderPlaceholder(state.route);
 }
@@ -1611,8 +1631,102 @@ function classRow(time, suffix, title, meta, badge, color, route, courseId = "")
   </div>`;
 }
 
+async function refreshAttendanceHistory(courseId) {
+  if (!backendConfigured() || !apiToken) {
+    attendanceHistory = null;
+    return;
+  }
+  try {
+    attendanceHistory = await apiRequest(
+      `/api/attendance/history${courseId ? `?courseId=${encodeURIComponent(courseId)}` : ""}`
+    );
+  } catch {
+    attendanceHistory = null;
+  }
+}
+
+function attendanceDayLabel(session) {
+  const when = new Date(session.startedAt);
+  return Number.isNaN(when.getTime())
+    ? "Class"
+    : when.toLocaleDateString([], { weekday: "long", day: "numeric", month: "short", year: "numeric" });
+}
+
+function shortDate(value) {
+  const when = new Date(value);
+  return Number.isNaN(when.getTime())
+    ? ""
+    : when.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+function stamp(value) {
+  const when = new Date(value);
+  return Number.isNaN(when.getTime())
+    ? ""
+    : when.toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" });
+}
+
+// The student's own record for the course in view.
+function renderStudentAttendance() {
+  const course = selectedCourse();
+  setHeader("My attendance", course ? `${course.courseCode} · YOUR RECORD` : "YOUR RECORD", false);
+  if (!course) {
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>No course yet</h2><p>Join a course to see your attendance.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
+    return;
+  }
+  const summary = attendanceHistory?.summary;
+  const sessions = attendanceHistory?.sessions || [];
+  const percentage = summary?.percentage ?? 0;
+  view.innerHTML = `
+    <div class="left-stack">
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">${escapeHtml(course.name)}</h2><p class="stat-label">${escapeHtml(course.courseCode)} · your attendance so far</p></div><span class="badge ${percentage >= 75 ? "green" : percentage >= 50 ? "amber" : "gray"}">${percentage}%</span></div>
+        <div class="stat-grid" style="margin-top:18px">
+          <article class="card stat"><div class="stat-top"><span class="stat-icon green">${icon("i-check")}</span></div><div class="stat-value">${summary?.attended ?? 0}</div><div class="stat-label">Classes attended</div></article>
+          <article class="card stat"><div class="stat-top"><span class="stat-icon amber">${icon("i-clock")}</span></div><div class="stat-value">${summary?.missed ?? 0}</div><div class="stat-label">Classes missed</div></article>
+          <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span></div><div class="stat-value">${summary?.held ?? 0}</div><div class="stat-label">Classes held</div></article>
+        </div>
+      </article>
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Every class</h2><p class="stat-label">Open a day to see its detail.</p></div><span class="badge gray">${sessions.length}</span></div>
+        ${sessions.length ? `<div class="class-list">
+          ${sessions.map(session => `<button class="class-row attendance-day" type="button" data-action="open-attendance-day" data-session-id="${escapeHtml(session.id)}">
+            <div class="time">${escapeHtml(attendanceDayLabel(session).split(",")[0])}<small>${escapeHtml(shortDate(session.startedAt))}</small></div>
+            <div class="course"><strong>${escapeHtml(session.classLabel || course.name)}</strong><span>${escapeHtml(session.room || course.room || "Room TBA")}</span></div>
+            <span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span>
+            <span class="chevron">${icon("i-arrow")}</span>
+          </button>`).join("")}
+        </div>` : `<p class="stat-label">No class has been held yet.</p>`}
+      </article>
+    </div>`;
+}
+
+function renderAttendanceDay() {
+  const course = selectedCourse();
+  const session = (attendanceHistory?.sessions || []).find(item => item.id === attendanceDayId);
+  if (!session) return navigate("attendance");
+  setHeader(attendanceDayLabel(session), `${session.courseCode || course?.courseCode || ""} · CLASS DETAIL`, false);
+  view.innerHTML = `
+    <button class="back-btn" data-route-link="attendance">${icon("i-back")} Back to my attendance</button>
+    <div class="page-grid">
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">${escapeHtml(session.classLabel || session.courseName || "Class")}</h2><p class="stat-label">${escapeHtml(attendanceDayLabel(session))}</p></div><span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span></div>
+        <div class="summary-list" style="margin-top:18px">
+          <div class="summary-item"><span>Course</span><strong>${escapeHtml(session.courseCode || "")} · ${escapeHtml(session.courseName || "")}</strong></div>
+          <div class="summary-item"><span>Room</span><strong>${escapeHtml(session.room || "Room TBA")}</strong></div>
+          <div class="summary-item"><span>Session opened</span><strong>${escapeHtml(stamp(session.startedAt))}</strong></div>
+          <div class="summary-item"><span>Session closed</span><strong>${session.closedAt ? escapeHtml(stamp(session.closedAt)) : "Still open"}</strong></div>
+          <div class="summary-item"><span>You were marked</span><strong>${session.present ? escapeHtml(stamp(session.markedAt)) : "Not marked"}</strong></div>
+          ${session.present && session.markedVia ? `<div class="summary-item"><span>Marked by</span><strong>${session.markedVia === "student" ? "You, from your phone" : "The course team"}</strong></div>` : ""}
+        </div>
+        ${session.present ? "" : `<div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Nothing was recorded for you in this class. Speak to your professor or TA if that looks wrong.</span></div>`}
+      </article>
+    </div>`;
+}
+
 function renderAttendance() {
   const course = selectedCourse();
+  if (state.userRole === "student") return renderStudentAttendance();
   if (!course || !canRunAttendance(course)) return renderRestrictedAttendance();
   setHeader("Attendance session", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
   if (!backendConfigured() || state.attendanceStatus === "not_started" || !activeAttendance) {
@@ -1890,6 +2004,73 @@ function renderQuiz() {
     </div>`;
 }
 
+async function refreshMyQuizzes(courseId) {
+  if (!backendConfigured() || !apiToken || state.userRole !== "student") {
+    myQuizzes = [];
+    return;
+  }
+  try {
+    const payload = await apiRequest(
+      `/api/quizzes/mine${courseId ? `?courseId=${encodeURIComponent(courseId)}` : ""}`
+    );
+    myQuizzes = Array.isArray(payload.quizzes) ? payload.quizzes : [];
+  } catch {
+    myQuizzes = [];
+  }
+}
+
+// A student sees their own attempts only, never the rest of the class.
+function myQuizzesPanel() {
+  return `<article class="card page-card">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Your past quizzes</h2><p class="stat-label">Your own answers and score. Other students' marks are never shown.</p></div><span class="badge ${myQuizzes.length ? "purple" : "gray"}">${myQuizzes.length}</span></div>
+    ${myQuizzes.length ? `<div class="class-list">
+      ${myQuizzes.map(quiz => `<button class="class-row attendance-day" type="button" data-action="open-my-quiz" data-quiz-id="${escapeHtml(quiz.id)}">
+        <div class="time">${escapeHtml(formatQuizDate(quiz.quizDate || quiz.publishedAt) || "—")}<small>${escapeHtml(quiz.courseCode || "")}</small></div>
+        <div class="course"><strong>${escapeHtml(quiz.title || "Quiz")}</strong><span>${escapeHtml(quiz.classLabel || quiz.day || "")}</span></div>
+        <span class="badge ${quiz.attempted ? "green" : "gray"}">${quiz.attempted ? `${quiz.score}/${quiz.total}` : "Missed"}</span>
+        <span class="chevron">${icon("i-arrow")}</span>
+      </button>`).join("")}
+    </div>` : `<p class="stat-label">You have not taken a quiz yet.</p>`}
+  </article>`;
+}
+
+function renderMyQuiz() {
+  const quiz = myQuizzes.find(item => item.id === myQuizId);
+  if (!quiz) return navigate("quizzes");
+  setHeader(quiz.title || "Your quiz", `${quiz.courseCode || ""} · YOUR ANSWERS`, false);
+  view.innerHTML = `
+    <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
+    <article class="card page-card">
+      <div class="section-head">
+        <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Quiz")}</h2><p class="stat-label">${[
+          formatQuizDate(quiz.quizDate || quiz.publishedAt),
+          quiz.classLabel || quiz.day,
+          quiz.attempted ? `you scored ${quiz.score} of ${quiz.total}` : "you did not take this quiz"
+        ].filter(Boolean).map(escapeHtml).join(" · ")}</p></div>
+        <span class="badge ${quiz.attempted ? "green" : "gray"}">${quiz.attempted ? `${quiz.score}/${quiz.total}` : "Missed"}</span>
+      </div>
+      ${quiz.revealed && quiz.questions.length ? `<div class="quiz-review" style="margin-top:18px">
+        ${quiz.questions.map((question, index) => `<div class="question-card">
+          <div class="question-top"><span class="q-number">${index + 1}</span><strong>${escapeHtml(question.text || "Image question")}</strong></div>
+          ${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${index + 1} image" />` : ""}
+          <div class="options">
+            ${(question.options || []).map((option, optionIndex) => {
+              const correct = optionIndex === question.answer;
+              const chosen = optionIndex === question.yourAnswer;
+              return `<div class="option-input review-option ${correct ? "is-correct" : ""} ${chosen && !correct ? "is-wrong" : ""}">
+                <span class="review-mark">${correct ? icon("i-check") : chosen ? icon("i-close") : ""}</span>
+                <span class="option-text">${escapeHtml(option)}</span>
+                ${chosen ? `<span class="option-share">Your answer</span>` : ""}
+              </div>`;
+            }).join("")}
+          </div>
+        </div>`).join("")}
+      </div>` : `<div class="security-note" style="margin-top:18px"><span class="lock">⌾</span><span>${quiz.attempted
+        ? "Answers appear once your professor closes this quiz."
+        : "You did not answer this quiz, so there is nothing to review."}</span></div>`}
+    </article>`;
+}
+
 function renderStudentQuizAccess() {
   const course = selectedCourse();
   setHeader(
@@ -1914,6 +2095,7 @@ function renderStudentQuizAccess() {
           <button class="btn btn-primary" type="submit">${icon("i-send")} Submit quiz</button>
         </form>` : `<button class="btn btn-primary" disabled>${icon(quizResponded ? "i-check" : "i-play")} ${quizResponded ? "Response submitted" : "Waiting for quiz"}</button>`}</div>
       </article>
+      ${myQuizzesPanel()}
       <aside class="card page-card"><div class="section-head"><h3>Your access</h3><span class="badge green">Verified</span></div><div class="summary-list"><div class="summary-item"><span>Enrollment</span><strong>Active</strong></div><div class="summary-item"><span>Course</span><strong>${escapeHtml(course.courseCode)}</strong></div></div></aside>
     </div>` : `
     <article class="card empty-state"><div><span class="empty-icon">${icon("i-quiz")}</span><h2>Course access required</h2><p>Join a course before opening its quizzes.</p><button class="btn btn-primary" data-route-link="classes">Join a course</button></div></article>`;
@@ -3957,6 +4139,14 @@ document.addEventListener("click", async event => {
     }
     renderNotices();
     return toast("Notice removed");
+  }
+  if (action === "open-my-quiz") {
+    myQuizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
+    return navigate("myquiz");
+  }
+  if (action === "open-attendance-day") {
+    attendanceDayId = event.target.closest("[data-session-id]")?.dataset.sessionId || "";
+    return navigate("attendanceday");
   }
   if (action === "open-quiz-questions") {
     if (!quizResults) return toast("Choose a quiz first", "error");

@@ -2185,6 +2185,166 @@ test("course activity raises notices that students can read but not change", asy
   assert.match(wrongDay.body.error, /Monday/);
 });
 
+test("a student sees their own attendance record and their own quiz answers", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "History Professor",
+    email: "history-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [
+      { rollNumber: "23ME10001", name: "Mine Student" },
+      { rollNumber: "23ME10002", name: "Other Student" },
+    ],
+  });
+  const classId = await addClass(testServer.baseUrl, professor.token, course.id);
+  const mine = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Mine Student",
+    email: "mine@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10001",
+  });
+  const other = await createVerifiedUser(testServer.baseUrl, {
+    role: "student",
+    name: "Other Student",
+    email: "other@kgpian.iitkgp.ac.in",
+    password: "student-password",
+    rollNumber: "23ME10002",
+  });
+  for (const token of [mine.token, other.token]) {
+    await request(testServer.baseUrl, "/api/courses/join", {
+      method: "POST",
+      token,
+      body: { code: course.code },
+    });
+  }
+
+  const empty = await request(testServer.baseUrl, "/api/attendance/history", {
+    token: mine.token,
+  });
+  assert.equal(empty.response.status, 200);
+  assert.deepEqual(empty.body.summary, { held: 0, attended: 0, missed: 0, percentage: 0 });
+
+  // Two classes: present for the first, absent for the second.
+  const first = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: course.id },
+  });
+  await request(testServer.baseUrl, `/api/attendance/${first.body.attendance.id}/check-in`, {
+    method: "POST",
+    token: mine.token,
+    body: {
+      signals: { wifi: true, bluetooth: true },
+      code: await attendanceCode(testServer.baseUrl, professor.token, first.body.attendance.id),
+    },
+  });
+  await request(testServer.baseUrl, `/api/attendance/${first.body.attendance.id}/close`, {
+    method: "POST",
+    token: professor.token,
+    body: {},
+  });
+  const second = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: course.id },
+  });
+  await request(testServer.baseUrl, `/api/attendance/${second.body.attendance.id}/close`, {
+    method: "POST",
+    token: professor.token,
+    body: {},
+  });
+
+  const history = await request(testServer.baseUrl, "/api/attendance/history", {
+    token: mine.token,
+  });
+  assert.deepEqual(history.body.summary, {
+    held: 2,
+    attended: 1,
+    missed: 1,
+    percentage: 50,
+  });
+  assert.equal(history.body.sessions.length, 2);
+  // Newest first, and each day carries its own outcome.
+  assert.equal(history.body.sessions[0].present, false);
+  assert.equal(history.body.sessions[1].present, true);
+  assert.equal(history.body.sessions[1].markedVia, "student");
+  // One student's history says nothing about anyone else's.
+  const otherHistory = await request(testServer.baseUrl, "/api/attendance/history", {
+    token: other.token,
+  });
+  assert.equal(otherHistory.body.summary.attended, 0);
+
+  const quiz = await request(testServer.baseUrl, "/api/quizzes", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      title: "Recap",
+      ...quizSettings(classId),
+      questions: [
+        { text: "One?", options: ["A", "B"], answer: 0 },
+        { text: "Two?", options: ["A", "B"], answer: 1 },
+      ],
+    },
+  });
+  const quizId = quiz.body.quiz.id;
+  await request(testServer.baseUrl, `/api/quizzes/${quizId}/respond`, {
+    method: "POST",
+    token: mine.token,
+    body: { answers: [0, 0] },
+  });
+
+  // While the quiz is still open the answers stay hidden.
+  const duringQuiz = await request(testServer.baseUrl, "/api/quizzes/mine", {
+    token: mine.token,
+  });
+  assert.equal(duringQuiz.body.quizzes[0].attempted, true);
+  assert.equal(duringQuiz.body.quizzes[0].score, 1);
+  assert.equal(duringQuiz.body.quizzes[0].revealed, false);
+  assert.deepEqual(duringQuiz.body.quizzes[0].questions, []);
+
+  await request(testServer.baseUrl, `/api/quizzes/${quizId}/close`, {
+    method: "POST",
+    token: professor.token,
+    body: {},
+  });
+
+  const afterClose = await request(testServer.baseUrl, "/api/quizzes/mine", {
+    token: mine.token,
+  });
+  const reviewed = afterClose.body.quizzes[0];
+  assert.equal(reviewed.revealed, true);
+  assert.equal(reviewed.questions.length, 2);
+  assert.equal(reviewed.questions[0].yourAnswer, 0);
+  assert.equal(reviewed.questions[0].answer, 0);
+  assert.equal(reviewed.questions[1].yourAnswer, 0);
+  assert.equal(reviewed.questions[1].answer, 1);
+
+  // A classmate who never answered sees no answers, and never anyone's marks.
+  const otherView = await request(testServer.baseUrl, "/api/quizzes/mine", {
+    token: other.token,
+  });
+  assert.equal(otherView.body.quizzes[0].attempted, false);
+  assert.equal(otherView.body.quizzes[0].score, null);
+  assert.deepEqual(otherView.body.quizzes[0].questions, []);
+  assert.equal(JSON.stringify(otherView.body).includes("Mine Student"), false);
+
+  // The class-wide marks endpoint stays shut to students.
+  const denied = await request(testServer.baseUrl, `/api/quizzes/${quizId}/results`, {
+    token: mine.token,
+  });
+  assert.equal(denied.response.status, 403);
+});
+
 test("professors sign up from department subdomains, students do not", async (t) => {
   const overrideEmail = "profile-override@mech.iitkgp.ac.in";
   const testServer = await createTestServer({

@@ -1952,6 +1952,68 @@ function createApp(options = {}) {
     },
   );
 
+  // A student's own record: every session held, whether they were present, and
+  // the running percentage.
+  app.get(
+    "/api/attendance/history",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courseId = String(request.query.courseId || "").trim();
+        const enrolments = data.enrollments.filter(
+          (item) =>
+            item.userId === request.user.id && (!courseId || item.courseId === courseId),
+        );
+        const byCourse = new Map(enrolments.map((item) => [item.courseId, item]));
+        const sessions = data.attendanceSessions
+          .filter((session) => byCourse.has(session.courseId))
+          .map((session) => {
+            const course = data.courses.find((item) => item.id === session.courseId);
+            const rollNumber =
+              byCourse.get(session.courseId)?.rollNumber || request.user.rollNumber || "";
+            const record = (session.records || []).find(
+              (item) => item.rollNumber === rollNumber,
+            );
+            const scheduled = data.schedule.find((item) => item.id === session.scheduleId);
+            return {
+              id: session.id,
+              courseId: session.courseId,
+              courseCode: course?.courseCode || "",
+              courseName: course?.name || "",
+              startedAt: session.startedAt,
+              closedAt: session.closedAt || null,
+              status: session.status,
+              room: scheduled?.room || course?.room || "",
+              classLabel: scheduled
+                ? `${scheduled.day} · ${scheduled.start}${scheduled.end ? `–${scheduled.end}` : ""}`
+                : "",
+              onRoster: Boolean(record),
+              present: Boolean(record?.present),
+              markedAt: record?.present ? record.markedAt : null,
+              markedVia: record?.markedVia || "",
+            };
+          })
+          .filter((session) => session.onRoster)
+          .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+
+        const held = sessions.length;
+        const attended = sessions.filter((session) => session.present).length;
+        response.json({
+          summary: {
+            held,
+            attended,
+            missed: held - attended,
+            percentage: held ? Math.round((attended / held) * 1000) / 10 : 0,
+          },
+          sessions,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.get(
     "/api/attendance/open",
     authenticate,
@@ -2378,6 +2440,70 @@ function createApp(options = {}) {
           return null;
         });
         response.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // A student's own quiz history: what they answered and what was correct,
+  // for their attempts only. Nobody else's marks appear here.
+  app.get(
+    "/api/quizzes/mine",
+    authenticate,
+    requireRoles("student"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courseId = String(request.query.courseId || "").trim();
+        const enrolledIds = new Set(
+          data.enrollments
+            .filter((item) => item.userId === request.user.id)
+            .map((item) => item.courseId),
+        );
+        const quizzes = data.quizzes
+          .filter(
+            (quiz) =>
+              quiz.status !== "draft" &&
+              enrolledIds.has(quiz.courseId) &&
+              (!courseId || quiz.courseId === courseId),
+          )
+          .map((quiz) => {
+            const own = quiz.responses.find((item) => item.userId === request.user.id);
+            const course = data.courses.find((item) => item.id === quiz.courseId);
+            return {
+              id: quiz.id,
+              courseId: quiz.courseId,
+              courseCode: course?.courseCode || "",
+              title: quiz.title,
+              day: quiz.day || "",
+              classLabel: quiz.classLabel || "",
+              quizDate: quiz.quizDate || "",
+              publishedAt: quiz.publishedAt || quiz.createdAt,
+              status: quiz.status,
+              attempted: Boolean(own),
+              score: own ? Number(own.score) || 0 : null,
+              total: quiz.questions.length,
+              submittedAt: own?.submittedAt || null,
+              // Answers are revealed once the quiz is closed, or straight away
+              // when the team chose to reveal after each answer.
+              questions:
+                own && (quiz.status === "closed" || quiz.reveal === "after-answer")
+                  ? quiz.questions.map((question, index) => ({
+                      text: question.text,
+                      image: question.image || "",
+                      options: question.options,
+                      answer: question.answer,
+                      yourAnswer: own.answers?.[index] ?? null,
+                    }))
+                  : [],
+              revealed: Boolean(
+                own && (quiz.status === "closed" || quiz.reveal === "after-answer"),
+              ),
+            };
+          })
+          .reverse();
+        response.json({ quizzes });
       } catch (error) {
         next(error);
       }
