@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: android-apk
@@ -94,3 +94,15 @@ jobs:
           path: CampusPulse.apk
           if-no-files-found: error
           retention-days: 90
+
+      - name: Publish APK to a public download link
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: CampusPulse Android (latest)
+          body: |
+            Automatically rebuilt from commit ${{ github.sha }}.
+            Download `CampusPulse.apk` below and install it on your device to pick up native (Java/Bluetooth) changes.
+            Web-only (HTML/CSS/JS) changes reach installed apps automatically; native changes require reinstalling this APK.
+          files: CampusPulse.apk
+          make_latest: true

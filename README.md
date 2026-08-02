@@ -95,7 +95,13 @@ Do not commit the roster file or paste the secret into source code, build logs, 
 
 ## Build the APK
 
-Every push to `main` runs `.github/workflows/build-android.yml`. Download the `CampusPulse-Android` workflow artifact, or run locally on a machine with Java 21 and Android SDK 36:
+Every push to `main` runs `.github/workflows/build-android.yml`, which also publishes the built APK to a public download link (no GitHub login required) that always points at the latest build:
+
+```
+https://github.com/ayushdebnath012/CampusPulse/releases/download/android-latest/CampusPulse.apk
+```
+
+You can also download the `CampusPulse-Android` workflow artifact (requires a GitHub login), or run locally on a machine with Java 21 and Android SDK 36:
 
 ```powershell
 npm.cmd install
