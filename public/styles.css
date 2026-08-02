@@ -614,8 +614,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   .stat-grid { grid-template-columns:1fr 1fr; }
   .stat:last-child { grid-column:span 2; }
   .right-stack { display:flex; }
-  .class-row { grid-template-columns:48px minmax(0,1fr) auto; }
-  .class-row .badge { display:none; }
+  .class-row { grid-template-columns:48px minmax(0,1fr) auto auto; }
   .check-grid, .options { grid-template-columns:1fr; }
   .course-grid, .field-grid { grid-template-columns:1fr; }
   .schedule-day { grid-template-columns:74px minmax(0,1fr); gap:11px; padding:14px; }
