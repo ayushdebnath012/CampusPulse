@@ -1,6 +1,63 @@
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { buildCourseData } = require("./course-data");
+
+function cleanJoinCode(value) {
+  return String(value || "").trim().toUpperCase().slice(0, 64);
+}
+
+function newJoinCode(used) {
+  let code = "";
+  do {
+    code = crypto
+      .randomBytes(12)
+      .toString("base64url")
+      .replace(/[^a-z0-9]/gi, "")
+      .slice(0, 8)
+      .toUpperCase();
+  } while (code.length !== 8 || used.has(code));
+  return code;
+}
+
+// Older databases have one `code`. It remains the student's code for backward
+// compatibility, while every course also receives a separate, unguessable TA
+// code. Resolving collisions here makes the invariant hold for imported data as
+// well as for newly created courses.
+function normalizeCourseJoinCodes(courses) {
+  const used = new Set();
+  return courses.map((course) => {
+    let studentCode = cleanJoinCode(course?.studentCode || course?.code);
+    if (!studentCode || used.has(studentCode)) studentCode = newJoinCode(used);
+    used.add(studentCode);
+
+    let taCode = cleanJoinCode(course?.taCode);
+    if (!taCode || used.has(taCode)) taCode = newJoinCode(used);
+    used.add(taCode);
+
+    return {
+      ...course,
+      // `code` is deliberately retained for old installed clients.
+      code: studentCode,
+      studentCode,
+      taCode,
+    };
+  });
+}
+
+function courseJoinCodesNeedPersistence(source, normalized) {
+  const originalCourses = Array.isArray(source?.courses) ? source.courses : [];
+  if (originalCourses.length !== normalized.courses.length) return true;
+  return normalized.courses.some((course, index) => {
+    const original = originalCourses[index] || {};
+    return (
+      original.id !== course.id ||
+      original.code !== course.code ||
+      original.studentCode !== course.studentCode ||
+      original.taCode !== course.taCode
+    );
+  });
+}
 
 function configuredCourseOwners(env = process.env) {
   const raw = String(env.COURSE_OWNER_EMAILS_JSON || "").trim();
@@ -45,6 +102,7 @@ function normalizeData(value, env = process.env) {
       Array.isArray(value?.[key]) ? value[key] : fallback,
     ]),
   );
+  normalized.courses = normalizeCourseJoinCodes(normalized.courses);
   normalized.enrollments = normalized.enrollments
     .map((enrollment) => {
       const user = normalized.users.find((item) => item.id === enrollment.userId);
@@ -163,10 +221,15 @@ function createStore(filePath, options = {}) {
 
   async function load() {
     try {
-      return normalizeData(JSON.parse(await fs.readFile(absolutePath, "utf8")), env);
+      const source = JSON.parse(await fs.readFile(absolutePath, "utf8"));
+      const data = normalizeData(source, env);
+      return {
+        data,
+        joinCodesMigrated: courseJoinCodesNeedPersistence(source, data),
+      };
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
-      return initialData(env);
+      return { data: initialData(env), joinCodesMigrated: false };
     }
   }
 
@@ -178,13 +241,20 @@ function createStore(filePath, options = {}) {
   }
 
   return {
-    async read() {
-      await queue;
-      return clone(await load());
+    read() {
+      const operation = queue.then(async () => {
+        const { data, joinCodesMigrated } = await load();
+        // A read may be the first operation after upgrading. Persist generated
+        // legacy TA codes immediately so they never change between requests.
+        if (joinCodesMigrated) await save(data);
+        return clone(data);
+      });
+      queue = operation.catch(() => {});
+      return operation;
     },
     update(mutator) {
       const operation = queue.then(async () => {
-        const data = await load();
+        const { data } = await load();
         const result = await mutator(data);
         await save(data);
         return clone(result);
@@ -197,8 +267,10 @@ function createStore(filePath, options = {}) {
 }
 
 module.exports = {
+  courseJoinCodesNeedPersistence,
   configuredCourseOwners,
   createStore,
   initialData,
+  normalizeCourseJoinCodes,
   normalizeData,
 };

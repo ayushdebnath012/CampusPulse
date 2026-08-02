@@ -4,9 +4,9 @@ CampusPulse is a classroom operations app inspired by Acadly. This rollout conta
 
 ## Included
 
-- Password sign-up and login with IIT KGP email validation and a required department
+- Password sign-up and login with a required department; professors use `name@department.iitkgp.ac.in`
 - Password hashing, bearer sessions, and role-based API authorization
-- TA and student enrollment with course-specific private join codes
+- Separate private TA and Student join codes for every course, visible only to its professor owner
 - A selected-course switcher that changes the full workspace together
 - A shared weekly agenda with previous days, class topics, and sub-class breakdowns
 - Professor-owned courses with professor/TA roster, schedule, and material management
@@ -24,7 +24,7 @@ cd backend
 npm.cmd install
 $env:FACULTY_SIGNUP_CODE="choose-a-private-code"
 $env:TA_SIGNUP_CODE="choose-a-private-ta-code"
-$env:COURSE_OWNER_EMAILS_JSON='{"soft401":"professor@iitkgp.ac.in","kbs60353":"professor@iitkgp.ac.in"}'
+$env:COURSE_OWNER_EMAILS_JSON='{"soft401":"professor@mech.iitkgp.ac.in","kbs60353":"professor@mech.iitkgp.ac.in"}'
 npm.cmd start
 ```
 
@@ -57,10 +57,10 @@ During deployment, configure the private invitation variables. Email variables a
 For example:
 
 ```json
-{"soft401":"professor@iitkgp.ac.in","kbs60353":"professor@iitkgp.ac.in"}
+{"soft401":"professor@mech.iitkgp.ac.in","kbs60353":"professor@mech.iitkgp.ac.in"}
 ```
 
-Existing seeded courses are fail-closed until their owner email mapping resolves to a verified professor account. Newly created courses are automatically exclusive to the professor who creates them. TAs and students see a course only after joining it with the professor-shared code. Enrolled TAs can manage rosters, schedules, topics, materials, attendance, and quizzes. Only the professor owner can create courses, remove materials, or see join codes.
+Existing seeded courses are fail-closed until their owner email mapping resolves to a verified professor account. Newly created courses are automatically exclusive to the professor who creates them. Each course gets a Student join code and a different TA join code; only the professor owner can see them. Students and TAs must use the code for their role. Enrolled TAs can manage rosters, schedules, topics, materials, attendance, and quizzes. Only the professor owner can create courses or remove materials.
 
 Production keeps `ALLOW_DEV_VERIFICATION_CODE=false`; direct password sign-up does not depend on email delivery. Render's free PostgreSQL database is suitable for a prototype but may have retention limits; select an appropriate paid database for long-term records.
 
@@ -108,7 +108,7 @@ The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk
 
 Android builds include a local fallback copy of the app and the Capacitor updater. Every push to `main` packages `public/` as a versioned ZIP, publishes it through GitHub Pages, and writes a SHA-256 protected update manifest. Installed Android copies check that manifest on launch, download a newer web bundle in the background, and apply it after the app is restarted or backgrounded. The update status and a **Restart and update** action are available in **Settings**.
 
-Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.4.1 once to add native phone alerts; later web-only changes can again arrive through the in-app updater.
+Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.4.2 once; later web-only changes can arrive through the in-app updater.
 
 ### Keep Android upgrades installable
 

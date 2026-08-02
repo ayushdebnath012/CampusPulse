@@ -1,5 +1,9 @@
 const { Pool } = require("pg");
-const { initialData, normalizeData } = require("./database");
+const {
+  courseJoinCodesNeedPersistence,
+  initialData,
+  normalizeData,
+} = require("./database");
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -28,18 +32,33 @@ function createPostgresStore(connectionString, options = {}) {
     return ready;
   }
 
-  async function load(client = pool) {
+  async function load(client = pool, persistJoinCodes = false) {
     await ensureTable();
     const result = await client.query(
       "SELECT data FROM campuspulse_store WHERE id = 1",
     );
-    return normalizeData(result.rows[0]?.data || initialData(env), env);
+    const source = result.rows[0]?.data || initialData(env);
+    const data = normalizeData(source, env);
+    if (
+      persistJoinCodes &&
+      result.rows[0] &&
+      courseJoinCodesNeedPersistence(source, data)
+    ) {
+      await client.query(
+        "UPDATE campuspulse_store SET data = $1::jsonb, updated_at = NOW() WHERE id = 1",
+        [JSON.stringify(data)],
+      );
+    }
+    return data;
   }
 
   return {
-    async read() {
-      await queue;
-      return clone(await load());
+    read() {
+      const operation = queue.then(async () => clone(await load(pool, true)));
+      // Legacy-code migration is a write. Keep reads serialized so two first
+      // requests cannot generate and return different TA codes.
+      queue = operation.catch(() => {});
+      return operation;
     },
     update(mutator) {
       const operation = queue.then(async () => {

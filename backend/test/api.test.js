@@ -4,7 +4,7 @@ const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
 const { createApp } = require("../src/app");
-const { initialData, normalizeData } = require("../src/database");
+const { createStore, initialData, normalizeData } = require("../src/database");
 const { ACCOUNT_RESET_ID, deleteExistingAccountsOnce } = require("../src/maintenance");
 
 
@@ -218,7 +218,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const professor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Ayush Professor",
-    email: "professor@iitkgp.ac.in",
+    email: "professor@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   const student = await createVerifiedUser(testServer.baseUrl, {
@@ -247,6 +247,10 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     students: rosterOf(22, "METEST", "KBS Student"),
   });
   const softClassId = await addClass(testServer.baseUrl, professor.token, soft.id);
+  assert.equal(soft.code, soft.studentCode);
+  assert.match(soft.studentCode, /^[A-Z0-9]{8}$/);
+  assert.match(soft.taCode, /^[A-Z0-9]{8}$/);
+  assert.notEqual(soft.studentCode, soft.taCode);
 
   const softRoster = await request(
     testServer.baseUrl,
@@ -316,6 +320,8 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.equal(joined.response.status, 201);
   assert.equal(joined.body.course.id, soft.id);
   assert.equal("code" in joined.body.course, false);
+  assert.equal("studentCode" in joined.body.course, false);
+  assert.equal("taCode" in joined.body.course, false);
 
   const bootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
     token: student.token,
@@ -371,7 +377,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const taJoinedSoft = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: teachingAssistant.token,
-    body: { code: soft.code },
+    body: { code: soft.taCode },
   });
   assert.equal(taJoinedSoft.response.status, 201);
   assert.equal(taJoinedSoft.body.course.capabilities.canRunAttendance, true);
@@ -380,6 +386,8 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.equal(taJoinedSoft.body.course.capabilities.canManageRoster, true);
   assert.equal(taJoinedSoft.body.course.capabilities.canUploadMaterials, true);
   assert.equal("code" in taJoinedSoft.body.course, false);
+  assert.equal("studentCode" in taJoinedSoft.body.course, false);
+  assert.equal("taCode" in taJoinedSoft.body.course, false);
 
   const taSchedule = await request(
     testServer.baseUrl,
@@ -412,7 +420,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const taJoinedKbs = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: teachingAssistant.token,
-    body: { code: kbs.code },
+    body: { code: kbs.taCode },
   });
   assert.equal(taJoinedKbs.response.status, 201);
 
@@ -669,7 +677,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   const otherProfessor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Other Professor",
-    email: "other-professor@iitkgp.ac.in",
+    email: "other-professor@mech.iitkgp.ac.in",
     password: "other-professor-password",
   });
   const otherBootstrap = await request(testServer.baseUrl, "/api/bootstrap", {
@@ -831,7 +839,7 @@ test("signup creates and signs in an account without email delivery or OTP", asy
   assert.equal(session.body.user.email, "password-only@kgpian.iitkgp.ac.in");
 });
 
-test("a professor can create several courses, each with its own join code", async (t) => {
+test("a professor receives distinct student and TA codes for every course", async (t) => {
   const testServer = await createTestServer({
     env: { NODE_ENV: "production", FACULTY_SIGNUP_CODE: "" },
     mailer: recordingMailer(),
@@ -872,7 +880,16 @@ test("a professor can create several courses, each with its own join code", asyn
   assert.ok(owned.body.courses.every((course) => course.owned && course.rosterReady));
   assert.match(first.code, /^[A-Z0-9]{8}$/);
   assert.match(second.code, /^[A-Z0-9]{8}$/);
+  assert.equal(first.code, first.studentCode);
+  assert.equal(second.code, second.studentCode);
+  assert.match(first.taCode, /^[A-Z0-9]{8}$/);
+  assert.match(second.taCode, /^[A-Z0-9]{8}$/);
   assert.notEqual(first.code, second.code);
+  assert.equal(
+    new Set([first.studentCode, first.taCode, second.studentCode, second.taCode])
+      .size,
+    4,
+  );
 
   const duplicate = await request(testServer.baseUrl, "/api/courses", {
     method: "POST",
@@ -889,6 +906,57 @@ test("a professor can create several courses, each with its own join code", asyn
     rollNumber: "MFTEST0001",
     password: "student-password",
   });
+  const assistant = await createVerifiedUser(testServer.baseUrl, {
+    role: "ta",
+    name: "Course Assistant",
+    email: "course-assistant@iitkgp.ac.in",
+    password: "assistant-password",
+  });
+
+  const studentUsingTaCode = await request(
+    testServer.baseUrl,
+    "/api/courses/join",
+    {
+      method: "POST",
+      token: student.token,
+      body: { code: first.taCode },
+    },
+  );
+  assert.equal(studentUsingTaCode.response.status, 403);
+  assert.match(studentUsingTaCode.body.error, /TA join code/i);
+
+  const taUsingStudentCode = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: assistant.token,
+    body: { code: first.studentCode },
+  });
+  assert.equal(taUsingStudentCode.response.status, 403);
+  assert.match(taUsingStudentCode.body.error, /student join code/i);
+
+  const taJoined = await request(testServer.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: assistant.token,
+    body: { code: first.taCode },
+  });
+  assert.equal(taJoined.response.status, 201);
+  assert.equal("code" in taJoined.body.course, false);
+  assert.equal("studentCode" in taJoined.body.course, false);
+  assert.equal("taCode" in taJoined.body.course, false);
+
+  // TA sign-in is the same ordinary email/password session flow as student
+  // sign-in; it never asks for another emailed code after account creation.
+  const taLogin = await request(testServer.baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: {
+      role: "ta",
+      email: "course-assistant@iitkgp.ac.in",
+      password: "assistant-password",
+    },
+  });
+  assert.equal(taLogin.response.status, 200);
+  assert.equal(taLogin.body.user.role, "ta");
+  assert.ok(taLogin.body.token);
+
   for (const course of [first, second]) {
     const joined = await request(testServer.baseUrl, "/api/courses/join", {
       method: "POST",
@@ -903,6 +971,70 @@ test("a professor can create several courses, each with its own join code", asyn
   assert.equal(bootstrap.body.enrolledCourseIds.length, 2);
 });
 
+test("legacy courses receive stable persisted TA codes and cross-type uniqueness", async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campuspulse-codes-"));
+  const databasePath = path.join(directory, "database.json");
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+
+  const legacy = initialData({});
+  legacy.courses.push(
+    {
+      id: "legacy-one",
+      code: "LEGACY01",
+      name: "Legacy One",
+      courseCode: "LE1001",
+      ownerId: "professor-one",
+    },
+    {
+      id: "legacy-two",
+      // Corrupt imported data reused the first course's code and even used it
+      // as a TA code. Normalization must repair both collisions.
+      code: "LEGACY01",
+      taCode: "LEGACY01",
+      name: "Legacy Two",
+      courseCode: "LE1002",
+      ownerId: "professor-one",
+    },
+  );
+  await fs.writeFile(databasePath, JSON.stringify(legacy), "utf8");
+
+  const store = createStore(databasePath, { env: {} });
+  const firstRead = await store.read();
+  const secondRead = await store.read();
+  const allCodes = firstRead.courses.flatMap((course) => [
+    course.studentCode,
+    course.taCode,
+  ]);
+  assert.equal(new Set(allCodes).size, 4);
+  assert.equal(firstRead.courses[0].studentCode, "LEGACY01");
+  assert.deepEqual(
+    secondRead.courses.map(({ code, studentCode, taCode }) => ({
+      code,
+      studentCode,
+      taCode,
+    })),
+    firstRead.courses.map(({ code, studentCode, taCode }) => ({
+      code,
+      studentCode,
+      taCode,
+    })),
+  );
+
+  const persisted = JSON.parse(await fs.readFile(databasePath, "utf8"));
+  assert.deepEqual(
+    persisted.courses.map(({ code, studentCode, taCode }) => ({
+      code,
+      studentCode,
+      taCode,
+    })),
+    firstRead.courses.map(({ code, studentCode, taCode }) => ({
+      code,
+      studentCode,
+      taCode,
+    })),
+  );
+});
+
 test("the one-time reset empties the workspace completely", async (t) => {
   const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
   t.after(async () => {
@@ -913,7 +1045,7 @@ test("the one-time reset empties the workspace completely", async (t) => {
   const professor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Reset Professor",
-    email: "reset-professor@iitkgp.ac.in",
+    email: "reset-professor@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   await createCourse(testServer.baseUrl, professor.token, {
@@ -958,7 +1090,7 @@ test("a course without an uploaded roster builds one from enrolled students", as
   const professor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Ayush Professor",
-    email: "professor@iitkgp.ac.in",
+    email: "professor@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   const student = await createVerifiedUser(testServer.baseUrl, {
@@ -1050,7 +1182,7 @@ test("students mark their own attendance only while the professor's session is o
   const professor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Ayush Professor",
-    email: "professor@iitkgp.ac.in",
+    email: "professor@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   const student = await createVerifiedUser(testServer.baseUrl, {
@@ -1514,7 +1646,7 @@ test("the students list shows who joined, and only to the course team", async (t
   const outsider = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Other Professor",
-    email: "other-professor@iitkgp.ac.in",
+    email: "other-professor@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   const otherView = await request(testServer.baseUrl, "/api/students", {
@@ -1533,7 +1665,7 @@ test("course teams share materials only with their enrolled course", async (t) =
   const professor = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Material Professor",
-    email: "materials@iitkgp.ac.in",
+    email: "materials@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   const student = await createVerifiedUser(testServer.baseUrl, {
@@ -1568,7 +1700,7 @@ test("course teams share materials only with their enrolled course", async (t) =
   const taJoined = await request(testServer.baseUrl, "/api/courses/join", {
     method: "POST",
     token: teachingAssistant.token,
-    body: { code: course.code },
+    body: { code: course.taCode },
   });
   assert.equal(taJoined.response.status, 201);
 
@@ -1686,6 +1818,8 @@ test("editing a course keeps its join code, and deleting one clears its data", a
   assert.equal(updated.body.course.room, "NR305");
   // The join code must survive an edit so nobody has to rejoin.
   assert.equal(updated.body.course.code, course.code);
+  assert.equal(updated.body.course.studentCode, course.studentCode);
+  assert.equal(updated.body.course.taCode, course.taCode);
 
   // The roll list and enrolment stay attached across the rename.
   const roster = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
@@ -1708,7 +1842,7 @@ test("editing a course keeps its join code, and deleting one clears its data", a
   const outsider = await createVerifiedUser(testServer.baseUrl, {
     role: "faculty",
     name: "Outsider Professor",
-    email: "outsider-professor@iitkgp.ac.in",
+    email: "outsider-professor@mech.iitkgp.ac.in",
     password: "professor-password",
   });
   for (const method of ["PATCH", "DELETE"]) {
@@ -2381,8 +2515,8 @@ test("a student sees their own attendance record and their own quiz answers", as
   assert.equal(denied.response.status, 403);
 });
 
-test("professors sign up from department subdomains, students do not", async (t) => {
-  const overrideEmail = "profile-override@mech.iitkgp.ac.in";
+test("professors require a department-subdomain address, including dotted names", async (t) => {
+  const overrideEmail = "profile.override@mech.iitkgp.ac.in";
   const testServer = await createTestServer({
     env: {
       FACULTY_SIGNUP_CODE: "",
@@ -2436,7 +2570,8 @@ test("professors sign up from department subdomains, students do not", async (t)
       phone: "9876543210",
     },
   });
-  assert.equal(plainProfessor.response.status, 202);
+  assert.equal(plainProfessor.response.status, 400);
+  assert.match(plainProfessor.body.error, /name@department\.iitkgp\.ac\.in/i);
 
   // A student address may not register as faculty.
   const studentAsProfessor = await request(testServer.baseUrl, "/api/auth/signup/request", {
@@ -2451,7 +2586,7 @@ test("professors sign up from department subdomains, students do not", async (t)
     },
   });
   assert.equal(studentAsProfessor.response.status, 400);
-  assert.match(studentAsProfessor.body.error, /iitkgp\.ac\.in email/i);
+  assert.match(studentAsProfessor.body.error, /name@department\.iitkgp\.ac\.in/i);
 
   const outsider = await request(testServer.baseUrl, "/api/auth/signup/request", {
     method: "POST",
@@ -2465,6 +2600,43 @@ test("professors sign up from department subdomains, students do not", async (t)
     },
   });
   assert.equal(outsider.response.status, 400);
+});
+
+test("password-only signup applies the same professor email rule", async (t) => {
+  const testServer = await createTestServer({
+    env: { NODE_ENV: "production", ALLOW_DEV_VERIFICATION_CODE: "false" },
+  });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+  const body = {
+    role: "faculty",
+    name: "Department Professor",
+    department: "Mechanical Engineering",
+    password: "professor-password",
+    phone: "9876543210",
+  };
+
+  const rootAddress = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: { ...body, email: "professor@iitkgp.ac.in" },
+  });
+  assert.equal(rootAddress.response.status, 400);
+  assert.match(rootAddress.body.error, /name@department\.iitkgp\.ac\.in/i);
+
+  const studentAddress = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: { ...body, email: "professor@kgpian.iitkgp.ac.in" },
+  });
+  assert.equal(studentAddress.response.status, 400);
+
+  const departmentAddress = await request(testServer.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: { ...body, email: "first.last@mech.iitkgp.ac.in" },
+  });
+  assert.equal(departmentAddress.response.status, 201);
+  assert.equal(departmentAddress.body.user.role, "faculty");
 });
 
 test("passwords can be changed while signed in and reset by email", async (t) => {
@@ -2744,7 +2916,7 @@ test("faculty signup ignores legacy invitations while TA still requires one", as
     role: "faculty",
     name: "Uninvited Faculty",
     department: "Mechanical Engineering",
-    email: "uninvited@iitkgp.ac.in",
+    email: "uninvited@mech.iitkgp.ac.in",
     password: "faculty-password",
     phone: "9876543210",
   };

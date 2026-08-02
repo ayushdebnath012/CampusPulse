@@ -28,12 +28,24 @@ function isCampusEmail(email) {
   return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
 }
 
-// Professors and staff use iitkgp.ac.in or a department subdomain such as
-// mech.iitkgp.ac.in; kgpian.iitkgp.ac.in is the student domain.
+// A professor's address identifies their department, for example
+// dkpra@mech.iitkgp.ac.in. The institute root and student subdomain are not
+// professor addresses.
 function isFacultyEmail(email) {
-  const domain = cleanEmail(email).split("@")[1] || "";
-  if (domain === "kgpian.iitkgp.ac.in") return false;
-  return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
+  const [local, domain, extraAddressPart] = cleanEmail(email).split("@");
+  const [department, institute, academic, country, extraDomainPart] = String(
+    domain || "",
+  ).split(".");
+  return Boolean(
+    !extraAddressPart &&
+      !extraDomainPart &&
+      /^[a-z0-9][a-z0-9_%+.-]*$/.test(local || "") &&
+      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(department || "") &&
+      department !== "kgpian" &&
+      institute === "iitkgp" &&
+      academic === "ac" &&
+      country === "in",
+  );
 }
 
 function publicUser(user) {
@@ -329,12 +341,20 @@ function publicCourse(database, user, course) {
   const {
     ownerId: _ownerId,
     code,
+    studentCode,
+    taCode,
     joinCodeConfigured: _joinCodeConfigured,
     ...metadata
   } = course;
   return {
     ...metadata,
-    ...(owner ? { code } : {}),
+    ...(owner
+      ? {
+          code: studentCode || code,
+          studentCode: studentCode || code,
+          taCode,
+        }
+      : {}),
     owned: owner,
     enrolled: Boolean(enrollment),
     rosterReady: courseRoster(database, course.id).length > 0,
@@ -374,11 +394,17 @@ function requireCourse(database, user, courseId, permission = "access") {
   return course;
 }
 
-function createJoinCode(database) {
+function createJoinCode(database, reserved = new Set()) {
   let code;
   do {
     code = randomToken().replace(/[^a-z0-9]/gi, "").slice(0, 8).toUpperCase();
-  } while (!code || database.courses.some((course) => course.code === code));
+  } while (
+    !code ||
+    reserved.has(code) ||
+    database.courses.some((course) =>
+      [course.code, course.studentCode, course.taCode].includes(code),
+    )
+  );
   return code;
 }
 
@@ -776,7 +802,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.4.1",
+        version: "1.4.2",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
@@ -824,7 +850,8 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
       if (role === "faculty" && !isFacultyEmail(email))
         return response.status(400).json({
-          error: "Professor accounts require an @iitkgp.ac.in email",
+          error:
+            "Professor accounts require name@department.iitkgp.ac.in (for example, dkpra@mech.iitkgp.ac.in)",
         });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
@@ -936,7 +963,8 @@ function createApp(options = {}) {
 
       if (role === "faculty" && !isFacultyEmail(email))
         return response.status(400).json({
-          error: "Professor accounts require an @iitkgp.ac.in email",
+          error:
+            "Professor accounts require name@department.iitkgp.ac.in (for example, dkpra@mech.iitkgp.ac.in)",
         });
 
       // The same details the account will carry once the code is confirmed.
@@ -1648,9 +1676,15 @@ function createApp(options = {}) {
             error.status = 409;
             throw error;
           }
+          const studentCode = createJoinCode(database);
+          const taCode = createJoinCode(database, new Set([studentCode]));
           const created = {
             id: `course-${Date.now()}-${randomToken().slice(0, 6)}`,
-            code: createJoinCode(database),
+            // Keep `code` as an alias so already-installed clients continue to
+            // use the student code while newer clients label both explicitly.
+            code: studentCode,
+            studentCode,
+            taCode,
             name,
             courseCode,
             section: section || "Current term",
@@ -1771,7 +1805,8 @@ function createApp(options = {}) {
           existing.room =
             String(request.body.room ?? existing.room).trim().slice(0, 80) ||
             "Room TBA";
-          // The join code is deliberately untouched: students and TAs have it.
+          // Both join codes are deliberately untouched: already invited people
+          // may still be holding either one.
           return publicCourse(database, request.user, existing);
         });
         response.json({ course });
@@ -2161,15 +2196,35 @@ function createApp(options = {}) {
     async (request, response, next) => {
       try {
         const code = String(request.body.code || "").trim().toUpperCase();
+        if (!code) {
+          return response.status(400).json({ error: "Enter a course join code" });
+        }
         // The roll number belongs to the account, so it is never re-entered.
         const submittedRoll = String(request.user.rollNumber || "").trim().toUpperCase();
         const enrollment = await store.update((database) => {
+          const requiredCode =
+            request.user.role === "ta" ? "taCode" : "studentCode";
+          const otherCode =
+            request.user.role === "ta" ? "studentCode" : "taCode";
           const course = database.courses.find(
-            (item) => item.code === code && hasValidCourseOwner(database, item),
+            (item) =>
+              item[requiredCode] === code && hasValidCourseOwner(database, item),
           );
           if (!course) {
+            const wrongRoleCode = database.courses.some(
+              (item) =>
+                item[otherCode] === code && hasValidCourseOwner(database, item),
+            );
             const error = new Error("Course code not found");
-            error.status = 404;
+            if (wrongRoleCode) {
+              error.message =
+                request.user.role === "ta"
+                  ? "That is the student join code. Ask the professor for the TA join code."
+                  : "That is the TA join code. Ask the professor for the student join code.";
+              error.status = 403;
+            } else {
+              error.status = 404;
+            }
             throw error;
           }
           const roster = courseRoster(database, course.id);

@@ -1,4 +1,4 @@
-const APP_VERSION = "1.4.1";
+const APP_VERSION = "1.4.2";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -448,17 +448,27 @@ const loginProfiles = {
     title: "Professor login",
     shortTitle: "Professor",
     description: "Create and manage your exclusive courses, rosters, attendance, and quizzes.",
-    idLabel: "Verified faculty email",
-    placeholder: "professor@iitkgp.ac.in",
+    idLabel: "Departmental IIT KGP email",
+    emailLabel: "Departmental IIT KGP email",
+    placeholder: "dkpra@mech.iitkgp.ac.in",
+    emailPattern: "[A-Za-z0-9][A-Za-z0-9._%+\\-]*@(?![Kk][Gg][Pp][Ii][Aa][Nn]\\.)[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
+    emailTitle: "Use your departmental address, for example dkpra@mech.iitkgp.ac.in",
+    emailHelp: "Use name@department.iitkgp.ac.in, for example dkpra@mech.iitkgp.ac.in.",
+    emailError: "Professor accounts require a departmental email such as dkpra@mech.iitkgp.ac.in",
     initials: "PF",
     name: "Professor Demo"
   },
   ta: {
     title: "Teaching Assistant login",
     shortTitle: "TA",
-    description: "Join assigned courses by code, manage rosters and materials, run attendance, and publish quizzes.",
-    idLabel: "Verified TA email",
-    placeholder: "ta@iitkgp.ac.in",
+    description: "Sign in like a student, then use the TA course code to access teaching-team tools.",
+    idLabel: "Student institute email",
+    emailLabel: "Student institute email",
+    placeholder: "ta@kgpian.iitkgp.ac.in",
+    emailPattern: "[A-Za-z0-9._%+\\-]+@[Kk][Gg][Pp][Ii][Aa][Nn]\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
+    emailTitle: "Use the same @kgpian.iitkgp.ac.in address used for a student account",
+    emailHelp: "Use your @kgpian.iitkgp.ac.in student address. The invitation code provisions the account as a TA.",
+    emailError: "TA accounts require your @kgpian.iitkgp.ac.in student email",
     initials: "TA",
     name: "Teaching Assistant"
   },
@@ -466,8 +476,13 @@ const loginProfiles = {
     title: "Student login",
     shortTitle: "Student",
     description: "Join professor-owned courses by code, mark your attendance when class starts, take quizzes, and view your calendar.",
-    idLabel: "Verified institute email",
+    idLabel: "Student institute email",
+    emailLabel: "Student institute email",
     placeholder: "student@kgpian.iitkgp.ac.in",
+    emailPattern: "[A-Za-z0-9._%+\\-]+@[Kk][Gg][Pp][Ii][Aa][Nn]\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
+    emailTitle: "Use your @kgpian.iitkgp.ac.in student address",
+    emailHelp: "Use your @kgpian.iitkgp.ac.in student address.",
+    emailError: "Student accounts require an @kgpian.iitkgp.ac.in email",
     initials: "ST",
     name: "Student Demo"
   }
@@ -527,8 +542,9 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <input id="signupName" name="name" type="text" placeholder="Enter your full name" autocomplete="name" minlength="2" required />
             <label for="signupDepartment">Department</label>
             <input id="signupDepartment" name="department" type="text" placeholder="e.g. Mechanical Engineering" autocomplete="organization" minlength="2" maxlength="120" required />
-            <label for="signupEmail">IIT KGP email</label>
-            <input id="signupEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="email" required />
+            <label for="signupEmail">${profile.emailLabel}</label>
+            <input id="signupEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="email" pattern="${profile.emailPattern}" title="${profile.emailTitle}" aria-describedby="signupEmailHelp" required />
+            <p class="auth-field-help" id="signupEmailHelp">${profile.emailHelp}</p>
             <div class="auth-field-pair">
               <div><label for="signupPassword">Password</label><input id="signupPassword" name="password" type="password" placeholder="At least 8 characters" autocomplete="new-password" minlength="8" required /></div>
               <div><label for="signupConfirm">Confirm password</label><input id="signupConfirm" name="confirmPassword" type="password" placeholder="Repeat password" autocomplete="new-password" minlength="8" required /></div>
@@ -540,10 +556,10 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
               <div><label for="signupRoll">Roll number</label><input id="signupRoll" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" required /></div>
               <div><label for="signupHall">Hall of residence</label><input id="signupHall" name="hall" type="text" placeholder="e.g. Azad Hall" autocomplete="off" maxlength="80" required /></div>
             </div>`}
-            ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
+            ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA account invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the CampusPulse administrator" autocomplete="off" aria-describedby="taInviteHelp" required /><p class="auth-field-help" id="taInviteHelp">This provisions the TA account; it is not a course join code. After sign-in, enter the professor's TA course code to join each course.</p>` : ""}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
-          <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. We email a six-digit code to confirm it before the account is created.</p></div>` : `
+          <div class="auth-demo-note"><span>${selectedLoginRole === "faculty" ? "Departmental email required" : "Student email required"}</span><p>${profile.emailHelp} We email a six-digit code to confirm it before the account is created.</p></div>` : `
           ${authMode === "forgot" ? `
           <form id="forgotPasswordForm" class="login-form">
             <label for="forgotEmail">Registered email</label>
@@ -627,6 +643,23 @@ function isCampusEmail(email = "") {
   return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
 }
 
+function isStudentEmail(email = "") {
+  const domain = email.trim().toLowerCase().split("@")[1] || "";
+  return domain === "kgpian.iitkgp.ac.in";
+}
+
+function isProfessorEmail(email = "") {
+  const [local, domain, extra] = email.trim().toLowerCase().split("@");
+  return !extra
+    && /^[a-z0-9][a-z0-9_%+.-]*$/.test(local || "")
+    && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.iitkgp\.ac\.in$/.test(domain || "")
+    && domain !== "kgpian.iitkgp.ac.in";
+}
+
+function isEmailForRole(role, email = "") {
+  return role === "faculty" ? isProfessorEmail(email) : isStudentEmail(email);
+}
+
 async function credentialHash(email, password) {
   const input = new TextEncoder().encode(`${email.trim().toLowerCase()}:${password}`);
   const digest = await crypto.subtle.digest("SHA-256", input);
@@ -699,7 +732,21 @@ async function syncBackendState() {
   state.accountName = payload.user.name;
   state.authEmail = payload.user.email;
   state.courses = Array.isArray(payload.courses)
-    ? payload.courses.map((course) => ({ ...course, code: course.code || "" }))
+    ? payload.courses.map((course) => {
+        if (payload.user.role === "faculty") {
+          return { ...course, code: course.code || course.studentCode || "" };
+        }
+        // The API already strips private codes for non-owners. Remove them
+        // again before persistence so a future API regression cannot cache
+        // either professor-only code on a TA or student device.
+        const {
+          code: _legacyCode,
+          studentCode: _studentCode,
+          taCode: _taCode,
+          ...safeCourse
+        } = course;
+        return safeCourse;
+      })
     : [];
   migrateImportedScheduleCourseIds();
   if (!state.courses.some(course => course.id === state.selectedCourseId)) {
@@ -937,7 +984,7 @@ function renderDashboard() {
   const course = selectedCourse() || state.courses[0];
   if (!course) {
     setHeader(`Good morning, ${roleDisplayName()}`, state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TA WORKSPACE", false);
-    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>${state.userRole === "faculty" ? "Create your first course" : "Join your assigned course"}</h2><p>${state.userRole === "faculty" ? "Courses are private to their professor owner. Create a course, then share its join code with students and teaching assistants." : "Enter the private course code shared by the professor before accessing attendance or quizzes."}</p><button class="btn btn-primary" ${state.userRole === "faculty" ? 'data-action="open-course-modal"' : 'data-route-link="classes"'}>${icon("i-plus")} ${state.userRole === "faculty" ? "Create course" : "Enter course code"}</button></div></article>`;
+    view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>${state.userRole === "faculty" ? "Create your first course" : "Join your assigned course"}</h2><p>${state.userRole === "faculty" ? "Courses are private to their professor owner. Create a course, then share the student and TA join codes with the right groups." : "Enter the private course code shared by the professor before accessing attendance or quizzes."}</p><button class="btn btn-primary" ${state.userRole === "faculty" ? 'data-action="open-course-modal"' : 'data-route-link="classes"'}>${icon("i-plus")} ${state.userRole === "faculty" ? "Create course" : "Enter course code"}</button></div></article>`;
     return;
   }
   const attendanceMatchesCourse = activeAttendance?.courseId === course.id;
@@ -2764,13 +2811,18 @@ function renderTeachingAssistantsSection() {
 }
 
 function facultyCourseCard(course, isOpen = false) {
+  const studentCode = course.studentCode || course.code || "";
+  const taCode = course.taCode || "";
   return `<article class="course-card ${isOpen ? "is-open-course" : ""}">
     <div class="course-accent"></div>
     <div class="course-card-head"><h3>${escapeHtml(course.name)}</h3>${isOpen
       ? `<span class="badge green">Open</span>`
       : `<button class="text-btn" type="button" data-action="select-course" data-course-id="${escapeHtml(course.id)}">Open</button>`}</div>
     <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
-    <div class="course-code"><span>TA & student join code</span><strong>${escapeHtml(course.code)}</strong><button class="icon-btn" data-copy="${escapeHtml(course.code)}" aria-label="Copy join code">${icon("i-quiz")}</button></div>
+    <div class="course-join-codes">
+      <div class="course-code"><span>Student join code</span><strong>${escapeHtml(studentCode || "Unavailable")}</strong><button class="icon-btn" data-copy="${escapeHtml(studentCode)}" data-copy-label="Student join code" aria-label="Copy student join code" ${studentCode ? "" : "disabled"}>${icon("i-quiz")}</button></div>
+      <div class="course-code"><span>TA join code</span><strong>${escapeHtml(taCode || "Unavailable")}</strong><button class="icon-btn" data-copy="${escapeHtml(taCode)}" data-copy-label="TA join code" aria-label="Copy TA join code" ${taCode ? "" : "disabled"}>${icon("i-quiz")}</button></div>
+    </div>
     <div class="course-footer"><span>${course.rosterReady === false ? `${icon("i-users")} No official roster yet` : `${icon("i-users")} ${Number(course.students) || 0} rostered students`}</span><span>${Number(course.materialCount) || 0} shared files</span></div>
     <div class="course-manage">
       <button class="text-btn" type="button" data-action="edit-course" data-course-id="${escapeHtml(course.id)}">Edit details</button>
@@ -2937,8 +2989,8 @@ function renderTAClasses() {
     <div class="left-stack">
       <article class="card join-panel">
         <span class="empty-icon">${icon("i-plus")}</span><h2>Join an assigned course</h2>
-        <p class="stat-label">Enter the private code shared by the course professor. Your TA account must also be administrator-approved.</p>
-        <form class="join-code" id="joinForm"><div class="join-code-field"><label for="taJoinCode">Private course code</label><input id="taJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
+        <p class="stat-label">Enter the TA join code shared by the course professor. Student join codes cannot grant teaching-team access.</p>
+        <form class="join-code" id="joinForm"><div class="join-code-field"><label for="taJoinCode">TA join code</label><input id="taJoinCode" name="joinCode" maxlength="32" placeholder="Enter TA join code" autocomplete="off" required/></div><button class="btn btn-primary">Join course</button></form>
       </article>
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Courses you assist</h2><p class="stat-label">Select a course to point rosters, materials, attendance, quizzes, and schedule at it.</p></div><span class="badge purple">${state.courses.length} assigned</span></div>
@@ -2969,9 +3021,9 @@ function renderStudentClasses() {
     <div class="left-stack">
     <article class="card join-panel">
       <span class="empty-icon">${icon("i-plus")}</span><h2>Enter your course code</h2>
-      <p class="stat-label">Your faculty will share a private course code. The roll number from your account is used, so you only need to join once.</p>
+      <p class="stat-label">Your faculty will share the student join code. The roll number from your account is used, so you only need to join once.</p>
       <form class="join-code" id="joinForm">
-        <div class="join-code-field"><label for="studentJoinCode">Private course code</label><input id="studentJoinCode" name="joinCode" maxlength="32" placeholder="Enter course code" autocomplete="off" required/></div>
+        <div class="join-code-field"><label for="studentJoinCode">Student join code</label><input id="studentJoinCode" name="joinCode" maxlength="32" placeholder="Enter student join code" autocomplete="off" required/></div>
         <button class="btn btn-primary">Join course</button>
       </form>
       ${enrolled.length ? `<div class="student-course-list"><div class="section-head"><h3>Courses joined</h3><span class="badge green">${enrolled.length} active</span></div>${enrolled.map(course => studentCourseCard(course)).join("")}</div>` : ""}
@@ -2983,16 +3035,18 @@ function renderStudentClasses() {
 function openCourseModal(course = null) {
   modalReturnFocus = document.activeElement;
   const editing = Boolean(course);
+  const studentCode = course?.studentCode || course?.code || "";
+  const taCode = course?.taCode || "";
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
       <form class="modal" id="courseForm" role="dialog" aria-modal="true" aria-labelledby="courseModalTitle" aria-describedby="courseModalDescription" ${editing ? `data-course-id="${escapeHtml(course.id)}"` : ""}>
-        <div class="modal-head"><div><h2 id="courseModalTitle">${editing ? "Edit course details" : "Add a new course"}</h2><p id="courseModalDescription">${editing ? "The join code stays the same, so nobody has to rejoin." : "Students will use the generated code to enroll."}</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+        <div class="modal-head"><div><h2 id="courseModalTitle">${editing ? "Edit course details" : "Add a new course"}</h2><p id="courseModalDescription">${editing ? "The student and TA join codes stay the same, so nobody has to rejoin." : "Separate student and TA join codes will be generated."}</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
         <div class="field-grid">
           <div class="field full"><label for="courseName">Course name</label><input id="courseName" name="name" placeholder="e.g. Computer Networks" value="${editing ? escapeHtml(course.name) : ""}" required /></div>
           <div class="field"><label for="courseCode">Course code</label><input id="courseCode" name="courseCode" placeholder="CSE 308" value="${editing ? escapeHtml(course.courseCode) : ""}" required /></div>
           <div class="field"><label for="section">Section</label><input id="section" name="section" placeholder="Section A" value="${editing ? escapeHtml(course.section) : ""}" required /></div>
           <div class="field"><label for="room">Classroom</label><input id="room" name="room" placeholder="Room 205" value="${editing ? escapeHtml(course.room) : ""}" required /></div>
-          <div class="field full"><p class="stat-label">${editing ? `Join code <strong>${escapeHtml(course.code || "")}</strong> is unchanged by this edit. Rosters, files, attendance and quizzes all stay attached.` : "After creation, use the Students tab to upload the official Excel, PDF, CSV, or JSON roster. The Materials tab holds course files."}</p></div>
+          <div class="field full"><p class="stat-label">${editing ? `Student code <strong>${escapeHtml(studentCode || "Unavailable")}</strong> and TA code <strong>${escapeHtml(taCode || "Unavailable")}</strong> are unchanged by this edit. Rosters, files, attendance and quizzes all stay attached.` : "After creation, give each code only to its intended group. Use the Students tab to upload the official roster and Materials for course files."}</p></div>
         </div>
         <div class="setup-actions"><button type="button" class="btn" data-action="close-modal">Cancel</button><button class="btn btn-primary">${icon(editing ? "i-check" : "i-plus")} ${editing ? "Save changes" : "Create course"}</button></div>
       </form>
@@ -3985,7 +4039,7 @@ document.addEventListener("click", async event => {
   const copyButton = event.target.closest("[data-copy]");
   if (copyButton) {
     navigator.clipboard?.writeText(copyButton.dataset.copy);
-    return toast(`Join code ${copyButton.dataset.copy} copied`);
+    return toast(`${copyButton.dataset.copyLabel || "Join code"} ${copyButton.dataset.copy} copied`);
   }
   const routeButton = event.target.closest("[data-route], [data-route-link]");
   if (routeButton) {
@@ -5045,12 +5099,15 @@ document.addEventListener("submit", async event => {
     const email = String(data.email || "").trim().toLowerCase();
     const name = String(data.name || "").trim().replace(/\s+/g, " ");
     const department = String(data.department || "").trim().replace(/\s+/g, " ");
+    const profile = loginProfiles[data.role];
     if (!backendConfigured()) {
       return toast("Connect CampusPulse to its API before creating an account", "error");
     }
+    if (!profile) return toast("Choose a valid account type", "error");
     if (name.length < 2) return toast("Enter your full name", "error");
     if (department.length < 2) return toast("Enter your department name", "error");
     if (!isCampusEmail(email)) return toast("Use a valid IIT KGP institutional email", "error");
+    if (!isEmailForRole(data.role, email)) return toast(profile.emailError, "error");
     if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
     try {
@@ -5178,8 +5235,8 @@ document.addEventListener("submit", async event => {
     syncCourseSwitcher();
     toast(
       editingId
-        ? `${result.course.name} updated · Code ${result.course.code} unchanged`
-        : `${result.course.name} created · Code ${result.course.code}`
+        ? `${result.course.name} updated · Student and TA codes unchanged`
+        : `${result.course.name} created · Student ${result.course.studentCode || result.course.code} · TA ${result.course.taCode}`
     );
   }
   if (event.target.id === "addClassForm") {

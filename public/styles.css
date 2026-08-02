@@ -88,7 +88,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .app-menu-head .icon-btn { margin-left: auto; flex: 0 0 auto; }
 .app-menu-nav { display: flex; flex-direction: column; gap: 4px; margin-top: 14px; }
 .app-menu-item {
-  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 46px; padding: 0 12px;
+  display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; min-height: 46px; padding: 0 12px;
   border: 0; border-radius: 12px; background: none; color: var(--ink);
   font-size: 13px; font-weight: 700; text-align: left; cursor: pointer;
 }
@@ -102,6 +102,13 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .eyebrow { margin: 0 0 7px; color: #9293a4; font-size: 10px; font-weight: 750; letter-spacing: .13em; }
 h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .top-actions { display: flex; align-items: center; gap: 12px; }
+.top-actions .notification-btn { margin-left: auto; }
+.settings-btn {
+  position: relative; flex: 0 0 auto; width: 42px; height: 42px; padding: 0;
+  color: var(--primary); border: 1px solid #dcdcec; border-radius: 11px; background: white;
+  box-shadow: 0 4px 12px rgba(35,35,74,.04);
+}
+.settings-btn > svg { width: 19px; height: 19px; }
 .course-switcher { display:flex; align-items:center; gap:8px; min-width:230px; height:42px; padding:0 10px; border:1px solid #dcdcec; border-radius:11px; background:white; box-shadow:0 4px 12px rgba(35,35,74,.04); }
 .course-switcher > svg { flex:0 0 auto; width:16px; height:16px; color:var(--primary); }
 .course-switcher > span { color:var(--muted); font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.07em; }
@@ -339,6 +346,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .course-code { display:flex; align-items:center; justify-content:space-between; margin-top:18px; padding:10px 11px; border-radius:10px; background:#f7f7fb; }
 .course-code span { color:var(--muted); font-size:8px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
 .course-code strong { color:var(--primary); font-size:12px; letter-spacing:.08em; }
+.course-join-codes { display:grid; gap:8px; margin-top:18px; }
+.course-join-codes .course-code { margin-top:0; }
 .course-footer { display:flex; align-items:center; justify-content:space-between; margin-top:14px; }
 .course-footer span { display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:9px; }
 .course-footer svg { width:13px; height:13px; }
@@ -448,6 +457,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .login-form label { margin:0 0 7px; color:#5f6073; font-size:9px; font-weight:800; }
 .login-form input { width:100%; height:46px; margin-bottom:16px; padding:0 13px; border:1px solid var(--line); border-radius:11px; outline:none; color:var(--ink); background:#fcfcfe; font-size:11px; }
 .login-form input:focus { border-color:var(--primary); box-shadow:0 0 0 3px var(--primary-soft); background:white; }
+.login-form input[aria-describedby] { margin-bottom:6px; }
+.auth-field-help { margin:0 0 16px; color:var(--muted); font-size:9px; line-height:1.5; }
 .auth-field-pair { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
 .auth-field-pair > div { display:flex; flex-direction:column; min-width:0; }
 .auth-submit { width:100%; margin-top:4px; }
@@ -584,15 +595,16 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   .sidebar { inset:auto 0 0 0; width:100%; height:65px; padding:8px 10px; border-right:0; border-top:1px solid var(--line); }
   .brand, .side-bottom { display:none; }
   .primary-nav { flex-direction:row; justify-content:space-around; margin:0; height:100%; }
+  .primary-nav .nav-item:nth-child(n+5) { display:none; }
   .nav-item { width:auto; flex:1; flex-direction:column; gap:3px; min-height:auto; border-radius:9px; font-size:8px; }
   .nav-item span { display:block; }
   .nav-item svg { width:18px; height:18px; }
   .main { width:100%; }
   .topbar { flex-wrap:wrap; padding:22px 18px 17px; }
-  .top-actions { width:100%; }
+  .top-actions { width:100%; justify-content:flex-end; }
+  .top-actions .notification-btn { display:grid; margin-left:auto; }
   .course-switcher { flex:1; min-width:0; }
   .course-switcher > span { display:none; }
-  .top-actions .notification-btn { display:grid; }
   .role-switch span:first-child { display:none; }
   .role-switch { padding:0 7px; }
   .top-actions .btn { width:42px; padding:0; font-size:0; }
