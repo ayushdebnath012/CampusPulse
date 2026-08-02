@@ -3334,9 +3334,9 @@ function openReminderModal() {
   document.querySelector("#modalRoot").innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
       <form class="modal" id="reminderForm" role="dialog" aria-modal="true" aria-labelledby="reminderModalTitle" aria-describedby="reminderModalDescription">
-        <div class="modal-head"><div><h2 id="reminderModalTitle">${icon("i-bell")} Class reminders</h2><p id="reminderModalDescription">Get an alert on this phone before every scheduled class.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
+        <div class="modal-head"><div><h2 id="reminderModalTitle">${icon("i-clock")} Class reminders</h2><p id="reminderModalDescription">Get an alert on this phone before every scheduled class.</p></div><button type="button" class="icon-btn" data-action="close-modal" aria-label="Close">${icon("i-close")}</button></div>
         <div class="reminder-summary">
-          <span class="reminder-bell">${icon("i-bell")}</span>
+          <span class="reminder-bell">${icon("i-clock")}</span>
           <div><strong>${entries.length} weekly ${entries.length === 1 ? "class" : "classes"} found</strong><p>${settings.enabled ? `Reminders are on · ${settings.leadMinutes} minutes before class` : "Reminders are currently off"}</p></div>
         </div>
         <div class="field" style="margin-top:18px">
@@ -3347,14 +3347,14 @@ function openReminderModal() {
         </div>
         ${supported
           ? entries.length
-            ? `<div class="security-note"><span class="lock">${icon("i-bell")}</span><span>CampusPulse schedules these alerts on this Android phone. No SMS, email service, or internet connection is needed when an alert fires.</span></div>`
+            ? `<div class="security-note"><span class="lock">${icon("i-clock")}</span><span>CampusPulse schedules these alerts on this Android phone. No SMS, email service, or internet connection is needed when an alert fires.</span></div>`
             : `<div class="security-note"><span class="lock">${icon("i-calendar")}</span><span>Add or import a weekly timetable before enabling reminders.</span></div>`
           : `<div class="security-note"><span class="lock">${icon("i-download")}</span><span>Phone reminders need the latest CampusPulse Android APK. This browser cannot reliably alert you while it is closed.</span></div>`}
         <div class="setup-actions">
           <button type="button" class="btn" data-action="close-modal">Cancel</button>
           ${!entries.length ? `<button type="button" class="btn btn-soft" data-action="open-reminder-schedule">${icon("i-calendar")} Open schedule</button>` : ""}
           ${settings.enabled ? `<button type="button" class="btn btn-danger" data-action="disable-class-reminders">Turn off</button>` : ""}
-          <button class="btn btn-primary" type="submit" ${submitDisabled ? "disabled" : ""}>${icon("i-bell")} ${settings.enabled ? "Update reminders" : "Enable reminders"}</button>
+          <button class="btn btn-primary" type="submit" ${submitDisabled ? "disabled" : ""}>${icon("i-clock")} ${settings.enabled ? "Update reminders" : "Enable reminders"}</button>
         </div>
       </form>
     </div>`;
