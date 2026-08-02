@@ -13,16 +13,20 @@ import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanResult;
 import android.bluetooth.le.ScanSettings;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelUuid;
+
+import androidx.activity.result.ActivityResult;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
@@ -69,11 +73,46 @@ public class ProximityPlugin extends Plugin {
     private BluetoothLeScanner scanner;
     private ScanCallback scanCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /** What to resume once the user answers the "turn Bluetooth on" system prompt. */
+    private Runnable pendingBluetoothAction;
 
     private BluetoothAdapter adapter() {
         BluetoothManager manager =
             (BluetoothManager) getContext().getSystemService(Context.BLUETOOTH_SERVICE);
         return manager == null ? null : manager.getAdapter();
+    }
+
+    // Apps cannot silently flip the radio, but we can trigger the system's own
+    // enable dialog so the professor/student only has to tap "Allow" once.
+    private void ensureBluetoothOn(PluginCall call, Runnable action) {
+        BluetoothAdapter adapter = adapter();
+        if (adapter == null) {
+            call.reject("This device does not support Bluetooth");
+            return;
+        }
+        if (adapter.isEnabled()) {
+            action.run();
+            return;
+        }
+        pendingBluetoothAction = action;
+        startActivityForResult(
+            call,
+            new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE),
+            "handleBluetoothEnableResult"
+        );
+    }
+
+    @ActivityCallback
+    private void handleBluetoothEnableResult(PluginCall call, ActivityResult result) {
+        Runnable action = pendingBluetoothAction;
+        pendingBluetoothAction = null;
+        if (call == null) return;
+        BluetoothAdapter adapter = adapter();
+        if (adapter != null && adapter.isEnabled() && action != null) {
+            action.run();
+        } else {
+            call.reject("Turn Bluetooth on to continue");
+        }
     }
 
     private boolean needsRuntimePermission(String alias) {
@@ -120,6 +159,19 @@ public class ProximityPlugin extends Plugin {
             call.reject("A session token is required");
             return;
         }
+        BluetoothAdapter adapter = adapter();
+        if (adapter == null) {
+            call.reject("This device cannot broadcast over Bluetooth LE");
+            return;
+        }
+        if (!adapter.isEnabled()) {
+            ensureBluetoothOn(call, () -> continueAdvertising(call, token));
+            return;
+        }
+        continueAdvertising(call, token);
+    }
+
+    private void continueAdvertising(PluginCall call, String token) {
         BluetoothAdapter adapter = adapter();
         if (adapter == null || !adapter.isEnabled()) {
             call.reject("Turn Bluetooth on to broadcast attendance");
@@ -212,6 +264,19 @@ public class ProximityPlugin extends Plugin {
     }
 
     private void beginScan(PluginCall call) {
+        BluetoothAdapter adapter = adapter();
+        if (adapter == null) {
+            call.reject("This device cannot scan over Bluetooth LE");
+            return;
+        }
+        if (!adapter.isEnabled()) {
+            ensureBluetoothOn(call, () -> continueScanning(call));
+            return;
+        }
+        continueScanning(call);
+    }
+
+    private void continueScanning(PluginCall call) {
         BluetoothAdapter adapter = adapter();
         if (adapter == null || !adapter.isEnabled()) {
             call.reject("Turn Bluetooth on to mark attendance");

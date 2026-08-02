@@ -2352,6 +2352,21 @@ function createApp(options = {}) {
             error.status = 400;
             throw error;
           }
+          // Only one session per course per calendar day.
+          const today = new Date().toISOString().slice(0, 10);
+          const existingToday = database.attendanceSessions.find(
+            (item) =>
+              item.courseId === courseId &&
+              item.startedAt &&
+              item.startedAt.slice(0, 10) === today,
+          );
+          if (existingToday) {
+            const error = new Error(
+              "Attendance was already taken for this course today. Reopen the previous session to add missed students.",
+            );
+            error.status = 409;
+            throw error;
+          }
           database.attendanceSessions.forEach((item) => {
             if (item.status === "open" && item.courseId === courseId) {
               item.status = "closed";
@@ -2394,6 +2409,42 @@ function createApp(options = {}) {
         });
         await deliverNotifications(result.deliveries);
         response.status(201).json({ attendance: publicAttendance(result.session) });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.get(
+    "/api/attendance/past",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const courseId = String(request.query.courseId || "").trim();
+        if (courseId) requireCourse(data, request.user, courseId, "run");
+        const accessibleIds = new Set(
+          accessibleCourses(data, request.user).map((course) => course.id),
+        );
+        const sessions = data.attendanceSessions
+          .filter(
+            (item) =>
+              accessibleIds.has(item.courseId) &&
+              (!courseId || item.courseId === courseId) &&
+              item.status === "closed",
+          )
+          .map((item) => ({
+            id: item.id,
+            courseId: item.courseId,
+            scheduleId: item.scheduleId,
+            startedAt: item.startedAt,
+            closedAt: item.closedAt,
+            present: item.records.filter((r) => r.present).length,
+            total: item.records.length,
+          }))
+          .reverse();
+        response.json({ sessions });
       } catch (error) {
         next(error);
       }
@@ -2569,6 +2620,96 @@ function createApp(options = {}) {
         if (!attendance)
           return response.status(404).json({ error: "Attendance session not found" });
         requireCourse(data, request.user, attendance.courseId, "run");
+        response.json({ attendance: publicAttendance(attendance) });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/attendance/:id/reopen",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const attendance = await store.update((database) => {
+          const session = database.attendanceSessions.find(
+            (item) => item.id === request.params.id && item.status === "closed",
+          );
+          if (!session) {
+            const error = new Error("No closed session found to reopen");
+            error.status = 404;
+            throw error;
+          }
+          requireCourse(database, request.user, session.courseId, "run");
+          // Close any other open session for this course first.
+          database.attendanceSessions.forEach((item) => {
+            if (item.status === "open" && item.courseId === session.courseId) {
+              item.status = "closed";
+              item.closedAt = new Date().toISOString();
+              item.closedBy = request.user.id;
+            }
+          });
+          session.status = "open";
+          session.proximitySecret = session.proximitySecret || randomToken();
+          delete session.closedAt;
+          delete session.closedBy;
+          return session;
+        });
+        response.json({ attendance: publicAttendance(attendance) });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/attendance/:id/add-student",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const rollNumber = String(request.body.rollNumber || "").trim().toUpperCase();
+        if (!rollNumber) {
+          return response.status(400).json({ error: "Roll number is required" });
+        }
+        const attendance = await store.update((database) => {
+          const session = database.attendanceSessions.find(
+            (item) => item.id === request.params.id && item.status === "open",
+          );
+          if (!session) {
+            const error = new Error("Attendance session is not open");
+            error.status = 404;
+            throw error;
+          }
+          requireCourse(database, request.user, session.courseId, "run");
+          // Already on this session's roster?
+          if (session.records.some((r) => r.rollNumber === rollNumber)) {
+            const existing = session.records.find((r) => r.rollNumber === rollNumber);
+            existing.present = true;
+            existing.markedAt = new Date().toISOString();
+            existing.markedBy = request.user.id;
+            return session;
+          }
+          // Must be an enrolled student or on the course roster.
+          const roster = courseRoster(database, session.courseId);
+          const student = roster.find((r) => r.rollNumber === rollNumber);
+          if (!student) {
+            const error = new Error(
+              "This roll number is not on the course roster. Add them on the Students tab first.",
+            );
+            error.status = 400;
+            throw error;
+          }
+          session.records.push({
+            ...attendanceRecord(student),
+            present: true,
+            markedAt: new Date().toISOString(),
+            markedBy: request.user.id,
+          });
+          return session;
+        });
         response.json({ attendance: publicAttendance(attendance) });
       } catch (error) {
         next(error);

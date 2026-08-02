@@ -607,20 +607,34 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
   assert.equal(latestClosedSoftAttendance.body.attendance.status, "closed");
   assert.equal(latestClosedSoftAttendance.body.attendance.records.length, 310);
 
+  // The TA already opened a Knowledge Based Systems session earlier and it's
+  // still open (attendance is once-per-day per course now, so this fetches
+  // that same session rather than starting a duplicate one).
   const openedKbsAttendance = await request(
     testServer.baseUrl,
-    "/api/attendance/sessions",
-    {
-      method: "POST",
-      token: professor.token,
-      body: { courseId: kbs.id },
-    },
+    `/api/attendance/current?courseId=${kbs.id}`,
+    { token: professor.token },
   );
-  assert.equal(openedKbsAttendance.response.status, 201);
+  assert.equal(openedKbsAttendance.response.status, 200);
   assert.equal(openedKbsAttendance.body.attendance.records.length, 22);
   assert.equal(openedKbsAttendance.body.attendance.records[0].rollNumber, "METEST0001");
 
+  // Attendance is once-per-day per course now; reopening the same day's
+  // closed session (rather than opening a brand new one) is how a professor
+  // adds missed students after the fact.
   const reopenedSoftAttendance = await request(
+    testServer.baseUrl,
+    `/api/attendance/${attendanceId}/reopen`,
+    {
+      method: "POST",
+      token: professor.token,
+    },
+  );
+  assert.equal(reopenedSoftAttendance.response.status, 200);
+  assert.equal(reopenedSoftAttendance.body.attendance.id, attendanceId);
+  assert.equal(reopenedSoftAttendance.body.attendance.status, "open");
+
+  const duplicateSoftAttendance = await request(
     testServer.baseUrl,
     "/api/attendance/sessions",
     {
@@ -629,7 +643,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
       body: { courseId: soft.id },
     },
   );
-  assert.equal(reopenedSoftAttendance.response.status, 201);
+  assert.equal(duplicateSoftAttendance.response.status, 409);
 
   for (const [courseId, attendance] of [
     [soft.id, reopenedSoftAttendance.body.attendance],
@@ -2421,6 +2435,17 @@ test("a student sees their own attendance record and their own quiz answers", as
     method: "POST",
     token: professor.token,
     body: {},
+  });
+  // Attendance is once-per-day per course now; backdate the first session so
+  // the second one below is treated as a different day, matching this test's
+  // "two separate classes" intent.
+  await testServer.store.update((database) => {
+    const session = database.attendanceSessions.find(
+      (item) => item.id === first.body.attendance.id,
+    );
+    session.startedAt = "2020-01-01T09:00:00.000Z";
+    if (session.closedAt) session.closedAt = "2020-01-01T09:30:00.000Z";
+    return session;
   });
   const second = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",

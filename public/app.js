@@ -1,4 +1,4 @@
-const APP_VERSION = "1.4.2";
+const APP_VERSION = "1.4.3";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -140,7 +140,15 @@ let attendanceHistory = null;
 let attendanceDayId = "";
 let proximityCode = null;
 let beaconToken = "";
+// Set whenever the native plugin rejects startBeacon, so the UI can show the
+// real reason (e.g. "Turn Bluetooth on") instead of a generic message.
+let beaconError = "";
 let proximityTimer = null;
+// The professor/TA's list of past attendance days for the selected course,
+// and whichever one is currently open for read-only review (null = today's).
+let pastAttendanceSessions = [];
+let pastSessionsLoadedFor = "";
+let viewingPastAttendance = null;
 let courseNotices = [];
 let quizResults = null;
 let pendingSignup = null;
@@ -368,6 +376,40 @@ async function selectAttendanceCourse(courseId) {
     `/api/attendance/current?courseId=${encodeURIComponent(course.id)}`
   );
   applyAttendanceSnapshot(payload.attendance);
+}
+
+// Lazily loaded once per course so switching back to "today" doesn't refetch.
+async function refreshPastSessions(courseId) {
+  if (!backendConfigured() || !apiToken || !courseId) {
+    pastAttendanceSessions = [];
+    pastSessionsLoadedFor = "";
+    return;
+  }
+  pastSessionsLoadedFor = courseId;
+  try {
+    const result = await apiRequest(`/api/attendance/past?courseId=${encodeURIComponent(courseId)}`);
+    pastAttendanceSessions = result.sessions || [];
+  } catch {
+    pastAttendanceSessions = [];
+    pastSessionsLoadedFor = "";
+  }
+}
+
+// Loads a past (closed) session's full roster for read-only review, or clears
+// back to today's session when the dropdown is reset to its default option.
+async function openPastAttendanceSession(sessionId) {
+  if (!sessionId) {
+    viewingPastAttendance = null;
+    return renderLiveAttendance();
+  }
+  try {
+    const result = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}`);
+    viewingPastAttendance = result.attendance;
+  } catch (error) {
+    viewingPastAttendance = null;
+    return toast(error.message || "Could not load that session", "error");
+  }
+  renderLiveAttendance();
 }
 
 function applyQuizSnapshot(quiz) {
@@ -1293,9 +1335,11 @@ async function startAttendanceBeacon(token) {
   try {
     await plugin.startBeacon({ token });
     beaconToken = token;
+    beaconError = "";
     return true;
   } catch (error) {
     beaconToken = "";
+    beaconError = error?.message || "Could not start broadcasting";
     return false;
   }
 }
@@ -1948,6 +1992,11 @@ function renderAttendance() {
   if (state.userRole === "student") return renderStudentAttendance();
   if (!course || !canRunAttendance(course)) return renderRestrictedAttendance();
   setHeader("Attendance session", `${course.name.toUpperCase()} · ${course.courseCode}`, false);
+  if (backendConfigured() && apiToken && pastSessionsLoadedFor !== course.id) {
+    refreshPastSessions(course.id).then(() => {
+      if (state.route === "attendance" && state.selectedCourseId === course.id) renderAttendance();
+    });
+  }
   if (!backendConfigured() || state.attendanceStatus === "not_started" || !activeAttendance) {
     return renderAttendanceSetup();
   }
@@ -2024,12 +2073,13 @@ function stepper(current) {
   return `<div class="stepper"><div class="step ${current === 1 ? "active" : current > 1 ? "done" : ""}">1. Choose roster</div><div class="step ${current === 2 ? "active" : current > 2 ? "done" : ""}">2. Mark students</div><div class="step ${current === 3 ? "active" : ""}">3. Review</div></div>`;
 }
 
-function attendanceSidePanel(records) {
+function attendanceSidePanel(records, sessionOverride) {
   const total = records.length;
   const count = records.filter(record => record.present).length;
   const percent = total ? Math.round((count / total) * 100) : 0;
-  const startedAt = activeAttendance?.startedAt
-    ? new Date(activeAttendance.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  const session = sessionOverride || activeAttendance;
+  const startedAt = session?.startedAt
+    ? new Date(session.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
     : "—";
   const missingLabel = state.attendanceStatus === "not_started" ? "Unmarked" : "Absent";
   return `<aside class="card page-card">
@@ -2050,35 +2100,63 @@ function renderLiveAttendance() {
   const previousRoster = view.querySelector(".roster-scroll");
   const previousScrollTop = previousRoster?.scrollTop || 0;
   const focusedRollNumber = document.activeElement?.dataset?.rollNumber || "";
-  const complete = state.attendanceStatus === "complete";
-  const records = currentAttendanceRecords();
+  // Browsing a past day is always read-only; only today's open session can be edited.
+  const viewingPast = Boolean(viewingPastAttendance);
+  const complete = viewingPast || state.attendanceStatus === "complete";
+  const records = viewingPast ? (viewingPastAttendance.records || []) : currentAttendanceRecords();
   const count = records.filter(record => record.present).length;
+  const reopenTargetId = viewingPast ? viewingPastAttendance.id : state.backendAttendanceId;
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
       <article class="card page-card">
-        ${sessionHeading(complete ? "Review attendance" : "Mark attendance", complete ? "Session closed and saved" : "Select each student who is present", complete ? "green" : "purple")}
+        ${sessionHeading(
+          viewingPast ? "Past attendance" : complete ? "Review attendance" : "Mark attendance",
+          viewingPast
+            ? new Date(viewingPastAttendance.startedAt).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" })
+            : complete ? "Session closed and saved" : "Select each student who is present",
+          viewingPast ? "gray" : complete ? "green" : "purple"
+        )}
+        ${pastAttendanceSessions.length ? `<label class="past-session-picker">
+          <span>Previous days</span>
+          <select class="select" id="pastSessionSelect">
+            <option value="">Today's session</option>
+            ${pastAttendanceSessions.map(session => `<option value="${escapeHtml(session.id)}" ${viewingPastAttendance?.id === session.id ? "selected" : ""}>${escapeHtml(new Date(session.startedAt).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }))} · ${session.present}/${session.total} present</option>`).join("")}
+          </select>
+        </label>` : ""}
         ${!complete ? (beaconToken ? `<div class="proximity-code">
           <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
           <p>Students nearby pick this up over Bluetooth automatically — nothing to read out. Only phones within range can mark themselves present.</p>
-        </div>` : `<div class="proximity-code no-ble">
+        </div>` : proximityPlugin() ? (beaconError ? `<div class="proximity-code no-ble">
           <div><span>Bluetooth not available</span><strong>${icon("i-close")} Not broadcasting</strong></div>
-          <p>Open the CampusPulse app on your Android phone to broadcast attendance over Bluetooth. Students in the room will pick it up automatically.</p>
+          <p>${escapeHtml(beaconError)}</p>
+        </div>` : `<div class="proximity-code no-ble">
+          <div><span>Connecting</span><strong>${icon("i-clock")} Starting broadcast…</strong></div>
+          <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
+        </div>`) : `<div class="proximity-code no-ble">
+          <div><span>Web browser</span><strong>${icon("i-close")} Use the app</strong></div>
+          <p>Bluetooth broadcasting requires the CampusPulse Android app. Students can still be marked present manually from the list below.</p>
         </div>`) : ""}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
-          <div class="scan-status">${complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
+          <div class="scan-status">${viewingPast ? icon("i-check") + " Closed session" : complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
           <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
         </div>
-        ${complete ? "" : `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>`}
+        ${!complete ? `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>` : ""}
         <div class="roster roster-scroll">
           ${records.map((student, index) => studentRow(student, index, !complete)).join("")}
         </div>
         <div class="setup-actions">
-          ${complete ? `<button class="btn" data-action="new-attendance-session">${icon("i-play")} New attendance</button>` : `<button class="btn btn-danger" data-action="end-session">Close attendance</button>`}
+          ${complete
+            ? `<button class="btn" data-action="reopen-session" data-session-id="${escapeHtml(reopenTargetId || "")}">${icon("i-play")} Reopen to add students</button>`
+            : `<div class="manual-add-row">
+                <input class="text-input" id="manualRollInput" type="text" placeholder="Roll number to add" autocomplete="off" style="flex:1" />
+                <button class="btn btn-soft" type="button" data-action="add-student-manual">${icon("i-plus")} Add</button>
+              </div>
+              <button class="btn btn-danger" data-action="end-session">Close attendance</button>`}
         </div>
       </article>
-      ${attendanceSidePanel(records)}
+      ${attendanceSidePanel(records, viewingPast ? viewingPastAttendance : null)}
     </div>`;
 
   const nextRoster = view.querySelector(".roster-scroll");
@@ -2088,6 +2166,8 @@ function renderLiveAttendance() {
       .find(element => element.dataset.rollNumber === focusedRollNumber)
       ?.focus({ preventScroll: true });
   }
+
+  if (viewingPast) return;
 
   if (!complete && backendConfigured() && state.backendAttendanceId && !proximityCode) {
     refreshProximityCode(state.backendAttendanceId).then(async () => {
@@ -4378,6 +4458,46 @@ document.addEventListener("click", async event => {
     state.attendanceStatus = "complete";
     persist(); renderLiveAttendance(); toast(`Attendance saved for ${currentPresentCount()} students`);
   }
+  if (action === "reopen-session") {
+    if (!canRunAttendance(attendanceCourse())) return toast("Course-team attendance access required", "error");
+    const sessionId = event.target.closest("[data-session-id]")?.dataset.sessionId
+      || viewingPastAttendance?.id
+      || state.backendAttendanceId;
+    if (!sessionId) return toast("No session to reopen", "error");
+    try {
+      const result = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}/reopen`, {
+        method: "POST",
+        body: {}
+      });
+      activeAttendance = result.attendance;
+      state.backendAttendanceId = result.attendance.id;
+      state.attendanceStatus = "scanning";
+      viewingPastAttendance = null;
+    } catch (error) {
+      return toast(error.message || "Could not reopen that session", "error");
+    }
+    persist();
+    await refreshPastSessions(state.selectedCourseId);
+    renderLiveAttendance();
+    toast("Attendance reopened — add missed students below");
+  }
+  if (action === "add-student-manual") {
+    if (!canRunAttendance(attendanceCourse()) || !state.backendAttendanceId) return toast("Course-team attendance session required", "error");
+    const input = view.querySelector("#manualRollInput");
+    const rollNumber = input?.value.trim().toUpperCase() || "";
+    if (!rollNumber) return toast("Enter a roll number", "error");
+    try {
+      const result = await apiRequest(`/api/attendance/${state.backendAttendanceId}/add-student`, {
+        method: "POST",
+        body: { rollNumber }
+      });
+      activeAttendance = result.attendance;
+      renderLiveAttendance();
+      toast(`${rollNumber} added and marked present`);
+    } catch (error) {
+      return toast(error.message || "Could not add that student", "error");
+    }
+  }
   if (action === "delete-account") {
     const confirmed = window.confirm(
       "Delete your CampusPulse account, enrollment, and quiz response data? Official rosters and teaching-team-recorded attendance remain course records. This cannot be undone."
@@ -4916,6 +5036,9 @@ document.addEventListener("change", async event => {
   }
   if (event.target.id === "attendanceCourseSelect") {
     return switchCourseContext(event.target.value);
+  }
+  if (event.target.id === "pastSessionSelect") {
+    return openPastAttendanceSession(event.target.value);
   }
   if (event.target.classList?.contains("question-image-file")) {
     const file = event.target.files?.[0];

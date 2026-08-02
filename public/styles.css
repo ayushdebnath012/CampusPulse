@@ -248,6 +248,12 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .device-check.ready { border-color:#bce7d8; }
 .device-check.ready .device-icon { color:var(--green); background:var(--green-soft); }
 .setup-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top:20px; }
+.manual-add-row { display:flex; flex:1 1 100%; gap:8px; }
+.manual-add-row .text-input { width:auto; flex:1; }
+
+.past-session-picker { display:flex; align-items:center; gap:10px; margin:14px 0; }
+.past-session-picker span { flex:none; color:var(--muted); font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.07em; }
+.past-session-picker .select { width:auto; min-width:220px; }
 
 .roster-toolbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
 .scan-status { display:flex; align-items:center; gap:8px; font-size:10px; font-weight:700; color:var(--green); }
