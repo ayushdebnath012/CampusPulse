@@ -566,11 +566,12 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             <input type="hidden" name="role" value="${selectedLoginRole}" />
             <label for="loginEmail">${profile.idLabel}</label>
             <input id="loginEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="username" required />
-            <label for="loginPassword">Password</label>
+            <div class="label-row"><label for="loginPassword">Password</label>${emailDeliveryAvailable
+              ? `<button type="button" class="text-btn" data-auth-mode="forgot">Forgot password?</button>`
+              : ""}</div>
             <input id="loginPassword" name="password" type="password" placeholder="Enter your password" autocomplete="current-password" minlength="8" required />
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Sign in as ${profile.shortTitle}</button>
           </form>
-          ${emailDeliveryAvailable ? `<div class="verification-actions"><span></span><button type="button" class="text-btn" data-auth-mode="forgot">Forgot password?</button></div>` : ""}
           <div class="auth-demo-note"><span>Secure password sign-in</span><p>Use the email, password, and account role selected during sign-up.${emailDeliveryAvailable ? "" : " Password reset by email is switched off, so ask your professor if you are locked out."}</p></div>`}`}
           <p class="auth-description" style="margin-top:18px"><a href="privacy.html" target="_blank" rel="noopener">Privacy policy</a> · <a href="delete-account.html" target="_blank" rel="noopener">Delete an account</a></p>
         </div>

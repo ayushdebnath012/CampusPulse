@@ -61,8 +61,17 @@ function createMailer(env = process.env) {
           }),
         });
         if (!response.ok) {
-          const message = await response.text();
-          throw new Error(`Email provider rejected the request: ${message}`);
+          const body = await response.text();
+          let detail = body;
+          try {
+            detail = JSON.parse(body).message || body;
+          } catch {
+            // Not JSON, so the raw body is the best description available.
+          }
+          const failure = new Error(`Email provider rejected the request: ${detail}`);
+          // The caller turns this into an explanation rather than a bare 500.
+          failure.deliveryFailed = true;
+          throw failure;
         }
         return { delivered: true };
       }
@@ -84,11 +93,15 @@ function createMailer(env = process.env) {
         const reason = String(error?.code || error?.message || "");
         // A refused or timed-out connection means the host is blocking SMTP.
         if (/ETIMEDOUT|ECONNREFUSED|ESOCKET|ECONNECTION|Greeting never received/i.test(reason)) {
-          throw new Error(
+          const blocked = new Error(
             "The mail server could not be reached. Outbound SMTP is often blocked; use an HTTPS provider such as Resend instead.",
           );
+          blocked.deliveryFailed = true;
+          throw blocked;
         }
-        throw new Error(`Email could not be sent: ${reason}`);
+        const failure = new Error(`Email could not be sent: ${reason}`);
+        failure.deliveryFailed = true;
+        throw failure;
       }
       return { delivered: true };
     },

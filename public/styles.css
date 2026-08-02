@@ -796,3 +796,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
   .notification-kind { width: 36px; height: 36px; }
   .notification-status { padding-inline: 18px; }
 }
+
+.label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.label-row label { margin: 0; }
+.label-row .text-btn { font-size: 10px; }

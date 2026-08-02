@@ -3302,6 +3302,12 @@ function createApp(options = {}) {
   app.get(/.*/, (_request, response) => response.sendFile(path.join(clientPath, "index.html")));
 
   app.use((error, _request, response, _next) => {
+    // A rejected email is a configuration problem the caller can act on, so it
+    // is reported rather than hidden behind a generic failure.
+    if (error.deliveryFailed) {
+      console.error(error);
+      return response.status(502).json({ error: error.message });
+    }
     const status = error.status || 500;
     if (status >= 500) console.error(error);
     response.status(status).json({
