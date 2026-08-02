@@ -10,9 +10,12 @@ function escapeHtml(value) {
 }
 
 function createMailer(env = process.env) {
+  // Brevo verifies a single sender address, so mail can reach anyone without
+  // owning a domain — the one route that works on a host blocking SMTP.
+  const brevoConfigured = Boolean(env.BREVO_API_KEY && env.EMAIL_FROM);
   const resendConfigured = Boolean(env.RESEND_API_KEY && env.EMAIL_FROM);
   const smtpConfigured = Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
-  const configured = resendConfigured || smtpConfigured;
+  const configured = brevoConfigured || resendConfigured || smtpConfigured;
   // Some hosts block outbound SMTP entirely, and a blocked connection would
   // otherwise hang the request that is waiting on it.
   const smtpTimeoutMs = Number(env.SMTP_TIMEOUT_MS || 12000);
@@ -30,7 +33,13 @@ function createMailer(env = process.env) {
 
   return {
     configured,
-    provider: resendConfigured ? "resend" : smtpConfigured ? "smtp" : "disabled",
+    provider: brevoConfigured
+      ? "brevo"
+      : resendConfigured
+        ? "resend"
+        : smtpConfigured
+          ? "smtp"
+          : "disabled",
     async sendPasswordReset({ email, name, code }) {
       return this.sendVerification({
         email,
@@ -45,6 +54,41 @@ function createMailer(env = process.env) {
       const heading = subject || "Verify your CampusPulse email";
       const text = `Hello ${name}, your CampusPulse ${label} is ${code}. It expires in 10 minutes.`;
       const html = `<p>Hello ${escapeHtml(name)},</p><p>Your CampusPulse ${escapeHtml(label)} is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`;
+      if (brevoConfigured) {
+        const match = String(env.EMAIL_FROM).match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+        const sender = match
+          ? { name: match[1] || "CampusPulse", email: match[2] }
+          : { name: "CampusPulse", email: String(env.EMAIL_FROM).trim() };
+        const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+          method: "POST",
+          headers: {
+            "api-key": env.BREVO_API_KEY,
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            sender,
+            to: [{ email, name }],
+            subject: heading,
+            textContent: text,
+            htmlContent: html,
+          }),
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          let detail = body;
+          try {
+            detail = JSON.parse(body).message || body;
+          } catch {
+            // Not JSON, so the raw body is the clearest description available.
+          }
+          const failure = new Error(`Email provider rejected the request: ${detail}`);
+          failure.deliveryFailed = true;
+          throw failure;
+        }
+        return { delivered: true };
+      }
+
       if (resendConfigured) {
         const response = await fetch("https://api.resend.com/emails", {
           method: "POST",
