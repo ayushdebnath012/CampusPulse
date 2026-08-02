@@ -620,6 +620,14 @@ function createApp(options = {}) {
 
   app.post("/api/auth/signup", async (request, response, next) => {
     try {
+      // Every account is created through the emailed code; this route stays
+      // open only while there is no way to send one.
+      if (mailer.configured || allowDevVerificationCode) {
+        return response.status(403).json({
+          error: "Verify your email to create an account",
+          verificationRequired: true,
+        });
+      }
       const role = String(request.body.role || "");
       const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
       const department = String(request.body.department || "")
@@ -747,12 +755,42 @@ function createApp(options = {}) {
           error: "TA accounts must be provisioned with a valid invitation code",
         });
 
+      if (role === "faculty" && !isFacultyEmail(email))
+        return response.status(400).json({
+          error: "Professor accounts require an @iitkgp.ac.in email",
+        });
+
+      // The same details the account will carry once the code is confirmed.
+      const phone = String(request.body.phone || "").trim();
+      if (!/^\+?[0-9][0-9\s()-]{6,19}$/.test(phone)) {
+        return response.status(400).json({ error: "Enter a valid contact number" });
+      }
+      const rollNumber =
+        role === "faculty"
+          ? ""
+          : String(request.body.rollNumber || "").trim().toUpperCase();
+      const hall =
+        role === "faculty" ? "" : String(request.body.hall || "").trim().slice(0, 80);
+      if (role !== "faculty") {
+        if (!rollNumber || rollNumber.length > 40) {
+          return response.status(400).json({ error: "Enter your roll number" });
+        }
+        if (hall.length < 2) {
+          return response.status(400).json({ error: "Enter your hall of residence" });
+        }
+      }
+
       const data = await store.read();
       if (data.users.some((user) => user.email === email))
         return response.status(409).json({ error: "An account already exists for this email" });
+      if (rollNumber && data.users.some((user) => user.rollNumber === rollNumber))
+        return response
+          .status(409)
+          .json({ error: "An account already exists for this roll number" });
       if (!mailer.configured && !allowDevVerificationCode) {
         return response.status(503).json({
-          error: "Verification email delivery is temporarily unavailable",
+          error:
+            "Verification email is not set up yet. Ask the administrator to configure it.",
         });
       }
 
@@ -768,6 +806,9 @@ function createApp(options = {}) {
           role,
           name,
           department,
+          phone,
+          ...(rollNumber ? { rollNumber } : {}),
+          ...(hall ? { hall } : {}),
           passwordHash,
           codeHash: sha256(code),
           expiresAt,
@@ -790,6 +831,7 @@ function createApp(options = {}) {
     try {
       const email = cleanEmail(request.body.email);
       const codeHash = sha256(String(request.body.code || ""));
+      const token = randomToken();
       const result = await store.update((database) => {
         const record = database.verificationCodes.find((item) => item.email === email);
         if (!record || Date.parse(record.expiresAt) <= Date.now()) {
@@ -811,23 +853,43 @@ function createApp(options = {}) {
         if (database.users.some((item) => item.email === email)) {
           return { error: "Account already exists", status: 409 };
         }
+        if (
+          record.rollNumber &&
+          database.users.some((item) => item.rollNumber === record.rollNumber)
+        ) {
+          return { error: "An account already exists for this roll number", status: 409 };
+        }
         const created = applyUserProfileOverride({
           id: `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: record.role,
           name: record.name,
           email: record.email,
           department: record.department || "",
+          ...(record.phone ? { phone: record.phone } : {}),
+          ...(record.rollNumber ? { rollNumber: record.rollNumber } : {}),
+          ...(record.hall ? { hall: record.hall } : {}),
           passwordHash: record.passwordHash,
+          createdAt: new Date().toISOString(),
           verifiedAt: new Date().toISOString(),
         }, env);
         database.users.push(created);
         database.verificationCodes = database.verificationCodes.filter(
           (item) => item.email !== email,
         );
+        // A verified account is signed in straight away.
+        database.sessions = database.sessions.filter(
+          (item) => Date.parse(item.expiresAt) > Date.now(),
+        );
+        database.sessions.push({
+          tokenHash: sha256(token),
+          userId: created.id,
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + THIRTY_DAYS).toISOString(),
+        });
         return { user: created };
       });
       if (result.error) return response.status(result.status).json({ error: result.error });
-      response.status(201).json({ ok: true, user: publicUser(result.user) });
+      response.status(201).json({ ok: true, token, user: publicUser(result.user) });
     } catch (error) {
       next(error);
     }

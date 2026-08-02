@@ -143,6 +143,7 @@ let beaconToken = "";
 let proximityTimer = null;
 let courseNotices = [];
 let quizResults = null;
+let pendingSignup = null;
 let passwordResetEmail = "";
 // Reset by email is only offered when the server can actually send one.
 let emailDeliveryAvailable = false;
@@ -467,6 +468,7 @@ const loginProfiles = {
 };
 
 function renderLogin(role = selectedLoginRole, mode = authMode) {
+  pendingSignup = null;
   courseRosters = new Map();
   courseMaterials = new Map();
   activeAttendance = null;
@@ -570,6 +572,47 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
     </div>`;
   const firstField = { signup: "#signupName", forgot: "#forgotEmail", reset: "#resetCode" }[authMode] || "#loginEmail";
   setTimeout(() => document.querySelector(firstField)?.focus(), 0);
+}
+
+function maskEmail(email = "") {
+  const [local, domain] = String(email).split("@");
+  if (!domain) return email;
+  const visible = local.length <= 2 ? local.slice(0, 1) : local.slice(0, 2);
+  return `${visible}${"•".repeat(Math.max(3, local.length - visible.length))}@${domain}`;
+}
+
+// Shown after sign-up while the emailed code is outstanding.
+function renderEmailVerification() {
+  if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
+  const profile = loginProfiles[pendingSignup.role] || loginProfiles.student;
+  closeMenu();
+  if (view) view.innerHTML = "";
+  appShell.hidden = true;
+  authRoot.hidden = false;
+  authRoot.innerHTML = `
+    <div class="auth-layout">
+      <section class="auth-story">
+        <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
+        <div class="auth-story-copy"><span class="auth-kicker">ONE LAST STEP</span><h1>Check your inbox.</h1><p>Confirming the address keeps every classroom tied to a real institute account.</p></div>
+      </section>
+      <section class="auth-panel">
+        <div class="auth-card">
+          <div class="auth-heading"><span class="auth-icon">${icon("i-send")}</span><div><p>Verification sent</p><h2>Enter your code</h2></div></div>
+          <p class="auth-description">We sent a six-digit code to <strong>${escapeHtml(maskEmail(pendingSignup.email))}</strong>. It expires in ten minutes.</p>
+          <form id="verificationForm" class="login-form">
+            <label for="verificationCode">Verification code</label>
+            <input id="verificationCode" name="code" class="verification-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
+            <button class="btn btn-primary auth-submit" type="submit">${icon("i-check")} Verify and continue</button>
+          </form>
+          <div class="verification-actions">
+            <button type="button" class="text-btn" data-action="back-to-signup">Change details</button>
+            <button type="button" class="text-btn" data-action="resend-code">Send another code</button>
+          </div>
+          <div class="auth-demo-note"><span>Check spam too</span><p>The code goes to the address you signed up with. CampusPulse never shows it on this page.</p></div>
+        </div>
+      </section>
+    </div>`;
+  setTimeout(() => document.querySelector("#verificationCode")?.focus(), 0);
 }
 
 function isCampusEmail(email = "") {
@@ -860,7 +903,10 @@ function navigate(route, { fromHistory = false } = {}) {
 }
 
 function render() {
-  if (!state.authenticated) return renderLogin(state.userRole);
+  if (!state.authenticated) {
+    if (pendingSignup) return renderEmailVerification();
+    return renderLogin(state.userRole);
+  }
   if (state.route === "dashboard") return renderDashboard();
   if (state.route === "schedule") return renderSchedule();
   if (state.route === "attendance") return renderAttendance();
@@ -4277,6 +4323,23 @@ document.addEventListener("click", async event => {
     myQuizId = event.target.closest("[data-quiz-id]")?.dataset.quizId || "";
     return navigate("myquiz");
   }
+  if (action === "back-to-signup") {
+    const role = pendingSignup?.role || selectedLoginRole;
+    pendingSignup = null;
+    return renderLogin(role, "signup");
+  }
+  if (action === "resend-code" && pendingSignup) {
+    try {
+      await apiRequest("/api/auth/signup/resend", {
+        method: "POST",
+        auth: false,
+        body: { email: pendingSignup.email }
+      });
+    } catch (error) {
+      return toast(error.message || "Could not send another code", "error");
+    }
+    return toast("Another code is on its way");
+  }
   if (action === "open-attendance-day") {
     attendanceDayId = event.target.closest("[data-session-id]")?.dataset.sessionId || "";
     return navigate("attendanceday");
@@ -4738,14 +4801,14 @@ document.addEventListener("submit", async event => {
     if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
     try {
-      const signedUp = await apiRequest("/api/auth/signup", {
+      await apiRequest("/api/auth/signup/request", {
         method: "POST",
         auth: false,
         body: {
           role: data.role,
           name,
-          department,
           email,
+          department: String(data.department || "").trim(),
           password: data.password,
           phone: String(data.phone || "").trim(),
           rollNumber: String(data.rollNumber || "").trim().toUpperCase() || undefined,
@@ -4753,20 +4816,37 @@ document.addEventListener("submit", async event => {
           roleCode: data.roleCode || undefined
         }
       });
-      apiToken = signedUp.token;
-      localStorage.setItem("campusPulseApiToken", apiToken);
-      state.userRole = signedUp.user.role;
+      pendingSignup = { role: data.role, email, password: data.password };
+      renderEmailVerification();
+    } catch (error) {
+      return toast(error.message || "Could not start the sign-up", "error");
+    }
+    return toast("Verification code sent to your email");
+  }
+  if (event.target.id === "verificationForm") {
+    if (!pendingSignup) return renderLogin(selectedLoginRole, "signup");
+    const code = String(new FormData(event.target).get("code") || "").trim();
+    try {
+      const verified = await apiRequest("/api/auth/signup/verify", {
+        method: "POST",
+        auth: false,
+        body: { email: pendingSignup.email, code }
+      });
+      apiToken = verified.token || "";
+      if (apiToken) localStorage.setItem("campusPulseApiToken", apiToken);
+      state.userRole = verified.user.role;
       state.authenticated = true;
-      state.accountName = signedUp.user.name;
-      state.authEmail = signedUp.user.email;
+      state.accountName = verified.user.name;
+      state.authEmail = verified.user.email;
       state.route = "dashboard";
+      pendingSignup = null;
       await syncBackendState();
       setNavigationState("dashboard");
       showApp();
+      return toast("Email verified. Welcome to CampusPulse");
     } catch (error) {
-      return toast(error.message || "Could not create the account", "error");
+      return toast(error.message || "Could not verify that code", "error");
     }
-    return toast("Account created and signed in");
   }
   if (event.target.id === "loginForm") {
     const data = Object.fromEntries(new FormData(event.target));

@@ -724,3 +724,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 
 .attendance-call.is-idle { border-color: var(--line); box-shadow: none; }
 .attendance-call.is-idle .attendance-call-submit { opacity: .55; }
+
+.verification-code { height: 56px !important; text-align: center; font-size: 22px !important; font-weight: 800; letter-spacing: .28em; }
+.verification-actions { display: flex; justify-content: space-between; margin-top: 16px; }

@@ -8,6 +8,24 @@ const { initialData, normalizeData } = require("../src/database");
 const { ACCOUNT_RESET_ID, deleteExistingAccountsOnce } = require("../src/maintenance");
 
 
+// Records whatever code the server last sent, so tests can read it back.
+const lastCodes = new Map();
+
+function recordingMailer() {
+  return {
+    configured: true,
+    provider: "smtp",
+    async sendVerification({ email, code }) {
+      lastCodes.set(email, code);
+      return { delivered: true };
+    },
+    async sendPasswordReset({ email, code }) {
+      lastCodes.set(email, code);
+      return { delivered: true };
+    },
+  };
+}
+
 async function createTestServer(options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "campuspulse-api-"));
   const databasePath = path.join(directory, "database.json");
@@ -77,11 +95,28 @@ async function createVerifiedUser(baseUrl, user) {
           ? user.roleCode || "ta-invite"
           : user.roleCode,
   };
-  const created = await request(baseUrl, "/api/auth/signup", {
+  // Accounts are created through the emailed code, so tests walk that path.
+  const requested = await request(baseUrl, "/api/auth/signup/request", {
     method: "POST",
     body: signupBody,
   });
-  assert.equal(created.response.status, 201);
+  assert.equal(
+    requested.response.status,
+    202,
+    `signup request failed: ${JSON.stringify(requested.body)}`,
+  );
+  const code = requested.body.devCode || lastCodes.get(user.email);
+  assert.match(String(code || ""), /^\d{6}$/);
+
+  const created = await request(baseUrl, "/api/auth/signup/verify", {
+    method: "POST",
+    body: { email: user.email, code },
+  });
+  assert.equal(
+    created.response.status,
+    201,
+    `verification failed: ${JSON.stringify(created.body)}`,
+  );
   assert.equal(created.body.user.role, user.role);
   assert.equal(created.body.user.department, signupBody.department);
   assert.ok(created.body.token);
@@ -799,6 +834,7 @@ test("signup creates and signs in an account without email delivery or OTP", asy
 test("a professor can create several courses, each with its own join code", async (t) => {
   const testServer = await createTestServer({
     env: { NODE_ENV: "production", FACULTY_SIGNUP_CODE: "" },
+    mailer: recordingMailer(),
   });
   t.after(async () => {
     await testServer.close();
@@ -2357,13 +2393,14 @@ test("professors sign up from department subdomains, students do not", async (t)
         },
       }),
     },
+    mailer: recordingMailer(),
   });
   t.after(async () => {
     await testServer.close();
     await fs.rm(testServer.directory, { recursive: true, force: true });
   });
 
-  const departmentProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
+  const departmentProfessor = await request(testServer.baseUrl, "/api/auth/signup/request", {
     method: "POST",
     body: {
       role: "faculty",
@@ -2374,18 +2411,21 @@ test("professors sign up from department subdomains, students do not", async (t)
       phone: "9876543210",
     },
   });
-  assert.equal(departmentProfessor.response.status, 201);
-  assert.equal(
-    departmentProfessor.body.user.department,
-    "Mechanical Engineering",
-  );
+  assert.equal(departmentProfessor.response.status, 202);
+  // The account exists only once the emailed code is confirmed.
+  const confirmed = await request(testServer.baseUrl, "/api/auth/signup/verify", {
+    method: "POST",
+    body: { email: overrideEmail, code: lastCodes.get(overrideEmail) },
+  });
+  assert.equal(confirmed.response.status, 201);
+  assert.equal(confirmed.body.user.department, "Mechanical Engineering");
   const storedDepartmentProfessor = (await testServer.store.read()).users.find(
     (user) => user.email === overrideEmail,
   );
   assert.equal(storedDepartmentProfessor.phone, "+91 90000 00000");
   assert.equal(storedDepartmentProfessor.department, "Mechanical Engineering");
 
-  const plainProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
+  const plainProfessor = await request(testServer.baseUrl, "/api/auth/signup/request", {
     method: "POST",
     body: {
       role: "faculty",
@@ -2396,10 +2436,10 @@ test("professors sign up from department subdomains, students do not", async (t)
       phone: "9876543210",
     },
   });
-  assert.equal(plainProfessor.response.status, 201);
+  assert.equal(plainProfessor.response.status, 202);
 
   // A student address may not register as faculty.
-  const studentAsProfessor = await request(testServer.baseUrl, "/api/auth/signup", {
+  const studentAsProfessor = await request(testServer.baseUrl, "/api/auth/signup/request", {
     method: "POST",
     body: {
       role: "faculty",
@@ -2413,7 +2453,7 @@ test("professors sign up from department subdomains, students do not", async (t)
   assert.equal(studentAsProfessor.response.status, 400);
   assert.match(studentAsProfessor.body.error, /iitkgp\.ac\.in email/i);
 
-  const outsider = await request(testServer.baseUrl, "/api/auth/signup", {
+  const outsider = await request(testServer.baseUrl, "/api/auth/signup/request", {
     method: "POST",
     body: {
       role: "faculty",
@@ -2434,12 +2474,14 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     mailer: {
       configured: true,
       provider: "smtp",
-      async sendVerification({ code }) {
+      async sendVerification({ email, code }) {
         sentCode = code;
+        lastCodes.set(email, code);
         return { delivered: true };
       },
-      async sendPasswordReset({ code }) {
+      async sendPasswordReset({ email, code }) {
         sentCode = code;
+        lastCodes.set(email, code);
         return { delivered: true };
       },
     },
@@ -2664,14 +2706,14 @@ test("faculty signup ignores legacy invitations while TA still requires one", as
   };
   const missingCode = await request(
     testServer.baseUrl,
-    "/api/auth/signup",
+    "/api/auth/signup/request",
     { method: "POST", body: baseUser },
   );
-  assert.equal(missingCode.response.status, 201);
+  assert.equal(missingCode.response.status, 202);
 
   const uninvitedTA = await request(
     testServer.baseUrl,
-    "/api/auth/signup",
+    "/api/auth/signup/request",
     {
       method: "POST",
       body: {

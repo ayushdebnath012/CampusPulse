@@ -17,6 +17,9 @@
     "LocalNotifications": {
       "smallIcon": "ic_stat_campuspulse",
       "iconColor": "#5B5BD6"
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
     }
   }
 }
