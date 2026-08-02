@@ -543,7 +543,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the course administrator" autocomplete="off" required />` : ""}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
-          <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. No email OTP is required.</p></div>` : `
+          <div class="auth-demo-note"><span>Institutional email required</span><p>Use an address ending in iitkgp.ac.in. We email a six-digit code to confirm it before the account is created.</p></div>` : `
           ${authMode === "forgot" ? `
           <form id="forgotPasswordForm" class="login-form">
             <label for="forgotEmail">Registered email</label>

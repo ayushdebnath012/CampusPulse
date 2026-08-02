@@ -13,12 +13,18 @@ function createMailer(env = process.env) {
   const resendConfigured = Boolean(env.RESEND_API_KEY && env.EMAIL_FROM);
   const smtpConfigured = Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
   const configured = resendConfigured || smtpConfigured;
+  // Some hosts block outbound SMTP entirely, and a blocked connection would
+  // otherwise hang the request that is waiting on it.
+  const smtpTimeoutMs = Number(env.SMTP_TIMEOUT_MS || 12000);
   const transporter = smtpConfigured
     ? nodemailer.createTransport({
         host: env.SMTP_HOST,
         port: Number(env.SMTP_PORT || 587),
         secure: String(env.SMTP_SECURE || "").toLowerCase() === "true",
         auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+        connectionTimeout: smtpTimeoutMs,
+        greetingTimeout: smtpTimeoutMs,
+        socketTimeout: smtpTimeoutMs,
       })
     : null;
 
@@ -66,13 +72,24 @@ function createMailer(env = process.env) {
         return { delivered: false, previewCode: code };
       }
 
-      await transporter.sendMail({
-        from: env.SMTP_FROM || env.SMTP_USER,
-        to: email,
-        subject: heading,
-        text,
-        html,
-      });
+      try {
+        await transporter.sendMail({
+          from: env.SMTP_FROM || env.SMTP_USER,
+          to: email,
+          subject: heading,
+          text,
+          html,
+        });
+      } catch (error) {
+        const reason = String(error?.code || error?.message || "");
+        // A refused or timed-out connection means the host is blocking SMTP.
+        if (/ETIMEDOUT|ECONNREFUSED|ESOCKET|ECONNECTION|Greeting never received/i.test(reason)) {
+          throw new Error(
+            "The mail server could not be reached. Outbound SMTP is often blocked; use an HTTPS provider such as Resend instead.",
+          );
+        }
+        throw new Error(`Email could not be sent: ${reason}`);
+      }
       return { delivered: true };
     },
   };
