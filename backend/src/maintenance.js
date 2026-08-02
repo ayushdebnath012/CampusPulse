@@ -31,4 +31,29 @@ async function deleteExistingAccountsOnce(store) {
   });
 }
 
-module.exports = { ACCOUNT_RESET_ID, deleteExistingAccountsOnce };
+// Clears attendance and quiz data only — courses, students, schedules stay.
+const ATTENDANCE_QUIZ_RESET_ID = "clear-attendance-quiz-2026-08-02";
+
+async function clearAttendanceAndQuizzesOnce(store) {
+  return store.update((database) => {
+    if (database.maintenance.includes(ATTENDANCE_QUIZ_RESET_ID)) {
+      return { applied: false };
+    }
+
+    const deletedSessions = database.attendanceSessions.length;
+    const deletedQuizzes = database.quizzes.length;
+
+    database.attendanceSessions = [];
+    database.quizzes = [];
+
+    database.maintenance.push(ATTENDANCE_QUIZ_RESET_ID);
+    return { applied: true, deletedSessions, deletedQuizzes };
+  });
+}
+
+module.exports = {
+  ACCOUNT_RESET_ID,
+  deleteExistingAccountsOnce,
+  ATTENDANCE_QUIZ_RESET_ID,
+  clearAttendanceAndQuizzesOnce,
+};

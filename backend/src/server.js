@@ -1,6 +1,6 @@
 const path = require("node:path");
 const { createApp } = require("./app");
-const { deleteExistingAccountsOnce } = require("./maintenance");
+const { deleteExistingAccountsOnce, clearAttendanceAndQuizzesOnce } = require("./maintenance");
 const { applyProfessorProfileOverrides } = require("./profile-overrides");
 
 const port = Number(process.env.PORT || 8787);
@@ -14,6 +14,10 @@ async function start() {
   const reset = await deleteExistingAccountsOnce(store);
   if (reset.applied) {
     console.log(`CampusPulse account reset: deleted ${reset.deletedAccounts} account(s)`);
+  }
+  const aqReset = await clearAttendanceAndQuizzesOnce(store);
+  if (aqReset.applied) {
+    console.log(`CampusPulse data reset: cleared ${aqReset.deletedSessions} attendance session(s) and ${aqReset.deletedQuizzes} quiz(zes)`);
   }
   const profileOverrides = await applyProfessorProfileOverrides(store, process.env);
   if (profileOverrides.updated) {

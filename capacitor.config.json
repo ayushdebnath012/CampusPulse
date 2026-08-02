@@ -8,6 +8,9 @@
   "android": {
     "allowMixedContent": false
   },
+  "ios": {
+    "scheme": "CampusPulse"
+  },
   "plugins": {
     "CapacitorUpdater": {
       "autoUpdate": "off",
