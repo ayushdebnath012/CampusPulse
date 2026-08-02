@@ -2497,6 +2497,16 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     email: "password-student@kgpian.iitkgp.ac.in",
     password: "first-password",
   });
+  const registeredPhone = await request(
+    testServer.baseUrl,
+    "/api/notifications/devices",
+    {
+      method: "POST",
+      token: student.token,
+      body: { token: "password-test-phone", platform: "android" },
+    },
+  );
+  assert.equal(registeredPhone.response.status, 201);
 
   const wrongCurrent = await request(testServer.baseUrl, "/api/auth/password", {
     method: "POST",
@@ -2518,6 +2528,14 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     body: { currentPassword: "first-password", newPassword: "second-password" },
   });
   assert.equal(changed.response.status, 200);
+  assert.equal(
+    (await testServer.store.read()).pushDevices.some(
+      (device) =>
+        device.token === "password-test-phone" &&
+        device.sessionTokenHash,
+    ),
+    true,
+  );
 
   const oldPassword = await request(testServer.baseUrl, "/api/auth/login", {
     method: "POST",
@@ -2569,6 +2587,12 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     },
   });
   assert.equal(reset.response.status, 200);
+  assert.equal(
+    (await testServer.store.read()).pushDevices.some(
+      (device) => device.token === "password-test-phone",
+    ),
+    false,
+  );
 
   const signedIn = await request(testServer.baseUrl, "/api/auth/login", {
     method: "POST",
@@ -2579,6 +2603,26 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     },
   });
   assert.equal(signedIn.response.status, 200);
+  await request(testServer.baseUrl, "/api/notifications/devices", {
+    method: "POST",
+    token: signedIn.body.token,
+    body: { token: "new-session-phone", platform: "android" },
+  });
+  const signedInAgain = await request(testServer.baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: {
+      email: "password-student@kgpian.iitkgp.ac.in",
+      password: "third-password",
+      role: "student",
+    },
+  });
+  assert.equal(signedInAgain.response.status, 200);
+  assert.equal(
+    (await testServer.store.read()).pushDevices.some(
+      (device) => device.token === "new-session-phone",
+    ),
+    false,
+  );
 
   // The reset code is single use and every old session is gone.
   const reused = await request(testServer.baseUrl, "/api/auth/password/reset", {

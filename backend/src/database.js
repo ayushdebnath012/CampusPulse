@@ -29,6 +29,8 @@ function initialData(env = process.env) {
     courseStudents,
     courseMaterials: [],
     courseNotices: [],
+    notifications: [],
+    pushDevices: [],
     schedule: [],
     attendanceSessions: [],
     quizzes: [],
@@ -52,6 +54,58 @@ function normalizeData(value, env = process.env) {
       return courseRole ? { ...enrollment, courseRole } : null;
     })
     .filter(Boolean);
+  const userIds = new Set(normalized.users.map((user) => user.id));
+  normalized.notifications = normalized.notifications
+    .filter(
+      (notification) =>
+        notification &&
+        userIds.has(notification.userId) &&
+        String(notification.id || "").trim(),
+    )
+    .map((notification) => ({
+      ...notification,
+      id: String(notification.id),
+      userId: String(notification.userId),
+      type: String(notification.type || "notice").slice(0, 40),
+      title: String(notification.title || "CampusPulse").slice(0, 120),
+      body: String(notification.body || "").slice(0, 500),
+      courseId: String(notification.courseId || ""),
+      route: String(notification.route || "dashboard").slice(0, 80),
+      data:
+        notification.data &&
+        !Array.isArray(notification.data) &&
+        typeof notification.data === "object"
+          ? Object.fromEntries(
+              Object.entries(notification.data).map(([key, item]) => [
+                String(key),
+                String(item ?? ""),
+              ]),
+            )
+          : {},
+      createdAt: String(notification.createdAt || new Date(0).toISOString()),
+      readAt: notification.readAt ? String(notification.readAt) : null,
+    }));
+  // One FCM registration token can only identify one current signed-in user.
+  // When legacy data contains duplicates, keep the most recently seen record.
+  const devicesByToken = new Map();
+  normalized.pushDevices.forEach((device) => {
+    const token = String(device?.token || "").trim();
+    const userId = String(device?.userId || "");
+    if (!token || token.length > 4096 || /\s/.test(token) || !userIds.has(userId)) return;
+    const platform = ["android", "ios", "web"].includes(device.platform)
+      ? device.platform
+      : "android";
+    devicesByToken.set(token, {
+      ...device,
+      token,
+      userId,
+      platform,
+      sessionTokenHash: String(device.sessionTokenHash || ""),
+      registeredAt: String(device.registeredAt || new Date(0).toISOString()),
+      updatedAt: String(device.updatedAt || device.registeredAt || new Date(0).toISOString()),
+    });
+  });
+  normalized.pushDevices = [...devicesByToken.values()];
   normalized.attendanceSessions = normalized.attendanceSessions.map((session) => {
     if (Array.isArray(session.records) && session.records.length) return session;
     const roster = normalized.courseStudents.filter(

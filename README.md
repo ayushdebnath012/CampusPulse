@@ -12,6 +12,7 @@ CampusPulse is a classroom operations app inspired by Acadly. This rollout conta
 - Professor-owned courses with professor/TA roster, schedule, and material management
 - Attendance marking by the owning professor or an enrolled TA
 - Quiz publishing by the owning professor/enrolled TAs and one-response student submissions
+- A persistent notification inbox plus Android phone alerts when attendance opens or a quiz or material is posted
 - Browser-local student CSV/ICS timetable import
 - Persistent JSON storage locally and PostgreSQL storage in cloud deployments
 - Capacitor Android project, native class reminders, and automated APK builds
@@ -51,6 +52,7 @@ During deployment, configure the private invitation variables. Email variables a
 - `COURSE_OWNER_EMAILS_JSON`, mapping each existing course ID/code to its professor's verified email
 - `COURSE_JOIN_CODES_JSON`, private enrollment codes for the existing courses
 - `PROFESSOR_PROFILE_OVERRIDES_JSON`, a private mapping of professor emails to database-only phone/department corrections
+- `FIREBASE_SERVICE_ACCOUNT_JSON`, the complete Firebase service-account JSON used only by the backend to send phone alerts
 
 For example:
 
@@ -63,6 +65,23 @@ Existing seeded courses are fail-closed until their owner email mapping resolves
 Production keeps `ALLOW_DEV_VERIFICATION_CODE=false`; direct password sign-up does not depend on email delivery. Render's free PostgreSQL database is suitable for a prototype but may have retention limits; select an appropriate paid database for long-term records.
 
 On the GitHub Pages app or in the APK, open **Settings**, enter the deployed HTTPS API URL, save, and sign up.
+
+## Enable Android phone alerts
+
+The notification inbox works through the CampusPulse API without Firebase. To also receive attendance, quiz, and material alerts while the Android app is in the background or closed:
+
+1. Create a Firebase project and add an Android app with package name `in.campuspulse.app`.
+2. Download that app's `google-services.json` file. Do not commit it.
+3. Encode the file in PowerShell and save the result as the GitHub Actions secret `FIREBASE_ANDROID_CONFIG_BASE64`:
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("google-services.json"))
+   ```
+
+4. In Firebase, create a service-account private key. Paste the complete JSON object, without base64 encoding, into the Render secret `FIREBASE_SERVICE_ACCOUNT_JSON`.
+5. Redeploy the Render service and run the Android build workflow. Install that new APK once, then allow notifications when Android asks.
+
+Keep both Firebase files private. The Android file identifies the Firebase project; the service-account JSON is a server credential and must never be included in an APK, commit, log, issue, or pull request.
 
 ## Private roster data
 
@@ -89,7 +108,7 @@ The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk
 
 Android builds include a local fallback copy of the app and the Capacitor updater. Every push to `main` packages `public/` as a versioned ZIP, publishes it through GitHub Pages, and writes a SHA-256 protected update manifest. Installed Android copies check that manifest on launch, download a newer web bundle in the background, and apply it after the app is restarted or backgrounded. The update status and a **Restart and update** action are available in **Settings**.
 
-Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.3.0 once to add native class reminders; later web-only changes can again arrive through the in-app updater.
+Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.4.1 once to add native phone alerts; later web-only changes can again arrive through the in-app updater.
 
 ### Keep Android upgrades installable
 

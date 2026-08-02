@@ -24,6 +24,8 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
       - key: TA_SIGNUP_CODE
         sync: false
       - key: PROFESSOR_PROFILE_OVERRIDES_JSON

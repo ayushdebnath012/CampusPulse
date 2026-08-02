@@ -24,7 +24,7 @@
     <main>
       <p class="brand">CAMPUSPULSE</p>
       <h1>Privacy policy</h1>
-      <p class="updated">Effective and last updated: 31 July 2026</p>
+      <p class="updated">Effective and last updated: 2 August 2026</p>
 
       <p>CampusPulse is an academic classroom-management prototype operated by the CampusPulse project maintainers. This policy explains how CampusPulse handles information when professors, teaching assistants, and students use the web or Android app.</p>
 
@@ -33,6 +33,7 @@
         <li>Account information: name, IIT KGP email address, role, and a securely hashed password.</li>
         <li>Course information: course enrollment, schedules, and official roster entries containing student names and roll numbers supplied by the course team.</li>
         <li>Class activity: teaching-team-marked attendance status and timestamps, quiz answers, and quiz score.</li>
+        <li>Notification information: the course event, delivery status, read timestamp, and an app-instance push token for phones that enable alerts.</li>
         <li>Operational information: authentication sessions and timestamps needed to secure and run the service.</li>
       </ul>
       <p>CampusPulse does not store precise location history, raw Bluetooth identifiers, or Wi-Fi passwords. Timetable files selected by students are parsed locally in the browser and are not uploaded.</p>
@@ -41,10 +42,10 @@
       <p>We process this information to authenticate users, enforce role and course access, show schedules, record classroom attendance, run quizzes, prevent abuse, and maintain service security.</p>
 
       <h2>Sharing and service providers</h2>
-      <p>Information is not sold or used for advertising. It is processed by infrastructure providers used to operate CampusPulse, currently Render for the API/database and GitHub Pages for static web delivery. A course is visible only to its owner professor and users enrolled by code. The owner and enrolled teaching assistants can access the roster snapshot needed to run attendance; only the owner can replace the official roster or manage the course code.</p>
+      <p>Information is not sold or used for advertising. It is processed by infrastructure providers used to operate CampusPulse, currently Render for the API/database, GitHub Pages for static web delivery, and Google Firebase for Android push delivery when phone alerts are enabled. A course is visible only to its owner professor and users enrolled by code. The owner and enrolled teaching assistants can access the roster snapshot needed to run attendance; only the owner can replace the official roster or manage the course code.</p>
 
       <h2>Device permissions</h2>
-      <p>Teaching-team-marked attendance does not require students to share Bluetooth, Wi-Fi, or location signals. CampusPulse does not derive or retain precise physical location.</p>
+      <p>Android can ask for notification permission so CampusPulse can show attendance, quiz, material, and class-reminder alerts. Teaching-team-marked attendance does not require students to share Bluetooth, Wi-Fi, or location signals. CampusPulse does not derive or retain precise physical location.</p>
 
       <h2>Retention and deletion</h2>
       <p>Records are retained while an account is active and as needed for the classroom workflow. A user can delete their account from <strong>Settings → Delete my account</strong> or use the external deletion page below. Deletion removes the account, sessions, enrollments, and quiz responses associated with that account. Official roster entries and teaching-team-recorded attendance are course records independent of student app accounts and may be retained for academic record integrity; roster correction requests should be directed to the course professor. A professor must transfer or remove owned courses before deleting the owner account.</p>

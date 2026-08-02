@@ -1,4 +1,4 @@
-const APP_VERSION = "1.3.0";
+const APP_VERSION = "1.4.1";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -155,7 +155,10 @@ async function refreshEmailDeliveryState() {
     const available = Boolean(health.emailDelivery) && health.emailDelivery !== "disabled";
     if (available !== emailDeliveryAvailable) {
       emailDeliveryAvailable = available;
-      if (!state.authenticated) renderLogin(selectedLoginRole, authMode);
+      // Never redraw over someone part-way through entering their code.
+      if (!state.authenticated && !pendingSignup) {
+        renderLogin(selectedLoginRole, authMode);
+      }
     }
   } catch {
     // Sign-in must still work when the health probe cannot be reached.
@@ -184,6 +187,9 @@ const updateBanner = document.querySelector("#updateBanner");
 const updateBannerMessage = document.querySelector("#updateBannerMessage");
 const updateManager = window.CAMPUSPULSE_UPDATES || null;
 const reminderManager = window.CAMPUSPULSE_REMINDERS || null;
+const pushManager = window.CAMPUSPULSE_PUSH || null;
+const notificationButton = document.querySelector("#notificationButton");
+const notificationBadge = document.querySelector("#notificationBadge");
 const appMenu = document.querySelector("#appMenu");
 const menuScrim = document.querySelector("#menuScrim");
 const menuToggle = document.querySelector("#menuToggle");
@@ -640,6 +646,10 @@ function showApp() {
   appShell.hidden = false;
   setNavigationState(state.route);
   render();
+  syncNotificationUi();
+  // The shell is painted before Android can ask for notification permission.
+  // This keeps all native permission UI behind a completed sign-in.
+  window.setTimeout(() => startNotificationLifecycle(), 0);
 }
 
 function canSelfMarkAttendance() {
@@ -3048,6 +3058,215 @@ async function syncClassReminders() {
   });
 }
 
+function currentNotificationState() {
+  return pushManager?.getState?.() || {
+    notifications: [],
+    unreadCount: 0,
+    status: { supported: false, permission: "unsupported", registered: false, polling: false },
+  };
+}
+
+function syncNotificationUi(snapshot = currentNotificationState()) {
+  if (!notificationButton || !notificationBadge) return;
+  const unread = Math.max(0, Number(snapshot.unreadCount) || 0);
+  notificationButton.classList.toggle("has-unread", unread > 0);
+  notificationButton.setAttribute(
+    "aria-label",
+    unread ? `Notifications, ${unread} unread` : "Notifications",
+  );
+  notificationBadge.hidden = unread === 0;
+  notificationBadge.textContent = unread > 99 ? "99+" : String(unread);
+  notificationBadge.setAttribute(
+    "aria-label",
+    `${unread} unread notification${unread === 1 ? "" : "s"}`,
+  );
+}
+
+function notificationPresentation(item) {
+  const type = String(item?.type || "").toLowerCase();
+  if (type.includes("attendance")) {
+    return { iconName: "i-users", className: "is-attendance", label: "Attendance" };
+  }
+  if (type.includes("quiz")) {
+    return { iconName: "i-quiz", className: "is-quiz", label: "Quiz" };
+  }
+  if (type.includes("material")) {
+    return { iconName: "i-cloud", className: "is-material", label: "Material" };
+  }
+  return { iconName: "i-bell", className: "is-update", label: "Course update" };
+}
+
+function notificationTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Recently";
+  const today = new Date();
+  const sameDay = date.getFullYear() === today.getFullYear()
+    && date.getMonth() === today.getMonth()
+    && date.getDate() === today.getDate();
+  return new Intl.DateTimeFormat(undefined, sameDay
+    ? { hour: "numeric", minute: "2-digit" }
+    : { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }
+  ).format(date);
+}
+
+function notificationStatusMarkup(status = {}) {
+  if (status.permission === "denied") {
+    return {
+      message: "Phone alerts are off in Android settings. Updates will still be saved in this inbox.",
+      action: `<button class="text-btn" type="button" data-action="enable-push-notifications">Try again</button>`,
+    };
+  }
+  if (!status.supported) {
+    return {
+      message: "This inbox stays synced here. Install the Android app to receive alerts while CampusPulse is closed.",
+      action: "",
+    };
+  }
+  if (status.registered) {
+    return {
+      message: "Phone alerts are on. Attendance, quiz, and material updates are also saved here.",
+      action: "",
+    };
+  }
+  if (status.error) {
+    return {
+      message: `${escapeHtml(status.error)}. CampusPulse will retry when the app is active.`,
+      action: "",
+    };
+  }
+  return {
+    message: "Connecting phone alerts. Updates are already being saved in this inbox.",
+    action: "",
+  };
+}
+
+function renderNotificationInbox({ focus = false, restoreFocus = false } = {}) {
+  const root = document.querySelector("#modalRoot");
+  if (!root) return;
+  const previous = restoreFocus ? document.activeElement : null;
+  const previousNotificationId = previous?.dataset?.notificationId || "";
+  const previousAction = previous?.dataset?.action || "";
+  const snapshot = currentNotificationState();
+  const items = snapshot.notifications || [];
+  const unread = Math.max(0, Number(snapshot.unreadCount) || 0);
+  const statusView = notificationStatusMarkup(snapshot.status);
+  root.innerHTML = `
+    <div class="modal-backdrop" data-action="close-modal">
+      <section class="modal notification-modal" id="notificationInboxModal" role="dialog" aria-modal="true" aria-labelledby="notificationInboxTitle" aria-describedby="notificationInboxDescription">
+        <div class="modal-head">
+          <div class="notification-modal-title">
+            <span>${icon("i-bell")}</span>
+            <div><h2 id="notificationInboxTitle">Notifications</h2><p id="notificationInboxDescription">Course activity from all your joined classes</p></div>
+          </div>
+          <button type="button" class="icon-btn" data-action="close-modal" aria-label="Close notifications">${icon("i-close")}</button>
+        </div>
+        <div class="notification-toolbar">
+          <span>${unread ? `${unread} unread` : "You are all caught up"}</span>
+          <button class="text-btn" type="button" data-action="mark-all-notifications-read" ${unread ? "" : "disabled"}>Mark all as read</button>
+        </div>
+        <div class="notification-list">
+          ${items.length ? items.map(item => {
+            const presentation = notificationPresentation(item);
+            const course = state.courses.find(candidate => candidate.id === item.courseId);
+            const courseLabel = course?.courseCode || item.data?.courseCode || presentation.label;
+            return `<button class="notification-item ${item.readAt ? "" : "is-unread"}" type="button" data-action="open-notification" data-notification-id="${escapeHtml(item.id)}">
+              <span class="notification-kind ${presentation.className}">${icon(presentation.iconName)}</span>
+              <span class="notification-copy">
+                <strong>${escapeHtml(item.title || "CampusPulse update")}</strong>
+                <span>${escapeHtml(item.body || "Open to view this course update.")}</span>
+                <small>${escapeHtml(courseLabel)} · ${escapeHtml(notificationTime(item.createdAt))}</small>
+              </span>
+              ${item.readAt ? `<span class="chevron" aria-hidden="true">${icon("i-arrow")}</span>` : `<span class="notification-unread-dot" aria-label="Unread"></span>`}
+            </button>`;
+          }).join("") : `<div class="notification-empty"><div><span class="empty-icon">${icon("i-bell")}</span><h3>No notifications yet</h3><p>When attendance opens or a quiz or material is posted, it will stay here for you.</p></div></div>`}
+        </div>
+        <p class="notification-status">${icon("i-bell")}<span>${statusView.message}</span>${statusView.action}</p>
+      </section>
+    </div>`;
+  notificationButton?.setAttribute("aria-expanded", "true");
+  window.setTimeout(() => {
+    if (focus) {
+      root.querySelector("button[data-action='close-modal']")?.focus();
+      return;
+    }
+    if (!restoreFocus) return;
+    const buttons = [...root.querySelectorAll("button")];
+    const replacement = previousNotificationId
+      ? buttons.find(button => button.dataset.notificationId === previousNotificationId)
+      : buttons.find(button => button.dataset.action === previousAction);
+    replacement?.focus();
+  }, 0);
+}
+
+function openNotificationInbox() {
+  if (!state.authenticated) return;
+  modalReturnFocus = document.activeElement;
+  renderNotificationInbox({ focus: true });
+  pushManager?.refresh?.({ silent: true }).catch(() => {});
+}
+
+async function openNotificationDestination(item) {
+  if (!item || !state.authenticated) return;
+  closeModal();
+  if (item.courseId) {
+    const course = state.courses.find(candidate => candidate.id === item.courseId);
+    if (!course) {
+      toast("That course is no longer available to this account", "error");
+      return navigate("dashboard");
+    }
+    try {
+      await switchCourseContext(course.id, { renderView: false, notify: false });
+    } catch (error) {
+      toast(error.message || "Could not open that course", "error");
+      return;
+    }
+  }
+  const route = [
+    "dashboard", "schedule", "classes", "notices", "students",
+    "materials", "attendance", "quizzes", "settings",
+  ].includes(item.route) ? item.route : "dashboard";
+  navigate(route);
+}
+
+async function startNotificationLifecycle() {
+  if (!pushManager || !state.authenticated || !state.authEmail || !backendConfigured() || !apiToken) {
+    syncNotificationUi();
+    return;
+  }
+  try {
+    const snapshot = await pushManager.start({ accountEmail: state.authEmail });
+    syncNotificationUi(snapshot);
+  } catch {
+    // Core app access must not depend on push or inbox availability.
+  }
+}
+
+pushManager?.configure?.({
+  // The manager receives an authenticated request function, never the token.
+  request: (path, options) => apiRequest(path, options),
+  onInbox: (snapshot) => {
+    syncNotificationUi(snapshot);
+    if (document.querySelector("#notificationInboxModal")) {
+      renderNotificationInbox({ restoreFocus: true });
+    }
+  },
+  onStatus: () => {
+    syncNotificationUi();
+    if (document.querySelector("#notificationInboxModal")) {
+      renderNotificationInbox({ restoreFocus: true });
+    }
+  },
+  onForeground: (item) => {
+    const message = [item.title, item.body].filter(Boolean).join(" · ");
+    toast(message || "New course activity", "notification");
+  },
+  onOpen: (item) => {
+    openNotificationDestination(item).catch((error) => {
+      toast(error.message || "Could not open that notification", "error");
+    });
+  },
+});
+
 function openReminderModal() {
   modalReturnFocus = document.activeElement;
   const settings = reminderManager?.getSettings?.(state.authEmail) || {
@@ -3089,6 +3308,7 @@ function openReminderModal() {
 
 function closeModal() {
   document.querySelector("#modalRoot").innerHTML = "";
+  notificationButton?.setAttribute("aria-expanded", "false");
   modalReturnFocus?.focus?.();
   modalReturnFocus = null;
   editingScheduleIndex = -1;
@@ -3819,6 +4039,36 @@ document.addEventListener("click", async event => {
     }
   }
 
+  if (action === "open-notification-inbox") {
+    return openNotificationInbox();
+  }
+  if (action === "mark-all-notifications-read") {
+    try {
+      await pushManager?.markAllRead?.();
+      return toast("All notifications marked as read");
+    } catch (error) {
+      return toast(error.message || "Could not update notifications", "error");
+    }
+  }
+  if (action === "enable-push-notifications") {
+    try {
+      const result = await pushManager?.enablePush?.({ requestPermission: true });
+      if (result?.permission === "granted") {
+        return toast("Phone alerts are enabled");
+      }
+      return toast("Allow CampusPulse notifications in Android settings", "error");
+    } catch (error) {
+      return toast(error.message || "Could not enable phone alerts", "error");
+    }
+  }
+  if (action === "open-notification") {
+    const id = event.target.closest("[data-notification-id]")?.dataset.notificationId || "";
+    const item = currentNotificationState().notifications.find(notification => notification.id === id);
+    if (!item) return toast("That notification is no longer available", "error");
+    pushManager?.markRead?.(item.inboxId || item.id).catch(() => {});
+    return openNotificationDestination(item);
+  }
+
   if (action === "edit-course") {
     if (state.userRole !== "faculty") return toast("Only professors can edit courses", "error");
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
@@ -4089,6 +4339,7 @@ document.addEventListener("click", async event => {
           (account) => account.email !== state.authEmail
         );
       }
+      await pushManager?.stop?.({ unregister: true }).catch(() => {});
       await reminderManager?.disable(deletingEmail, { forget: true }).catch(() => {});
       apiToken = "";
       localStorage.removeItem("campusPulseApiToken");
@@ -4127,6 +4378,7 @@ document.addEventListener("click", async event => {
   if (action === "logout") {
     clearTimeout(quizTimer);
     await reminderManager?.suspend(state.authEmail).catch(() => {});
+    await pushManager?.stop?.({ unregister: true }).catch(() => {});
     if (backendConfigured() && apiToken) {
       try { await apiRequest("/api/auth/logout", { method: "POST" }); } catch {}
       apiToken = "";
@@ -5135,6 +5387,7 @@ document.addEventListener("submit", async event => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     syncClassReminders().catch(() => {});
+    if (state.authenticated) pushManager?.refresh?.({ silent: true }).catch(() => {});
   }
 });
 

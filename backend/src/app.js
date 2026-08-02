@@ -3,6 +3,7 @@ const path = require("node:path");
 const { createStore } = require("./database");
 const { createPostgresStore } = require("./postgres-database");
 const { createMailer } = require("./mailer");
+const { createFirebaseNotifier } = require("./push-notifier");
 const { applyUserProfileOverride } = require("./profile-overrides");
 const {
   hashPassword,
@@ -15,6 +16,8 @@ const {
 const ROLES = new Set(["faculty", "ta", "student"]);
 const TEN_MINUTES = 10 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+const MAX_PUSH_DEVICES_PER_USER = 5;
+const PUSH_DELIVERY_CONCURRENCY = 20;
 
 function cleanEmail(value = "") {
   return String(value).trim().toLowerCase();
@@ -148,6 +151,87 @@ function addNotice(database, { courseId, kind, title, body = "", authorId, autho
     database.courseNotices = database.courseNotices.filter((item) => !cutoff.has(item.id));
   }
   return notice;
+}
+
+function publicNotification(notification) {
+  const { userId: _userId, ...visible } = notification;
+  return visible;
+}
+
+function notificationData(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, 50)
+      .filter(([, item]) => item !== undefined && item !== null)
+      .map(([key, item]) => [String(key).slice(0, 100), String(item).slice(0, 4000)])
+      .filter(([key]) => key),
+  );
+}
+
+// Inbox records are authoritative even when a phone is offline or Firebase is
+// temporarily unavailable. Device deliveries are returned separately so they
+// can happen after the database transaction has committed.
+function addCourseNotifications(
+  database,
+  { courseId, actorId, type, title, body = "", route, data = {} },
+) {
+  const course = database.courses.find((item) => item.id === courseId);
+  if (!course) return [];
+  const recipientIds = new Set([
+    course.ownerId,
+    ...database.enrollments
+      .filter((enrollment) => enrollment.courseId === courseId)
+      .map((enrollment) => enrollment.userId),
+  ]);
+  recipientIds.delete(actorId);
+
+  const users = new Set(database.users.map((user) => user.id));
+  const createdAt = new Date().toISOString();
+  const deliveries = [];
+  for (const userId of recipientIds) {
+    if (!users.has(userId)) continue;
+    const notification = {
+      id: `notification-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      userId,
+      type: String(type || "notice").slice(0, 40),
+      title: String(title || "CampusPulse").slice(0, 120),
+      body: String(body || "").slice(0, 500),
+      courseId,
+      route: String(route || "dashboard").slice(0, 80),
+      data: notificationData(data),
+      createdAt,
+      readAt: null,
+    };
+    database.notifications.push(notification);
+    deliveries.push({
+      notification,
+      devices: database.pushDevices
+        .filter(
+          (device) =>
+            device.userId === userId &&
+            device.sessionTokenHash &&
+            database.sessions.some(
+              (session) =>
+                session.userId === userId &&
+                session.tokenHash === device.sessionTokenHash &&
+                Date.parse(session.expiresAt) > Date.now(),
+            ),
+        )
+        .map(({ token, platform }) => ({ token, platform })),
+    });
+  }
+
+  // Bound inbox growth without losing the useful recent history.
+  for (const userId of recipientIds) {
+    const own = database.notifications.filter((item) => item.userId === userId);
+    if (own.length <= 500) continue;
+    const obsolete = new Set(own.slice(0, own.length - 500).map((item) => item.id));
+    database.notifications = database.notifications.filter(
+      (item) => !obsolete.has(item.id),
+    );
+  }
+  return deliveries;
 }
 
 const PROXIMITY_WINDOW_MS = 30000;
@@ -517,6 +601,13 @@ function createApp(options = {}) {
         })
       : createStore(databasePath, { env }));
   const mailer = options.mailer || createMailer(env);
+  const pushNotifier = options.pushNotifier || createFirebaseNotifier(env);
+  const pushDeliveryState = {
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    lastErrorCount: 0,
+  };
   const allowDevVerificationCode =
     String(env.NODE_ENV || "").toLowerCase() !== "production" &&
     String(env.ALLOW_DEV_VERIFICATION_CODE || "").toLowerCase() === "true";
@@ -591,23 +682,110 @@ function createApp(options = {}) {
         : response.status(403).json({ error: "You do not have permission for this action" });
   }
 
+  async function deliverNotifications(deliveries = []) {
+    if (!pushNotifier.configured || typeof pushNotifier.send !== "function") return;
+    const seenTokens = new Set();
+    const attempts = [];
+    for (const delivery of deliveries) {
+      for (const device of delivery.devices || []) {
+        if (!device.token || seenTokens.has(device.token)) continue;
+        seenTokens.add(device.token);
+        attempts.push({ device, notification: delivery.notification });
+      }
+    }
+    if (!attempts.length) return;
+    pushDeliveryState.lastAttemptAt = new Date().toISOString();
+    const results = new Array(attempts.length);
+    let nextAttempt = 0;
+    const workers = Array.from(
+      { length: Math.min(PUSH_DELIVERY_CONCURRENCY, attempts.length) },
+      async () => {
+        while (nextAttempt < attempts.length) {
+          const index = nextAttempt;
+          nextAttempt += 1;
+          const { device, notification } = attempts[index];
+          try {
+            const result = await pushNotifier.send({
+              token: device.token,
+              platform: device.platform,
+              title: notification.title,
+              body: notification.body,
+              data: {
+                ...notification.data,
+                notificationId: notification.id,
+                type: notification.type,
+                courseId: notification.courseId,
+                route: notification.route,
+              },
+            });
+            results[index] = {
+              token: device.token,
+              invalid: result?.invalidToken === true,
+              delivered: result?.delivered !== false,
+            };
+          } catch (error) {
+            results[index] = {
+              token: device.token,
+              invalid: error?.invalidToken === true,
+              delivered: false,
+            };
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    const errorCount = results.filter((result) => !result.delivered).length;
+    pushDeliveryState.lastErrorCount = errorCount;
+    if (results.some((result) => result.delivered)) {
+      pushDeliveryState.lastSuccessAt = new Date().toISOString();
+    }
+    if (errorCount) {
+      pushDeliveryState.lastFailureAt = new Date().toISOString();
+      console.warn(`CampusPulse push delivery failed for ${errorCount} device(s)`);
+    }
+    const invalidTokens = new Set(
+      results.filter((result) => result.invalid).map((result) => result.token),
+    );
+    if (!invalidTokens.size) return;
+    // FCM says these tokens are permanently invalid; leaving them in storage
+    // would make every later course event retry them.
+    await store
+      .update((database) => {
+        database.pushDevices = database.pushDevices.filter(
+          (device) => !invalidTokens.has(device.token),
+        );
+        return null;
+      })
+      .catch(() => {});
+  }
+
   app.get("/api/health", async (_request, response, next) => {
     try {
       const production = String(env.NODE_ENV || "").toLowerCase() === "production";
       const warnings = production
         ? [
             "TA_SIGNUP_CODE",
-          ].filter((key) => !String(env[key] || "").trim())
+            "FIREBASE_SERVICE_ACCOUNT_JSON",
+          ].filter((key) =>
+            key === "FIREBASE_SERVICE_ACCOUNT_JSON"
+              ? !pushNotifier.configured
+              : !String(env[key] || "").trim(),
+          )
         : [];
       const data = await store.read();
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.3.0",
+        version: "1.4.1",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
           mailer.provider || (mailer.configured ? "configured" : "disabled"),
+        pushDelivery: pushNotifier.configured
+          ? pushNotifier.provider || "configured"
+          : pushNotifier.status || "disabled",
+        pushConfigured: Boolean(pushNotifier.configured),
+        pushRuntime: { ...pushDeliveryState },
         courses: data.courses.length,
         coursesAwaitingRollList: data.courses.filter(
           (course) => !courseRoster(data, course.id).length,
@@ -941,6 +1119,9 @@ function createApp(options = {}) {
         database.sessions = database.sessions.filter(
           (item) => Date.parse(item.expiresAt) > Date.now() && item.userId !== user.id,
         );
+        database.pushDevices = database.pushDevices.filter(
+          (item) => item.userId !== user.id,
+        );
         database.sessions.push({
           tokenHash: sha256(token),
           userId: user.id,
@@ -976,6 +1157,11 @@ function createApp(options = {}) {
           (item) =>
             item.userId !== request.user.id ||
             item.tokenHash === request.sessionTokenHash,
+        );
+        database.pushDevices = database.pushDevices.filter(
+          (item) =>
+            item.userId !== request.user.id ||
+            item.sessionTokenHash === request.sessionTokenHash,
         );
         return null;
       });
@@ -1061,6 +1247,9 @@ function createApp(options = {}) {
         database.sessions = database.sessions.filter(
           (item) => item.userId !== user.id,
         );
+        database.pushDevices = database.pushDevices.filter(
+          (item) => item.userId !== user.id,
+        );
         return { ok: true };
       });
       if (result.error) {
@@ -1078,6 +1267,11 @@ function createApp(options = {}) {
         database.sessions = database.sessions.filter(
           (item) => item.tokenHash !== request.sessionTokenHash,
         );
+        database.pushDevices = database.pushDevices.filter(
+          (item) =>
+            item.userId !== request.user.id ||
+            item.sessionTokenHash !== request.sessionTokenHash,
+        );
         return null;
       });
       response.status(204).end();
@@ -1089,6 +1283,162 @@ function createApp(options = {}) {
   app.get("/api/me", authenticate, (request, response) => {
     response.json({ user: publicUser(request.user) });
   });
+
+  app.get("/api/notifications", authenticate, async (request, response, next) => {
+    try {
+      const requestedLimit = Number.parseInt(String(request.query.limit || "50"), 10);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.min(100, Math.max(1, requestedLimit))
+        : 50;
+      const data = await store.read();
+      const own = data.notifications.filter(
+        (notification) => notification.userId === request.user.id,
+      );
+      response.json({
+        notifications: own.slice(-limit).reverse().map(publicNotification),
+        unreadCount: own.filter((notification) => !notification.readAt).length,
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch(
+    "/api/notifications/:id/read",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const notification = await store.update((database) => {
+          const own = database.notifications.find(
+            (item) => item.id === request.params.id && item.userId === request.user.id,
+          );
+          if (!own) {
+            const error = new Error("Notification not found");
+            error.status = 404;
+            throw error;
+          }
+          if (!own.readAt) own.readAt = new Date().toISOString();
+          return own;
+        });
+        response.json({ notification: publicNotification(notification) });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/notifications/read-all",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const updated = await store.update((database) => {
+          const readAt = new Date().toISOString();
+          let count = 0;
+          database.notifications.forEach((notification) => {
+            if (notification.userId === request.user.id && !notification.readAt) {
+              notification.readAt = readAt;
+              count += 1;
+            }
+          });
+          return count;
+        });
+        response.json({ updated, unreadCount: 0 });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.post(
+    "/api/notifications/devices",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const token = String(request.body.token || "").trim();
+        const platform = String(request.body.platform || "android").toLowerCase();
+        if (token.length < 8 || token.length > 4096 || /\s/.test(token)) {
+          return response.status(400).json({ error: "Enter a valid device token" });
+        }
+        if (!["android", "ios", "web"].includes(platform)) {
+          return response.status(400).json({ error: "Unsupported device platform" });
+        }
+        const result = await store.update((database) => {
+          const now = new Date().toISOString();
+          let device = database.pushDevices.find((item) => item.token === token);
+          const created = !device;
+          database.pushDevices = database.pushDevices.filter(
+            (item) => item.token !== token,
+          );
+          const ownDevices = database.pushDevices
+            .filter((item) => item.userId === request.user.id)
+            .sort(
+              (left, right) =>
+                Date.parse(left.updatedAt || left.registeredAt || 0) -
+                Date.parse(right.updatedAt || right.registeredAt || 0),
+            );
+          const evictedTokens = new Set(
+            ownDevices
+              .slice(0, Math.max(0, ownDevices.length - MAX_PUSH_DEVICES_PER_USER + 1))
+              .map((item) => item.token),
+          );
+          if (evictedTokens.size) {
+            database.pushDevices = database.pushDevices.filter(
+              (item) => !evictedTokens.has(item.token),
+            );
+          }
+          if (device) {
+            device.userId = request.user.id;
+            device.platform = platform;
+            device.sessionTokenHash = request.sessionTokenHash;
+            device.updatedAt = now;
+          } else {
+            device = {
+              token,
+              userId: request.user.id,
+              platform,
+              sessionTokenHash: request.sessionTokenHash,
+              registeredAt: now,
+              updatedAt: now,
+            };
+          }
+          database.pushDevices.push(device);
+          return { device, created };
+        });
+        response.status(result.created ? 201 : 200).json({
+          device: {
+            token: result.device.token,
+            platform: result.device.platform,
+            registeredAt: result.device.registeredAt,
+            updatedAt: result.device.updatedAt,
+          },
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  app.delete(
+    "/api/notifications/devices",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const token = String(request.body.token || "").trim();
+        if (!token) return response.status(400).json({ error: "Device token required" });
+        await store.update((database) => {
+          database.pushDevices = database.pushDevices.filter(
+            (device) =>
+              !(device.token === token && device.userId === request.user.id),
+          );
+          return null;
+        });
+        response.status(204).end();
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
 
   app.delete("/api/account", authenticate, async (request, response, next) => {
     try {
@@ -1111,6 +1461,12 @@ function createApp(options = {}) {
         );
         database.verificationCodes = database.verificationCodes.filter(
           (item) => item.email !== email,
+        );
+        database.notifications = database.notifications.filter(
+          (item) => item.userId !== userId,
+        );
+        database.pushDevices = database.pushDevices.filter(
+          (item) => item.userId !== userId,
         );
         database.attendanceSessions.forEach((session) => {
           if (Array.isArray(session.present)) {
@@ -1461,6 +1817,12 @@ function createApp(options = {}) {
           database.courseMaterials = database.courseMaterials.filter(
             (item) => item.courseId !== courseId,
           );
+          database.courseNotices = database.courseNotices.filter(
+            (item) => item.courseId !== courseId,
+          );
+          database.notifications = database.notifications.filter(
+            (item) => item.courseId !== courseId,
+          );
           database.schedule = database.schedule.filter(
             (item) => item.courseId !== courseId,
           );
@@ -1668,7 +2030,7 @@ function createApp(options = {}) {
         )
           ? requestedContentType
           : "application/octet-stream";
-        const material = await store.update((database) => {
+        const result = await store.update((database) => {
           const course = requireCourse(
             database,
             request.user,
@@ -1687,17 +2049,29 @@ function createApp(options = {}) {
             dataBase64: data.toString("base64"),
           };
           database.courseMaterials.push(created);
+          const title = `New material: ${created.fileName}`;
+          const body = "Open the Materials tab to view or download it.";
           addNotice(database, {
             courseId: created.courseId,
             kind: "material",
-            title: `New material: ${created.name}`,
-            body: "Open the Materials tab to view or download it.",
+            title,
+            body,
             authorId: request.user.id,
             authorName: request.user.name,
           });
-          return publicMaterial(created);
+          const deliveries = addCourseNotifications(database, {
+            courseId: created.courseId,
+            actorId: request.user.id,
+            type: "material",
+            title,
+            body,
+            route: "materials",
+            data: { materialId: created.id, fileName: created.fileName },
+          });
+          return { material: publicMaterial(created), deliveries };
         });
-        response.status(201).json({ material });
+        await deliverNotifications(result.deliveries);
+        response.status(201).json({ material: result.material });
       } catch (error) {
         next(error);
       }
@@ -1901,7 +2275,7 @@ function createApp(options = {}) {
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
-        const session = await store.update((database) => {
+        const result = await store.update((database) => {
           const courseId = String(request.body.courseId || "").trim();
           const course = requireCourse(database, request.user, courseId, "run");
           const roster = courseRoster(database, courseId);
@@ -1949,9 +2323,22 @@ function createApp(options = {}) {
             authorId: request.user.id,
             authorName: request.user.name,
           });
-          return created;
+          const deliveries = addCourseNotifications(database, {
+            courseId,
+            actorId: request.user.id,
+            type: "attendance",
+            title: "Attendance is open",
+            body: "Mark yourself present with Wi-Fi and Bluetooth switched on.",
+            route: "attendance",
+            data: {
+              attendanceId: created.id,
+              ...(created.scheduleId ? { scheduleId: created.scheduleId } : {}),
+            },
+          });
+          return { session: created, deliveries };
         });
-        response.status(201).json({ attendance: publicAttendance(session) });
+        await deliverNotifications(result.deliveries);
+        response.status(201).json({ attendance: publicAttendance(result.session) });
       } catch (error) {
         next(error);
       }
@@ -2318,7 +2705,7 @@ function createApp(options = {}) {
       try {
         const questions = normalizeQuizQuestions(request.body.questions);
         const asDraft = request.body.status === "draft";
-        const quiz = await store.update((database) => {
+        const result = await store.update((database) => {
           const courseId = String(request.body.courseId || "").trim();
           requireCourse(database, request.user, courseId, "run");
           // A draft disturbs nothing that is already running.
@@ -2341,6 +2728,7 @@ function createApp(options = {}) {
             responses: [],
           };
           database.quizzes.push(created);
+          let deliveries = [];
           if (!asDraft) {
             addNotice(database, {
               courseId,
@@ -2350,10 +2738,20 @@ function createApp(options = {}) {
               authorId: request.user.id,
               authorName: request.user.name,
             });
+            deliveries = addCourseNotifications(database, {
+              courseId,
+              actorId: request.user.id,
+              type: "quiz",
+              title: `Quiz published: ${created.title}`,
+              body: `${questions.length} question${questions.length === 1 ? "" : "s"}${created.classLabel ? ` · ${created.classLabel}` : ""}.`,
+              route: "quizzes",
+              data: { quizId: created.id },
+            });
           }
-          return created;
+          return { quiz: created, deliveries };
         });
-        response.status(201).json({ quiz });
+        await deliverNotifications(result.deliveries);
+        response.status(201).json({ quiz: result.quiz });
       } catch (error) {
         next(error);
       }
@@ -2708,7 +3106,7 @@ function createApp(options = {}) {
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
-        const quiz = await store.update((database) => {
+        const result = await store.update((database) => {
           const draft = database.quizzes.find(
             (item) => item.id === request.params.id && item.status === "draft",
           );
@@ -2736,9 +3134,19 @@ function createApp(options = {}) {
             authorId: request.user.id,
             authorName: request.user.name,
           });
-          return draft;
+          const deliveries = addCourseNotifications(database, {
+            courseId: draft.courseId,
+            actorId: request.user.id,
+            type: "quiz",
+            title: `Quiz published: ${draft.title}`,
+            body: `${draft.questions.length} question${draft.questions.length === 1 ? "" : "s"}${draft.classLabel ? ` · ${draft.classLabel}` : ""}.`,
+            route: "quizzes",
+            data: { quizId: draft.id },
+          });
+          return { quiz: draft, deliveries };
         });
-        response.json({ quiz });
+        await deliverNotifications(result.deliveries);
+        response.json({ quiz: result.quiz });
       } catch (error) {
         next(error);
       }

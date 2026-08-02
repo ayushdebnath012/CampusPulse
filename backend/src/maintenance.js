@@ -20,6 +20,8 @@ async function deleteExistingAccountsOnce(store) {
     database.courseStudents = [];
     database.courseMaterials = [];
     database.courseNotices = [];
+    database.notifications = [];
+    database.pushDevices = [];
     database.schedule = [];
     database.attendanceSessions = [];
     database.quizzes = [];
