@@ -782,9 +782,11 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 }
 .proximity-code > div { display: flex; flex-direction: column; }
 .proximity-code span { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.proximity-code strong { color: var(--primary); font-size: 34px; font-weight: 800; letter-spacing: .22em; line-height: 1.2; }
+.proximity-code strong { color: var(--primary); font-size: 16px; font-weight: 800; letter-spacing: .04em; line-height: 1.4; display: flex; align-items: center; gap: 6px; }
+.proximity-code strong svg { width: 18px; height: 18px; }
 .proximity-code p { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
-.attendance-code { text-transform: uppercase; letter-spacing: .18em; font-weight: 700; }
+.proximity-code.no-ble { border-color: #f0dac9; background: #fdf6f0; }
+.proximity-code.no-ble strong { color: var(--amber, #b45309); }
 
 .review-option.is-wrong { color: #a33; border-color: #f0c9c9; background: var(--red-soft); }
 .review-option.is-wrong .review-mark svg { color: var(--red); }

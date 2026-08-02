@@ -1340,15 +1340,12 @@ function attendanceCallCard(session) {
   }
   return `<article class="card page-card attendance-call">
     <div class="section-head"><h3>${escapeHtml(courseName)}</h3><span class="badge amber">Attendance open</span></div>
-    <p class="attendance-call-copy">Your professor started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. Wi‑Fi and Bluetooth must both be on.</p>
+    <p class="attendance-call-copy">Your professor started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. Stay in the room — your phone connects over Bluetooth.</p>
     ${session.rollNumber
       ? `<p class="attendance-call-roll">Roll number <strong>${escapeHtml(session.rollNumber)}</strong></p>`
       : `<label class="attendance-call-label" for="rollNumber-${escapeHtml(session.id)}">Your roll number</label>
          <input class="text-input" id="rollNumber-${escapeHtml(session.id)}" data-roll-for="${escapeHtml(session.id)}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
-    ${proximityPlugin()
-      ? `<p class="attendance-call-copy">Your phone finds the class over Bluetooth — stay in the room and tap below.</p>`
-      : `<label class="attendance-call-label" for="proximity-${escapeHtml(session.id)}">Code on the class screen</label>
-         <input class="text-input attendance-code" id="proximity-${escapeHtml(session.id)}" data-code-for="${escapeHtml(session.id)}" type="text" maxlength="6" placeholder="6 characters" autocomplete="off" inputmode="latin" />`}
+    <p class="attendance-call-copy">Wi‑Fi and Bluetooth must both be on. Your phone will find the class automatically when you tap below.</p>
     <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}">${icon("i-check")} Mark me present</button>
   </article>`;
 }
@@ -2061,12 +2058,13 @@ function renderLiveAttendance() {
     <div class="page-grid">
       <article class="card page-card">
         ${sessionHeading(complete ? "Review attendance" : "Mark attendance", complete ? "Session closed and saved" : "Select each student who is present", complete ? "green" : "purple")}
-        ${!complete && proximityCode?.supported ? `<div class="proximity-code">
-          <div><span>${beaconToken ? "Broadcasting to the room" : "Backup code"}</span><strong>${escapeHtml(proximityCode.code || "······")}</strong></div>
-          <p>${beaconToken
-            ? "Students nearby pick this up over Bluetooth automatically — nothing to read out. It changes every 30 seconds."
-            : "This device cannot broadcast over Bluetooth, so students enter this code instead. It changes every 30 seconds."}</p>
-        </div>` : ""}
+        ${!complete ? (beaconToken ? `<div class="proximity-code">
+          <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
+          <p>Students nearby pick this up over Bluetooth automatically — nothing to read out. Only phones within range can mark themselves present.</p>
+        </div>` : `<div class="proximity-code no-ble">
+          <div><span>Bluetooth not available</span><strong>${icon("i-close")} Not broadcasting</strong></div>
+          <p>Open the CampusPulse app on your Android phone to broadcast attendance over Bluetooth. Students in the room will pick it up automatically.</p>
+        </div>`) : ""}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
           <div class="scan-status">${complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
@@ -4530,8 +4528,6 @@ document.addEventListener("click", async event => {
     const rollInput = document.querySelector(`[data-roll-for="${sessionId}"]`);
     const rollNumber = session.rollNumber || rollInput?.value.trim().toUpperCase() || "";
     if (!rollNumber) return toast("Enter your roll number", "error");
-    let code = document.querySelector(`[data-code-for="${sessionId}"]`)?.value.trim().toUpperCase() || "";
-
     button.disabled = true;
     try {
       const signals = await attendanceSignals({ requestWebBluetooth: true });
@@ -4541,18 +4537,18 @@ document.addEventListener("click", async event => {
           .join(" and ");
         return toast(`Turn on ${missing}, then mark attendance again`, "error");
       }
-      if (!code && proximityPlugin()) {
-        toast("Looking for the class over Bluetooth…");
-        const beacon = await findAttendanceBeacon();
-        if (!beacon.found) {
-          return toast(
-            beacon.error || "The class was not found nearby. Move closer and try again.",
-            "error"
-          );
-        }
-        code = String(beacon.token || "").trim().toUpperCase();
+      toast("Looking for the class over Bluetooth…");
+      const beacon = await findAttendanceBeacon();
+      if (!beacon.found) {
+        return toast(
+          beacon.unsupported
+            ? "Bluetooth proximity requires the CampusPulse Android app. Install it to mark attendance."
+            : beacon.error || "The class was not found nearby. Move closer and try again.",
+          "error"
+        );
       }
-      if (!code) return toast("Enter the code shown on the class screen", "error");
+      const code = String(beacon.token || "").trim().toUpperCase();
+      if (!code) return toast("No signal received. Move closer and try again.", "error");
       await apiRequest(`/api/attendance/${sessionId}/check-in`, {
         method: "POST",
         body: { rollNumber, signals, code }
