@@ -396,7 +396,10 @@
     // permission work here prevents Android from prompting on the sign-in page.
     if (pushSupported()) {
       enablePush({ requestPermission: true }).catch((error) => {
-        if (active) updateStatus({ error: error?.message || "Phone alerts unavailable" });
+        if (active) updateStatus({
+          registered: false,
+          error: error?.message || "Phone alerts unavailable",
+        });
       });
     }
     return snapshot();

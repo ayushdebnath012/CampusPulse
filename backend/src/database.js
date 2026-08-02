@@ -141,6 +141,21 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+async function renameWithRetry(source, destination) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.rename(source, destination);
+      return;
+    } catch (error) {
+      const retryable = ["EPERM", "EACCES", "EBUSY"].includes(error.code);
+      if (!retryable || attempt >= 6) throw error;
+      // Windows virus scanners can briefly hold a freshly written JSON file.
+      // Preserve the atomic replacement and retry instead of deleting either file.
+      await new Promise((resolve) => setTimeout(resolve, 25 * 2 ** attempt));
+    }
+  }
+}
+
 function createStore(filePath, options = {}) {
   const absolutePath = path.resolve(filePath);
   const env = options.env || process.env;
@@ -159,7 +174,7 @@ function createStore(filePath, options = {}) {
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
     const temporaryPath = `${absolutePath}.${process.pid}.tmp`;
     await fs.writeFile(temporaryPath, JSON.stringify(data, null, 2), "utf8");
-    await fs.rename(temporaryPath, absolutePath);
+    await renameWithRetry(temporaryPath, absolutePath);
   }
 
   return {
