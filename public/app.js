@@ -360,6 +360,8 @@ function applyAttendanceSnapshot(attendance) {
     ? attendance.status === "open" ? "scanning" : "complete"
     : "not_started";
   if (attendance?.courseId) state.selectedCourseId = attendance.courseId;
+  // A newly applied snapshot is always today's session, not a past one being browsed.
+  viewingPastAttendance = null;
 }
 
 async function selectAttendanceCourse(courseId) {
@@ -4403,6 +4405,7 @@ document.addEventListener("click", async event => {
       });
       activeAttendance = result.attendance;
       state.backendAttendanceId = result.attendance.id;
+      viewingPastAttendance = null;
     } catch (error) {
       return toast(error.message || "Could not open attendance", "error");
     }
