@@ -604,7 +604,8 @@ function createApp(options = {}) {
         ok: true,
         service: "campuspulse-api",
         version: "1.3.0",
-        otpRequired: false,
+        // Sign-up needs an emailed code whenever one can be sent.
+        otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
           mailer.provider || (mailer.configured ? "configured" : "disabled"),
         courses: data.courses.length,
