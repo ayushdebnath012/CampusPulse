@@ -186,16 +186,22 @@ function notificationData(value) {
 // can happen after the database transaction has committed.
 function addCourseNotifications(
   database,
-  { courseId, actorId, type, title, body = "", route, data = {} },
+  { courseId, actorId, type, title, body = "", route, data = {}, studentsOnly = false },
 ) {
   const course = database.courses.find((item) => item.id === courseId);
   if (!course) return [];
-  const recipientIds = new Set([
-    course.ownerId,
-    ...database.enrollments
-      .filter((enrollment) => enrollment.courseId === courseId)
-      .map((enrollment) => enrollment.userId),
-  ]);
+  const courseEnrollments = database.enrollments.filter(
+    (enrollment) => enrollment.courseId === courseId,
+  );
+  // Some notices (e.g. "mark yourself present") only make sense for students;
+  // the professor and TAs who run attendance don't need to mark themselves.
+  const recipientIds = new Set(
+    studentsOnly
+      ? courseEnrollments
+          .filter((enrollment) => enrollment.courseRole === "student")
+          .map((enrollment) => enrollment.userId)
+      : [course.ownerId, ...courseEnrollments.map((enrollment) => enrollment.userId)],
+  );
   recipientIds.delete(actorId);
 
   const users = new Set(database.users.map((user) => user.id));
@@ -2404,6 +2410,7 @@ function createApp(options = {}) {
               attendanceId: created.id,
               ...(created.scheduleId ? { scheduleId: created.scheduleId } : {}),
             },
+            studentsOnly: true,
           });
           return { session: created, deliveries };
         });
