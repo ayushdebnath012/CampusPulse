@@ -511,7 +511,7 @@ const loginProfiles = {
     placeholder: "ta@kgpian.iitkgp.ac.in",
     emailPattern: "[A-Za-z0-9._%+\\-]+@[Kk][Gg][Pp][Ii][Aa][Nn]\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
     emailTitle: "Use the same @kgpian.iitkgp.ac.in address used for a student account",
-    emailHelp: "Use your @kgpian.iitkgp.ac.in student address. The invitation code provisions the account as a TA.",
+    emailHelp: "Use your @kgpian.iitkgp.ac.in student address.",
     emailError: "TA accounts require your @kgpian.iitkgp.ac.in student email",
     initials: "TA",
     name: "Teaching Assistant"
@@ -600,7 +600,6 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
               <div><label for="signupRoll">Roll number</label><input id="signupRoll" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" required /></div>
               <div><label for="signupHall">Hall of residence</label><input id="signupHall" name="hall" type="text" placeholder="e.g. Azad Hall" autocomplete="off" maxlength="80" required /></div>
             </div>`}
-            ${selectedLoginRole === "ta" ? `<label for="taInviteCode">TA account invitation code</label><input id="taInviteCode" name="roleCode" type="password" placeholder="Provided by the CampusPulse administrator" autocomplete="off" aria-describedby="taInviteHelp" required /><p class="auth-field-help" id="taInviteHelp">This provisions the TA account; it is not a course join code. After sign-in, enter the professor's TA course code to join each course.</p>` : ""}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
           <div class="auth-demo-note"><span>${selectedLoginRole === "faculty" ? "Departmental email required" : "Student email required"}</span><p>${profile.emailHelp} We email a six-digit code to confirm it before the account is created.</p></div>` : `
@@ -1046,7 +1045,6 @@ function renderDashboard() {
             <h2>${escapeHtml(course.name)}</h2>
             <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p>
             <div class="hero-meta">
-              <span>${icon("i-clock")} ${escapeHtml(courseTimeLabel(course))}</span>
               <span>${icon("i-users")} ${Number(course.students) || 0} students</span>
               <span>${icon("i-calendar")} ${escapeHtml(course.room || "Room TBA")}</span>
             </div>
@@ -5244,8 +5242,7 @@ document.addEventListener("submit", async event => {
           password: data.password,
           phone: String(data.phone || "").trim(),
           rollNumber: String(data.rollNumber || "").trim().toUpperCase() || undefined,
-          hall: String(data.hall || "").trim() || undefined,
-          roleCode: data.roleCode || undefined
+          hall: String(data.hall || "").trim() || undefined
         }
       });
       pendingSignup = { role: data.role, email, password: data.password };

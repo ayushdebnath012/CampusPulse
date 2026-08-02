@@ -23,7 +23,6 @@ CampusPulse is a classroom operations app inspired by Acadly. This rollout conta
 cd backend
 npm.cmd install
 $env:FACULTY_SIGNUP_CODE="choose-a-private-code"
-$env:TA_SIGNUP_CODE="choose-a-private-ta-code"
 $env:COURSE_OWNER_EMAILS_JSON='{"soft401":"professor@mech.iitkgp.ac.in","kbs60353":"professor@mech.iitkgp.ac.in"}'
 npm.cmd start
 ```
@@ -48,7 +47,6 @@ During deployment, configure the private invitation variables. Email variables a
 - `RESEND_API_KEY`
 - `EMAIL_FROM`, such as `CampusPulse <noreply@your-verified-domain.example>`
 - `FACULTY_SIGNUP_CODE`, a private invitation code used to provision professor accounts
-- `TA_SIGNUP_CODE`, a private administrator code used to provision trusted TA accounts
 - `COURSE_OWNER_EMAILS_JSON`, mapping each existing course ID/code to its professor's verified email
 - `COURSE_JOIN_CODES_JSON`, private enrollment codes for the existing courses
 - `PROFESSOR_PROFILE_OVERRIDES_JSON`, a private mapping of professor emails to database-only phone/department corrections

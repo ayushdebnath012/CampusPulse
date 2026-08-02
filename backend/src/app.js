@@ -796,7 +796,6 @@ function createApp(options = {}) {
       const production = String(env.NODE_ENV || "").toLowerCase() === "production";
       const warnings = production
         ? [
-            "TA_SIGNUP_CODE",
             "FIREBASE_SERVICE_ACCOUNT_JSON",
           ].filter((key) =>
             key === "FIREBASE_SERVICE_ACCOUNT_JSON"
@@ -861,13 +860,6 @@ function createApp(options = {}) {
         });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
-      if (
-        role === "ta" &&
-        (!env.TA_SIGNUP_CODE || request.body.roleCode !== env.TA_SIGNUP_CODE)
-      )
-        return response.status(403).json({
-          error: "TA accounts must be provisioned with a valid invitation code",
-        });
 
       // Everyone gives a phone number. Roll number and hall of residence apply
       // to students and TAs, not to professors.
@@ -957,15 +949,6 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Use an IIT KGP institutional email" });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
-      if (
-        role === "ta" &&
-        (!env.TA_SIGNUP_CODE ||
-        request.body.roleCode !== env.TA_SIGNUP_CODE
-        )
-      )
-        return response.status(403).json({
-          error: "TA accounts must be provisioned with a valid invitation code",
-        });
 
       if (role === "faculty" && !isFacultyEmail(email))
         return response.status(400).json({

@@ -41,8 +41,6 @@ async function createTestServer(options = {}) {
     env: {
       ALLOWED_ORIGINS: "http://localhost",
       ALLOW_DEV_VERIFICATION_CODE: "true",
-      FACULTY_SIGNUP_CODE: "faculty-invite",
-      TA_SIGNUP_CODE: "ta-invite",
       ...(options.env || {}),
     },
   });
@@ -88,12 +86,6 @@ async function createVerifiedUser(baseUrl, user) {
     department: user.department || "Mechanical Engineering",
     ...(user.role === "faculty" ? {} : { rollNumber: user.rollNumber || `TEST${Math.random().toString(36).slice(2, 8).toUpperCase()}`, hall: "Azad Hall" }),
     ...user,
-    roleCode:
-      user.role === "faculty"
-        ? user.roleCode || "faculty-invite"
-        : user.role === "ta"
-          ? user.roleCode || "ta-invite"
-          : user.roleCode,
   };
   // Accounts are created through the emailed code, so tests walk that path.
   const requested = await request(baseUrl, "/api/auth/signup/request", {
@@ -2856,7 +2848,6 @@ test("production stays healthy with no configuration and no courses", async (t) 
       NODE_ENV: "production",
       ALLOW_DEV_VERIFICATION_CODE: "false",
       FACULTY_SIGNUP_CODE: "",
-      TA_SIGNUP_CODE: "",
     },
   });
   t.after(async () => {
@@ -2930,7 +2921,7 @@ test("production signup sends the verification code through the configured maile
   assert.match(sentMessage.code, /^\d{6}$/);
 });
 
-test("faculty signup ignores legacy invitations while TA still requires one", async (t) => {
+test("faculty and TA signup no longer require invitation codes", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {
     await testServer.close();
@@ -2961,12 +2952,15 @@ test("faculty signup ignores legacy invitations while TA still requires one", as
         role: "ta",
         name: "Uninvited Assistant",
         department: "Mechanical Engineering",
-        email: "uninvited-ta@iitkgp.ac.in",
+        email: "uninvited-ta@kgpian.iitkgp.ac.in",
         password: "assistant-password",
+        phone: "9876543210",
+        rollNumber: "TA00001",
+        hall: "Azad Hall",
       },
     },
   );
-  assert.equal(uninvitedTA.response.status, 403);
+  assert.equal(uninvitedTA.response.status, 202);
 });
 
 
