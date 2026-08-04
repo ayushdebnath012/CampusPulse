@@ -1171,7 +1171,7 @@ function renderDashboard() {
           <div class="hero-copy">
             <span class="live-tag">YOUR COURSE</span>
             <h2>${escapeHtml(course.name)}</h2>
-            <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p>
+            <p>${escapeHtml(course.courseCode)}</p>
             <div class="hero-meta">
               <span>${icon("i-users")} ${Number(course.students) || 0} students</span>
               <span>${icon("i-calendar")} ${escapeHtml(course.room || "Room TBA")}</span>
@@ -1959,7 +1959,7 @@ function scheduleDay(event, course, isStudent, enrolled) {
 function studentCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge green">Enrolled</span>
-    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.room)}</p>
     <div class="course-footer"><span>${icon("i-users")} ${course.students} classmates</span><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Quizzes</button></div>
   </article>`;
 }
@@ -2193,7 +2193,7 @@ function renderAttendanceSetup() {
           </select>
           <div class="roster-source-card">
             <span class="student-avatar">${roster.length}</span>
-            <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${ready ? `${roster.length} students` : "no roll list uploaded yet"}</p></div>
+            <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${ready ? `${roster.length} students` : "no roll list uploaded yet"}</p></div>
             <span class="badge ${ready ? "green" : "amber"}">${ready ? "Official roster ready" : "Roll list required"}</span>
           </div>
         </div>
@@ -2534,7 +2534,7 @@ function renderStudentQuizAccess() {
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
     <div class="page-grid">
       <article class="card page-card">
-        <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge green">Enrolled</span></div>
+        <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)}</p></div><span class="badge green">Enrolled</span></div>
         <div class="question-card" style="margin-top:20px"><div class="section-head"><div><h3>${escapeHtml(quizMatchesCourse ? state.backendQuizTitle || "Class quiz" : "No quiz available")}</h3><p class="stat-label" style="margin-top:5px">${quizMatchesCourse ? state.backendQuizQuestions.length : 0} questions${quizMatchesCourse && state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge ${quizPublished ? "purple" : "gray"}">${quizResponded ? "Submitted" : quizPublished ? "Available now" : "Not started"}</span></div>
         ${quizPublished && !quizResponded ? `<form id="studentQuizForm" class="quiz-builder" style="margin-top:18px">
           ${state.backendQuizQuestions.map((question, questionIndex) => `<fieldset class="question-card"><legend><strong>${questionIndex + 1}. ${escapeHtml(question.text || question.question || "")}</strong></legend>${question.image ? `<img class="question-image-view" src="${escapeHtml(question.image)}" alt="Question ${questionIndex + 1} image" />` : ""}${question.options.map((option, optionIndex) => `<label class="option-input"><input type="radio" name="student-q-${questionIndex}" value="${optionIndex}" required /><span>${escapeHtml(option)}</span></label>`).join("")}</fieldset>`).join("")}
@@ -3039,7 +3039,7 @@ function facultyCourseCard(course, isOpen = false) {
     <div class="course-card-head"><h3>${escapeHtml(course.name)}</h3>${isOpen
       ? `<span class="badge green">Open</span>`
       : `<button class="text-btn" type="button" data-action="select-course" data-course-id="${escapeHtml(course.id)}">Open</button>`}</div>
-    <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.room)}</p>
     <div class="course-join-codes">
       <div class="course-code"><span>Student join code</span><strong>${escapeHtml(studentCode || "Unavailable")}</strong><button class="icon-btn" data-copy="${escapeHtml(studentCode)}" data-copy-label="Student join code" aria-label="Copy student join code" ${studentCode ? "" : "disabled"}>${icon("i-quiz")}</button></div>
       <div class="course-code"><span>TA join code</span><strong>${escapeHtml(taCode || "Unavailable")}</strong><button class="icon-btn" data-copy="${escapeHtml(taCode)}" data-copy-label="TA join code" aria-label="Copy TA join code" ${taCode ? "" : "disabled"}>${icon("i-quiz")}</button></div>
@@ -3078,7 +3078,7 @@ function renderCourseRoster(courseId) {
     <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to students</button>
     <div class="page-grid roster-grid">
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
         <div class="roster-scroll" id="professorRoster">
           ${roster.length ? `<table class="roster-table">
@@ -3143,7 +3143,7 @@ function materialCourseCard(course) {
   return `<article class="course-card">
     <div class="course-accent"></div><span class="badge ${upload ? "purple" : "green"}">${upload ? "Course team" : "Enrolled"}</span>
     <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3>
-    <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.room)}</p>
     <div class="course-footer"><span>${Number(course.materialCount) || 0} shared files</span><button class="text-btn" data-action="open-course-materials" data-course-id="${escapeHtml(course.id)}">${owner ? "Upload & manage" : upload ? "Upload & view" : "View materials"}</button></div>
   </article>`;
 }
@@ -3229,7 +3229,7 @@ function taCourseCard(course, isOpen = false) {
     <div class="course-card-head"><span class="badge purple">Teaching assistant</span>${isOpen
       ? `<span class="badge green">Open</span>`
       : `<button class="text-btn" type="button" data-action="select-course" data-course-id="${escapeHtml(course.id)}">Open</button>`}</div>
-    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.section)} · ${escapeHtml(course.room)}</p>
+    <h3 style="margin-top:12px">${escapeHtml(course.name)}</h3><p>${escapeHtml(course.courseCode)} · ${escapeHtml(course.room)}</p>
     <div class="course-footer"><button class="text-btn" data-action="start-course-attendance" data-course-id="${escapeHtml(course.id)}">Take attendance</button><button class="text-btn" data-action="open-course-quiz" data-course-id="${escapeHtml(course.id)}">Create quiz</button></div>
   </article>`;
 }
@@ -3265,7 +3265,6 @@ function openCourseModal(course = null) {
         <div class="field-grid">
           <div class="field full"><label for="courseName">Course name</label><input id="courseName" name="name" placeholder="e.g. Computer Networks" value="${editing ? escapeHtml(course.name) : ""}" required /></div>
           <div class="field"><label for="courseCode">Course code</label><input id="courseCode" name="courseCode" placeholder="CSE 308" value="${editing ? escapeHtml(course.courseCode) : ""}" required /></div>
-          <div class="field"><label for="section">Section</label><input id="section" name="section" placeholder="Section A" value="${editing ? escapeHtml(course.section) : ""}" required /></div>
           <div class="field"><label for="room">Classroom</label><input id="room" name="room" placeholder="Room 205" value="${editing ? escapeHtml(course.room) : ""}" required /></div>
           <div class="field full"><p class="stat-label">${editing ? `Student code <strong>${escapeHtml(studentCode || "Unavailable")}</strong> and TA code <strong>${escapeHtml(taCode || "Unavailable")}</strong> are unchanged by this edit. Rosters, files, attendance and quizzes all stay attached.` : "After creation, give each code only to its intended group. Use the Students tab to upload the official roster and Materials for course files."}</p></div>
         </div>
@@ -5529,7 +5528,6 @@ document.addEventListener("submit", async event => {
     const body = {
       name: data.name,
       courseCode: data.courseCode,
-      section: data.section,
       room: data.room
     };
     let result;

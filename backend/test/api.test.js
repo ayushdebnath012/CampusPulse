@@ -139,7 +139,6 @@ async function createCourse(baseUrl, token, options = {}) {
     body: {
       name: options.name || "Soft Computing",
       courseCode: options.courseCode || "MF41601",
-      section: options.section || "Autumn 2026-2027",
       room: options.room || "NR221",
     },
   });
@@ -290,7 +289,6 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
       code: "ORPHAN1",
       name: "Unowned Course",
       courseCode: "NONE001",
-      section: "Test",
       room: "Room TBA",
       students: 0,
       ownerId: "missing-owner",
@@ -662,7 +660,6 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: {
       name: "TA-Owned Course",
       courseCode: "TA0001",
-      section: "Autumn",
       room: "Room 1",
     },
   });
@@ -722,7 +719,6 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     body: {
       name: "Exclusive Course",
       courseCode: "EX1001",
-      section: "Autumn 2026-2027",
       room: "Room X",
     },
   });
@@ -1820,7 +1816,6 @@ test("editing a course keeps its join code, and deleting one clears its data", a
     body: {
       name: "Soft Computing Renamed",
       courseCode: "MF41601A",
-      section: "Autumn 2027-2028",
       room: "NR305",
     },
   });

@@ -60,7 +60,6 @@ async function notificationServer(pushNotifier) {
       code: "JOIN1234",
       name: "Push Systems",
       courseCode: "PS10001",
-      section: "Test",
       room: "Room 1",
     });
     database.courseStudents.push({

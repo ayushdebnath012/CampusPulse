@@ -1846,7 +1846,6 @@ function createApp(options = {}) {
           .trim()
           .toUpperCase()
           .replace(/\s+/g, " ");
-        const section = String(request.body.section || "").trim().slice(0, 80);
         const room = String(request.body.room || "Room TBA").trim().slice(0, 80);
         if (
           name.length < 2 ||
@@ -1879,7 +1878,6 @@ function createApp(options = {}) {
             taCode,
             name,
             courseCode,
-            section: section || "Current term",
             room: room || "Room TBA",
             students: 0,
             ownerId: request.user.id,
@@ -1991,9 +1989,6 @@ function createApp(options = {}) {
           }
           existing.name = name;
           existing.courseCode = courseCode;
-          existing.section = String(request.body.section ?? existing.section)
-            .trim()
-            .slice(0, 80);
           existing.room =
             String(request.body.room ?? existing.room).trim().slice(0, 80) ||
             "Room TBA";
