@@ -14,6 +14,33 @@ const {
 } = require("./security");
 
 const ROLES = new Set(["faculty", "ta", "student"]);
+
+// The exams a course can record, in the order they are sat. Fixed rather than
+// free-form so a mark always lands in a column both the professor and the
+// student recognise.
+const EXAMS = [
+  { id: "test1", label: "Test 1" },
+  { id: "test2", label: "Test 2" },
+  { id: "test3", label: "Test 3" },
+  { id: "test4", label: "Test 4" },
+  { id: "test5", label: "Test 5" },
+  { id: "test6", label: "Test 6" },
+  { id: "midsem", label: "Mid Sem" },
+  { id: "endsem", label: "End Sem" },
+];
+const EXAM_IDS = new Set(EXAMS.map((exam) => exam.id));
+
+/** The mark a course counts each exam out of, once the professor sets it. */
+function examTotals(course) {
+  const stored = course?.examTotals;
+  const totals = {};
+  EXAMS.forEach(({ id }) => {
+    const value = Number(stored?.[id]);
+    totals[id] = Number.isFinite(value) && value > 0 ? value : null;
+  });
+  return totals;
+}
+
 const FIVE_MINUTES = 5 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
@@ -1019,7 +1046,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.6.0",
+        version: "1.7.0",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
@@ -1816,6 +1843,202 @@ function createApp(options = {}) {
     },
   );
 
+  // Every exam, what it is marked out of, and every rostered student's score.
+  app.get(
+    "/api/courses/:id/marks",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const course = requireCourse(data, request.user, request.params.id, "run");
+        const totals = examTotals(course);
+        const scores = new Map(
+          data.courseMarks
+            .filter((mark) => mark.courseId === course.id)
+            .map((mark) => [`${mark.exam}::${mark.rollNumber}`, mark]),
+        );
+        const students = courseRoster(data, course.id).map((student) => {
+          const rollNumber = String(student.rollNumber || "").toUpperCase();
+          const marks = {};
+          EXAMS.forEach(({ id }) => {
+            marks[id] = scores.get(`${id}::${rollNumber}`)?.score ?? null;
+          });
+          return {
+            serial: student.serial,
+            rollNumber: student.rollNumber,
+            name: student.name,
+            marks,
+          };
+        });
+        response.json({
+          exams: EXAMS.map((exam) => ({ ...exam, maxMarks: totals[exam.id] })),
+          students,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Records scores for one exam. Accepts a single student or a whole
+  // spreadsheet: only the roll numbers supplied are touched, so a sheet that
+  // covers part of the class leaves everyone else's mark exactly as it was.
+  app.put(
+    "/api/courses/:id/marks/:exam",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const exam = String(request.params.exam || "");
+        if (!EXAM_IDS.has(exam)) {
+          return response.status(400).json({ error: "Unknown exam" });
+        }
+        const entries = Array.isArray(request.body.entries)
+          ? request.body.entries.slice(0, 2000)
+          : [];
+        const result = await store.update((database) => {
+          const course = requireCourse(database, request.user, request.params.id, "run");
+          const roster = courseRoster(database, course.id);
+          if (!roster.length) {
+            const error = new Error("Upload the course roll list before entering marks");
+            error.status = 409;
+            throw error;
+          }
+
+          if (request.body.maxMarks !== undefined) {
+            const maxMarks = Number(request.body.maxMarks);
+            if (!Number.isFinite(maxMarks) || maxMarks <= 0 || maxMarks > 1000) {
+              const error = new Error("Marks must be out of a number between 1 and 1000");
+              error.status = 400;
+              throw error;
+            }
+            course.examTotals = { ...(course.examTotals || {}), [exam]: maxMarks };
+          }
+          const outOf = examTotals(course)[exam];
+
+          const onRoster = new Map(
+            roster.map((student) => [
+              String(student.rollNumber || "").toUpperCase(),
+              student,
+            ]),
+          );
+          const unknown = [];
+          const accepted = [];
+          for (const entry of entries) {
+            const rollNumber = String(entry?.rollNumber || "").trim().toUpperCase();
+            if (!rollNumber) continue;
+            if (!onRoster.has(rollNumber)) {
+              unknown.push(rollNumber);
+              continue;
+            }
+            // A blank clears the mark rather than storing a zero, because
+            // "did not sit the exam" and "scored nothing" are different.
+            const raw = entry?.score;
+            if (raw === null || raw === undefined || String(raw).trim() === "") {
+              accepted.push({ rollNumber, score: null });
+              continue;
+            }
+            const score = Number(raw);
+            if (!Number.isFinite(score) || score < 0) {
+              const error = new Error(`${rollNumber} has a mark that is not a number`);
+              error.status = 400;
+              throw error;
+            }
+            if (outOf && score > outOf) {
+              const error = new Error(
+                `${rollNumber} scored ${score}, which is more than the ${outOf} this exam is out of`,
+              );
+              error.status = 400;
+              throw error;
+            }
+            accepted.push({ rollNumber, score });
+          }
+
+          const now = new Date().toISOString();
+          const touched = new Set(accepted.map((entry) => entry.rollNumber));
+          database.courseMarks = database.courseMarks.filter(
+            (mark) =>
+              !(
+                mark.courseId === course.id &&
+                mark.exam === exam &&
+                touched.has(mark.rollNumber)
+              ),
+          );
+          accepted.forEach(({ rollNumber, score }) => {
+            if (score === null) return;
+            database.courseMarks.push({
+              courseId: course.id,
+              exam,
+              rollNumber,
+              score,
+              updatedAt: now,
+              updatedBy: request.user.id,
+            });
+          });
+
+          return {
+            exam,
+            maxMarks: outOf,
+            saved: accepted.filter((entry) => entry.score !== null).length,
+            cleared: accepted.filter((entry) => entry.score === null).length,
+            // Reported rather than rejected: a sheet often carries a heading
+            // row or a student who has since left the course.
+            ignored: unknown.slice(0, 20),
+            ignoredCount: unknown.length,
+          };
+        });
+        response.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // A student's own marks, which are theirs to see.
+  app.get("/api/marks", authenticate, async (request, response, next) => {
+    try {
+      const data = await store.read();
+      const courseId = String(request.query.courseId || "").trim();
+      const enrolments = data.enrollments.filter(
+        (item) => item.userId === request.user.id && (!courseId || item.courseId === courseId),
+      );
+      const courses = enrolments
+        .map((enrolment) => {
+          const course = data.courses.find((item) => item.id === enrolment.courseId);
+          if (!course) return null;
+          const rollNumber = String(
+            enrolment.rollNumber || request.user.rollNumber || "",
+          ).toUpperCase();
+          const totals = examTotals(course);
+          const mine = new Map(
+            data.courseMarks
+              .filter(
+                (mark) => mark.courseId === course.id && mark.rollNumber === rollNumber,
+              )
+              .map((mark) => [mark.exam, mark.score]),
+          );
+          return {
+            courseId: course.id,
+            courseCode: course.courseCode,
+            courseName: course.name,
+            // Only exams the course has actually set up are worth showing.
+            exams: EXAMS.filter(
+              (exam) => totals[exam.id] || mine.has(exam.id),
+            ).map((exam) => ({
+              ...exam,
+              maxMarks: totals[exam.id],
+              score: mine.get(exam.id) ?? null,
+            })),
+          };
+        })
+        .filter(Boolean);
+      response.json({ courses });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // One student's whole record in a course: who they are, and every class the
   // course has held with whether they were there. The course team needs this to
   // answer "why is my percentage that" without exporting the entire register.
@@ -1882,7 +2105,22 @@ function createApp(options = {}) {
         const held = sessions.length;
         const attended = sessions.filter((session) => session.present).length;
 
+        const totals = examTotals(course);
+        const scored = new Map(
+          data.courseMarks
+            .filter(
+              (mark) => mark.courseId === course.id && mark.rollNumber === rollNumber,
+            )
+            .map((mark) => [mark.exam, mark.score]),
+        );
+        const marks = EXAMS.map((exam) => ({
+          ...exam,
+          maxMarks: totals[exam.id],
+          score: scored.get(exam.id) ?? null,
+        }));
+
         response.json({
+          marks,
           student: {
             rollNumber,
             serial: rosterEntry?.serial ?? null,

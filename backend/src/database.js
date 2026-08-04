@@ -86,6 +86,7 @@ function initialData(env = process.env) {
     courseStudents,
     courseMaterials: [],
     courseNotices: [],
+    courseMarks: [],
     notifications: [],
     pushDevices: [],
     schedule: [],
@@ -167,6 +168,25 @@ function normalizeData(value, env = process.env) {
     });
   });
   normalized.pushDevices = [...devicesByToken.values()];
+  // One score per student per exam per course. Keeping the last write means a
+  // corrected mark replaces the wrong one instead of sitting beside it.
+  const marksByKey = new Map();
+  normalized.courseMarks.forEach((mark) => {
+    const courseId = String(mark?.courseId || "");
+    const exam = String(mark?.exam || "");
+    const rollNumber = String(mark?.rollNumber || "").trim().toUpperCase();
+    const score = Number(mark?.score);
+    if (!courseId || !exam || !rollNumber || !Number.isFinite(score) || score < 0) return;
+    marksByKey.set(`${courseId}::${exam}::${rollNumber}`, {
+      courseId,
+      exam,
+      rollNumber,
+      score,
+      updatedAt: String(mark.updatedAt || new Date(0).toISOString()),
+      updatedBy: String(mark.updatedBy || ""),
+    });
+  });
+  normalized.courseMarks = [...marksByKey.values()];
   // Built only if some session still needs the one-time legacy migration, so
   // an already-migrated database pays nothing for it.
   let rosterByCourse = null;

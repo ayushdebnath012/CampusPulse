@@ -869,3 +869,10 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 }
 
 .field-optional { color: var(--muted); font-weight: 500; }
+
+/* A student row in the list opens their whole record. */
+.roster-row-clickable { cursor:pointer; }
+.roster-row-clickable:hover td { background:#fafaff; }
+.roster-row-clickable:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
+.marks-table td { vertical-align:middle; }
+.marks-input { width:110px; padding:6px 9px; }

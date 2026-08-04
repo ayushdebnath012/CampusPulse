@@ -1,4 +1,4 @@
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.7.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -232,8 +232,22 @@ let proximityTimer = null;
 let pastAttendanceSessions = [];
 let pastSessionsLoadedFor = "";
 let viewingPastAttendance = null;
-// The student whose whole record the course team is looking at, if any.
+// The student whose whole record the course team is looking at, if any, and
+// the screen it was opened from.
 let studentRecord = null;
+let studentRecordRoute = "attendance";
+// Which exam a marks spreadsheet is about to be recorded against.
+let pendingMarksUpload = null;
+const EXAM_CHOICES = [
+  { id: "test1", label: "Test 1" },
+  { id: "test2", label: "Test 2" },
+  { id: "test3", label: "Test 3" },
+  { id: "test4", label: "Test 4" },
+  { id: "test5", label: "Test 5" },
+  { id: "test6", label: "Test 6" },
+  { id: "midsem", label: "Mid Sem" },
+  { id: "endsem", label: "End Sem" }
+];
 let courseNotices = [];
 let quizResults = null;
 let pendingSignup = null;
@@ -529,16 +543,28 @@ async function openStudentRecord(courseId, rollNumber) {
     studentRecord = await apiRequest(
       `/api/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(rollNumber)}`
     );
+    // Remembered so closing the record returns to wherever it was opened from,
+    // whether that was the register or the student list.
+    studentRecordRoute = state.route;
   } catch (error) {
     studentRecord = null;
     return toast(error.message || "Could not open that student's record", "error");
   }
-  renderAttendance();
+  render();
 }
 
 function renderStudentRecord() {
   const { student, summary, sessions } = studentRecord;
   const percentage = summary.percentage;
+  // Only exams that have both a total and a mark can be added up; the rest are
+  // still shown so a mark can be typed in.
+  const marksTotal = (studentRecord.marks || []).reduce(
+    (running, exam) =>
+      exam.maxMarks && exam.score !== null
+        ? { scored: running.scored + exam.score, outOf: running.outOf + exam.maxMarks }
+        : running,
+    { scored: 0, outOf: 0 }
+  );
   const detail = (label, value) =>
     value ? `<div class="summary-item"><span>${label}</span><strong>${escapeHtml(value)}</strong></div>` : "";
   setHeader(student.name || student.rollNumber, `${student.courseCode} · STUDENT RECORD`, false);
@@ -569,6 +595,29 @@ function renderStudentRecord() {
           : `<div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>On the roll list, but has not signed up yet. Contact details appear once they create an account.</span></div>`}
         <div class="setup-actions" style="margin-top:16px">
           <button class="btn btn-soft" type="button" data-action="export-student-record">${icon("i-download")} Download record</button>
+        </div>
+      </article>
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Exam marks</h2><p class="stat-label">Type a mark and press Enter, or leave it blank if they did not sit the exam.</p></div><span class="badge ${marksTotal.outOf ? "purple" : "gray"}">${marksTotal.outOf ? `${marksTotal.scored}/${marksTotal.outOf}` : "Not set up"}</span></div>
+        <div class="roster-scroll">
+          <table class="roster-table marks-table">
+            <thead><tr><th>Exam</th><th>Out of</th><th>Marks</th></tr></thead>
+            <tbody>${(studentRecord.marks || []).map(exam => `<tr>
+              <td>${escapeHtml(exam.label)}</td>
+              <td class="roster-roll">${exam.maxMarks ?? "—"}</td>
+              <td>
+                <input class="text-input marks-input" type="number" min="0" step="0.5"
+                  ${exam.maxMarks ? `max="${exam.maxMarks}"` : ""}
+                  value="${exam.score ?? ""}"
+                  data-mark-for="${escapeHtml(exam.id)}"
+                  aria-label="${escapeHtml(exam.label)} marks"
+                  placeholder="—" />
+              </td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>
+        <div class="setup-actions" style="margin-top:14px">
+          <button class="btn btn-primary" type="button" data-action="save-student-marks">${icon("i-check")} Save marks</button>
         </div>
       </article>
       <article class="card page-card">
@@ -1166,6 +1215,7 @@ function navigate(route, { fromHistory = false } = {}) {
   if (route === "attendance" && state.userRole === "student") {
     Promise.all([
       refreshAttendanceHistory(state.selectedCourseId),
+      refreshMyMarks(state.selectedCourseId),
       refreshOpenAttendance({ rerender: false })
     ]).then(() => {
       if (state.route === "attendance") renderStudentAttendance();
@@ -2072,6 +2122,22 @@ function classRow(time, suffix, title, meta, badge, color, route, courseId = "")
   </div>`;
 }
 
+// A student's own marks, which are theirs to see.
+let myMarks = null;
+
+async function refreshMyMarks(courseId) {
+  if (!backendConfigured() || !apiToken || !courseId) {
+    myMarks = null;
+    return;
+  }
+  try {
+    const payload = await apiRequest(`/api/marks?courseId=${encodeURIComponent(courseId)}`);
+    myMarks = payload.courses?.[0] || null;
+  } catch {
+    myMarks = null;
+  }
+}
+
 async function refreshAttendanceHistory(courseId) {
   if (!backendConfigured() || !apiToken) {
     attendanceHistory = null;
@@ -2190,6 +2256,19 @@ function renderStudentAttendance() {
           <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span><span class="trend">${summary?.held ?? 0} held</span></div><div class="stat-value">${percentage}%</div><div class="stat-label">Attendance</div></article>
         </div>
       </article>
+      ${myMarks?.exams?.length ? `<article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Exam marks</h2><p class="stat-label">As recorded by your course team.</p></div><span class="badge purple">${myMarks.exams.filter(exam => exam.score !== null).length} recorded</span></div>
+        <div class="roster-scroll">
+          <table class="roster-table">
+            <thead><tr><th>Exam</th><th>Marks</th><th>Out of</th></tr></thead>
+            <tbody>${myMarks.exams.map(exam => `<tr>
+              <td>${escapeHtml(exam.label)}</td>
+              <td class="roster-roll">${exam.score === null ? "—" : exam.score}</td>
+              <td>${exam.maxMarks ?? "—"}</td>
+            </tr>`).join("")}</tbody>
+          </table>
+        </div>
+      </article>` : ""}
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Every class</h2><p class="stat-label">Each class day so far. Open a recorded one to see its detail.</p></div><span class="badge gray">${classDays.length}</span></div>
         ${classDays.length ? `<div class="class-list">
@@ -3720,6 +3799,7 @@ function renderPlaceholder(route) {
 // Everyone who signed up and joined, as opposed to the uploaded roll list.
 function renderStudents() {
   if (state.userRole === "student") return navigate("dashboard");
+  if (studentRecord) return renderStudentRecord();
   if (managedCourseId) return renderCourseRoster(managedCourseId);
   setHeader("Students", state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE", false);
   const course = selectedCourse();
@@ -3752,7 +3832,7 @@ function renderStudents() {
             <div class="roster-scroll">
               <table class="roster-table">
                 <thead><tr><th>Roll No</th><th>Name</th><th>Email</th><th>Department</th><th>Phone</th><th>Hall</th></tr></thead>
-                <tbody>${students.map(student => `<tr>
+                <tbody>${students.map(student => `<tr class="roster-row-clickable" data-action="open-student-record" data-roll-number="${escapeHtml(student.rollNumber || "")}" data-course-id="${escapeHtml(student.courseId)}" tabindex="0" role="button" aria-label="Open the record for ${escapeHtml(student.name)}">
                   <td class="roster-roll">${escapeHtml(student.rollNumber || "—")}</td>
                   <td>${escapeHtml(student.name)}</td>
                   <td>${escapeHtml(student.email)}</td>
@@ -3765,6 +3845,20 @@ function renderStudents() {
           </div>`;
         }).join("") : `<p class="stat-label" style="padding:14px 2px">Nobody has joined yet. Share a course join code — students enter it with their roll number.</p>`}
       </article>
+      ${course && canManageRoster(course) ? `<aside class="card page-card" data-course-id="${escapeHtml(course.id)}">
+        <div class="section-head"><div><h3>Exam marks</h3><p class="stat-label">Record a whole exam from a spreadsheet, or open any student to type one mark.</p></div></div>
+        <label for="examSelect">Exam</label>
+        <select class="select" id="examSelect">
+          ${EXAM_CHOICES.map(exam => `<option value="${escapeHtml(exam.id)}">${escapeHtml(exam.label)}</option>`).join("")}
+        </select>
+        <label for="examOutOf" style="margin-top:12px">Marked out of</label>
+        <input class="text-input" id="examOutOf" type="number" min="1" max="1000" step="1" placeholder="e.g. 20" />
+        <div class="setup-actions" style="margin-top:14px">
+          <button class="btn btn-soft" type="button" data-action="upload-exam-marks" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload marks sheet</button>
+          <input id="examMarksFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
+        </div>
+        <div class="security-note" style="margin-top:14px"><span class="lock">⌾</span><span>The sheet needs a roll number column and a marks column. Anyone left out keeps the mark they already have, so a partial sheet is fine.</span></div>
+      </aside>` : ""}
       ${officialRosterCourses.length ? `<aside class="card page-card">
         <div class="section-head"><h3>Official rosters</h3></div>
         <div class="summary-list">
@@ -3992,6 +4086,65 @@ function rosterFromRows(rows, label) {
       name: String(row[nameIndex] ?? "").trim()
     }))
     .filter(student => student.rollNumber || student.name);
+}
+
+const MARK_HEADERS = [
+  "marks", "mark", "score", "scores", "obtained", "marksobtained",
+  "total", "result", "grade", "points"
+];
+
+// Reads a marks sheet: one column of roll numbers and one of marks.
+//
+// The marks column is named where possible and otherwise inferred, because a
+// sheet exported from an exam system rarely uses the heading you expect. Rows
+// whose mark is blank are kept — clearing a mark is a real edit, distinct from
+// leaving a student out of the file altogether.
+function marksFromRows(rows, label) {
+  const cleaned = rows.filter(row => row.some(cell => String(cell || "").trim()));
+  if (cleaned.length < 2) {
+    throw new Error(`Marks ${label} must include a header and at least one student`);
+  }
+  const headers = cleaned[0].map(header =>
+    String(header || "").toLowerCase().replace(/[^a-z0-9]/g, "")
+  );
+  const rollIndex = headers.findIndex(header => ROLL_HEADERS.includes(header));
+  if (rollIndex < 0) throw new Error(`Marks ${label} needs a roll number column`);
+
+  let markIndex = headers.findIndex(header => MARK_HEADERS.includes(header));
+  if (markIndex < 0) {
+    // Fall back to the first other column that reads as numbers.
+    markIndex = headers.findIndex((_header, index) => {
+      if (index === rollIndex) return false;
+      const values = cleaned.slice(1).map(row => String(row[index] ?? "").trim());
+      const filled = values.filter(Boolean);
+      return filled.length > 0 && filled.every(value => Number.isFinite(Number(value)));
+    });
+  }
+  if (markIndex < 0) throw new Error(`Marks ${label} needs a column of marks`);
+
+  return cleaned
+    .slice(1)
+    .map(row => {
+      const rollNumber = String(row[rollIndex] ?? "").trim();
+      const raw = String(row[markIndex] ?? "").trim();
+      return { rollNumber, score: raw === "" ? null : raw };
+    })
+    .filter(entry => entry.rollNumber);
+}
+
+async function readMarksFile(file) {
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".xlsx")) {
+    return marksFromRows(await xlsxRows(await file.arrayBuffer()), "sheet");
+  }
+  if (name.endsWith(".csv")) {
+    const rows = (await file.text())
+      .split(/\r?\n/)
+      .filter(line => line.trim())
+      .map(parseCSVRow);
+    return marksFromRows(rows, "file");
+  }
+  throw new Error("Upload the marks as .xlsx or .csv");
 }
 
 function decodeXmlText(value = "") {
@@ -4758,14 +4911,59 @@ document.addEventListener("click", async event => {
     return toast(`Downloaded ${present}/${records.length} present`);
   }
   if (action === "open-student-record") {
-    const rollNumber = event.target.closest("[data-roll-number]")?.dataset.rollNumber;
-    const course = attendanceCourse() || selectedCourse();
-    if (!rollNumber || !course) return toast("No student selected", "error");
-    return openStudentRecord(course.id, rollNumber);
+    const holder = event.target.closest("[data-roll-number]");
+    const rollNumber = holder?.dataset.rollNumber;
+    const courseId =
+      holder?.dataset.courseId || (attendanceCourse() || selectedCourse())?.id;
+    if (!rollNumber || !courseId) {
+      return toast("That student has no roll number yet", "error");
+    }
+    return openStudentRecord(courseId, rollNumber);
+  }
+  if (action === "save-student-marks") {
+    if (!studentRecord) return toast("Open a student first", "error");
+    const { student } = studentRecord;
+    const changed = [];
+    for (const input of view.querySelectorAll("[data-mark-for]")) {
+      const exam = input.dataset.markFor;
+      const before = studentRecord.marks.find(item => item.id === exam);
+      const typed = input.value.trim();
+      const after = typed === "" ? null : Number(typed);
+      if (typed !== "" && !Number.isFinite(after)) {
+        return toast(`${before.label}: enter a number, or leave it blank`, "error");
+      }
+      if ((before.score ?? null) !== after) changed.push({ exam, score: after });
+    }
+    if (!changed.length) return toast("Nothing changed");
+    try {
+      // One exam per request: the API records a whole exam at a time, which is
+      // also what a spreadsheet upload uses.
+      for (const { exam, score } of changed) {
+        await apiRequest(
+          `/api/courses/${encodeURIComponent(student.courseId)}/marks/${encodeURIComponent(exam)}`,
+          { method: "PUT", body: { entries: [{ rollNumber: student.rollNumber, score }] } }
+        );
+      }
+    } catch (error) {
+      return toast(error.message || "Could not save those marks", "error");
+    }
+    await openStudentRecord(student.courseId, student.rollNumber);
+    return toast(`Saved ${changed.length} mark${changed.length === 1 ? "" : "s"}`);
+  }
+  if (action === "upload-exam-marks") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId;
+    const exam = view.querySelector("#examSelect")?.value;
+    const outOf = view.querySelector("#examOutOf")?.value.trim();
+    if (!courseId || !exam) return toast("Choose an exam first", "error");
+    if (!outOf || !(Number(outOf) > 0)) {
+      return toast("Enter what this exam is marked out of", "error");
+    }
+    pendingMarksUpload = { courseId, exam, maxMarks: Number(outOf) };
+    return view.querySelector("#examMarksFile")?.click();
   }
   if (action === "close-student-record") {
     studentRecord = null;
-    return renderAttendance();
+    return studentRecordRoute === "students" ? renderStudents() : renderAttendance();
   }
   if (action === "export-student-record") {
     if (!studentRecord) return toast("Open a student first", "error");
@@ -5540,6 +5738,42 @@ document.addEventListener("change", async event => {
     }
     return;
   }
+  if (event.target.id === "examMarksFile") {
+    const file = event.target.files?.[0];
+    const request = pendingMarksUpload;
+    pendingMarksUpload = null;
+    if (!file || !request) return;
+    try {
+      const entries = await readMarksFile(file);
+      if (!entries.length) {
+        return toast("No roll numbers and marks were found in that file", "error");
+      }
+      const label = view.querySelector("#examSelect")?.selectedOptions?.[0]?.textContent || request.exam;
+      const preview = entries
+        .slice(0, 3)
+        .map(entry => `  ${entry.rollNumber} — ${entry.score ?? "(blank)"}`)
+        .join("\n");
+      const confirmed = window.confirm(
+        `Record ${entries.length} ${label} marks out of ${request.maxMarks} from ${file.name}?\n\n`
+        + `First entries:\n${preview}\n\n`
+        + "Students not in this file keep whatever mark they already have."
+      );
+      if (!confirmed) return;
+      const result = await apiRequest(
+        `/api/courses/${encodeURIComponent(request.courseId)}/marks/${encodeURIComponent(request.exam)}`,
+        { method: "PUT", body: { maxMarks: request.maxMarks, entries } }
+      );
+      renderStudents();
+      const ignored = result.ignoredCount
+        ? `, ${result.ignoredCount} roll number${result.ignoredCount === 1 ? "" : "s"} not on the roster ignored`
+        : "";
+      return toast(`${result.saved} ${label} marks recorded${ignored}`);
+    } catch (error) {
+      return toast(error.message || "Could not read those marks", "error");
+    } finally {
+      event.target.value = "";
+    }
+  }
   if (event.target.id === "rosterUploadFile") {
     const file = event.target.files?.[0];
     const course = state.courses.find(item => item.id === managedCourseId);
@@ -6020,7 +6254,7 @@ async function refreshEverything() {
       refreshes.push(selectAttendanceCourse(courseId), refreshPastSessions(courseId));
     }
     if (state.userRole === "student") {
-      refreshes.push(refreshAttendanceHistory(courseId), refreshMyQuizzes(courseId));
+      refreshes.push(refreshAttendanceHistory(courseId), refreshMyQuizzes(courseId), refreshMyMarks(courseId));
     }
     if (course && canPublishQuiz(course)) {
       refreshes.push(refreshQuizHistory(courseId), refreshQuizDrafts(courseId));
