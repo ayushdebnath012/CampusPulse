@@ -1,4 +1,4 @@
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.5.1";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -3694,11 +3694,45 @@ function nativeDeviceStatus() {
   return window.Capacitor?.Plugins?.DeviceStatus || null;
 }
 
+function geolocationPlugin() {
+  return window.Capacitor?.Plugins?.Geolocation || null;
+}
+
 // Attendance is verified against where the class is being held, so a fix is
 // required on both sides. Resolves to null when the device cannot or will not
 // provide one; the caller turns that into an explanation rather than a silent
 // failure.
-function currentLocation({ timeoutMs = 12000 } = {}) {
+async function currentLocation({ timeoutMs = 12000 } = {}) {
+  // In the installed app, `navigator.geolocation` only works once the app
+  // itself holds Android's runtime location permission — and nothing in a web
+  // page can ask for that. The native plugin requests it, so it has to be tried
+  // first or the professor just sees "turn Location on" with no way to.
+  const plugin = geolocationPlugin();
+  if (plugin) {
+    try {
+      const permission = await plugin.checkPermissions();
+      if (permission?.location !== "granted") {
+        const asked = await plugin.requestPermissions({ permissions: ["location"] });
+        if (asked?.location !== "granted") return null;
+      }
+      const position = await plugin.getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: timeoutMs,
+        maximumAge: 30000,
+      });
+      if (position?.coords) {
+        return {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        };
+      }
+    } catch {
+      // Permission refused, or the radio gave nothing. Fall through to the
+      // browser API, which may still succeed on a device that has a fix.
+    }
+  }
+
   return new Promise((resolve) => {
     if (!navigator.geolocation?.getCurrentPosition) return resolve(null);
     let settled = false;

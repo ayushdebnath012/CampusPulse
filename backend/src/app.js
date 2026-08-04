@@ -1019,7 +1019,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.5.0",
+        version: "1.5.1",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
