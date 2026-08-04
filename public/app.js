@@ -480,6 +480,28 @@ async function refreshPastSessions(courseId) {
   }
 }
 
+// The history picker belongs on the attendance page at all times, not only
+// while a session happens to be open: the commonest reason to open attendance
+// on a quiet day is to look up what a past class recorded.
+function pastSessionsPicker() {
+  const current = viewingPastAttendance?.id || "";
+  if (!pastAttendanceSessions.length) {
+    return `<label class="past-session-picker">
+      <span>Previous classes</span>
+      <select class="select" id="pastSessionSelect" disabled>
+        <option value="">No classes recorded yet</option>
+      </select>
+    </label>`;
+  }
+  return `<label class="past-session-picker">
+    <span>Previous classes</span>
+    <select class="select" id="pastSessionSelect">
+      <option value="">${activeAttendance ? "Today's session" : "Choose a class…"}</option>
+      ${pastAttendanceSessions.map(session => `<option value="${escapeHtml(session.id)}" ${current === session.id ? "selected" : ""}>${escapeHtml(pastSessionLabel(session))}</option>`).join("")}
+    </select>
+  </label>`;
+}
+
 // Every register is one class on one day, so the label needs both. A course
 // meeting twice on a Tuesday would otherwise show two identical entries.
 function pastSessionLabel(session) {
@@ -499,9 +521,12 @@ function pastSessionLabel(session) {
 // Loads a past (closed) session's full roster for read-only review, or clears
 // back to today's session when the dropdown is reset to its default option.
 async function openPastAttendanceSession(sessionId) {
+  // Clearing the picker returns to whatever the page would otherwise show:
+  // today's session if one exists, the setup screen if not. Going straight to
+  // the live view would leave an empty roster on a day with no session.
   if (!sessionId) {
     viewingPastAttendance = null;
-    return renderLiveAttendance();
+    return renderAttendance();
   }
   try {
     const result = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}`);
@@ -510,7 +535,7 @@ async function openPastAttendanceSession(sessionId) {
     viewingPastAttendance = null;
     return toast(error.message || "Could not load that session", "error");
   }
-  renderLiveAttendance();
+  renderAttendance();
 }
 
 function applyQuizSnapshot(quiz) {
@@ -598,7 +623,7 @@ const loginProfiles = {
     description: "Create and manage your exclusive courses, rosters, attendance, and quizzes.",
     idLabel: "Email address",
     emailLabel: "Email address",
-    placeholder: "dkpra@mech.iitkgp.ac.in",
+    placeholder: "you@example.com",
     emailPattern: EMAIL_INPUT_PATTERN,
     emailTitle: "Any email address you can receive mail at",
     emailHelp: "Your institute address is ideal, but any working email works.",
@@ -612,7 +637,7 @@ const loginProfiles = {
     description: "Sign in like a student, then use the TA course code to access teaching-team tools.",
     idLabel: "Email address",
     emailLabel: "Email address",
-    placeholder: "ta@kgpian.iitkgp.ac.in",
+    placeholder: "you@example.com",
     emailPattern: EMAIL_INPUT_PATTERN,
     emailTitle: "Any email address you can receive mail at",
     emailHelp: "Your institute address is ideal, but any working email works.",
@@ -626,7 +651,7 @@ const loginProfiles = {
     description: "Join professor-owned courses by code, mark your attendance when class starts, take quizzes, and view your calendar.",
     idLabel: "Email address",
     emailLabel: "Email address",
-    placeholder: "student@kgpian.iitkgp.ac.in",
+    placeholder: "you@example.com",
     emailPattern: EMAIL_INPUT_PATTERN,
     emailTitle: "Any email address you can receive mail at",
     emailHelp: "Your institute address is ideal, but any working email works.",
@@ -2117,6 +2142,9 @@ function renderAttendance() {
       if (state.route === "attendance" && state.selectedCourseId === course.id) renderAttendance();
     });
   }
+  // Browsing a past class wins over the setup screen, so history stays readable
+  // on a day with no session of its own.
+  if (viewingPastAttendance) return renderLiveAttendance();
   if (!backendConfigured() || state.attendanceStatus === "not_started" || !activeAttendance) {
     return renderAttendanceSetup();
   }
@@ -2156,6 +2184,7 @@ function renderAttendanceSetup() {
     <div class="page-grid">
       <article class="card page-card">
         ${sessionHeading(ready ? "Choose the official roster" : "Upload the roll list first", "Attendance has not started yet", "amber")}
+        ${pastSessionsPicker()}
         ${stepper(1)}
         <div class="roster-picker">
           <label for="attendanceCourseSelect">Course roster</label>
@@ -2237,13 +2266,7 @@ function renderLiveAttendance() {
             : complete ? "Session closed and saved" : "Select each student who is present",
           viewingPast ? "gray" : complete ? "green" : "purple"
         )}
-        ${pastAttendanceSessions.length ? `<label class="past-session-picker">
-          <span>Previous classes</span>
-          <select class="select" id="pastSessionSelect">
-            <option value="">Today's session</option>
-            ${pastAttendanceSessions.map(session => `<option value="${escapeHtml(session.id)}" ${viewingPastAttendance?.id === session.id ? "selected" : ""}>${escapeHtml(pastSessionLabel(session))}</option>`).join("")}
-          </select>
-        </label>` : ""}
+        ${pastSessionsPicker()}
         ${!complete ? (beaconToken ? `<div class="proximity-code">
           <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
           <p>Students nearby pick this up over Bluetooth automatically — nothing to read out. Only phones within range can mark themselves present.</p>
