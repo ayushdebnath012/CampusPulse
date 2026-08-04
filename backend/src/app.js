@@ -15,10 +15,10 @@ const {
 
 const ROLES = new Set(["faculty", "ta", "student"]);
 
-// The exams a course can record, in the order they are sat. Fixed rather than
-// free-form so a mark always lands in a column both the professor and the
-// student recognise.
-const EXAMS = [
+// What a course starts with. Six tests plus two semester papers suits the
+// courses this began with, but it is only a starting point: a professor adds,
+// renames and removes exams to match how their own course is assessed.
+const DEFAULT_EXAMS = [
   { id: "test1", label: "Test 1" },
   { id: "test2", label: "Test 2" },
   { id: "test3", label: "Test 3" },
@@ -28,17 +28,45 @@ const EXAMS = [
   { id: "midsem", label: "Mid Sem" },
   { id: "endsem", label: "End Sem" },
 ];
-const EXAM_IDS = new Set(EXAMS.map((exam) => exam.id));
+const MAX_EXAMS = 40;
 
-/** The mark a course counts each exam out of, once the professor sets it. */
-function examTotals(course) {
-  const stored = course?.examTotals;
-  const totals = {};
-  EXAMS.forEach(({ id }) => {
-    const value = Number(stored?.[id]);
-    totals[id] = Number.isFinite(value) && value > 0 ? value : null;
+/**
+ * The exams this course records, in the order they are sat.
+ *
+ * A course that has never been configured falls back to the default set, so
+ * marks can be entered immediately and nothing that already relied on those
+ * names breaks.
+ */
+function courseExams(course) {
+  const stored = Array.isArray(course?.exams) ? course.exams : null;
+  const totals = course?.examTotals || {};
+  const list = stored?.length
+    ? stored
+    : DEFAULT_EXAMS.map((exam) => ({ ...exam, maxMarks: totals[exam.id] }));
+  return list.map((exam) => {
+    const maxMarks = Number(exam?.maxMarks ?? totals[exam?.id]);
+    return {
+      id: String(exam?.id || ""),
+      label: String(exam?.label || exam?.id || "Exam"),
+      maxMarks: Number.isFinite(maxMarks) && maxMarks > 0 ? maxMarks : null,
+    };
   });
-  return totals;
+}
+
+/** Turns an exam's name into a stable identifier that marks can hang off. */
+function examIdFrom(label, taken) {
+  const base =
+    String(label || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "")
+      .slice(0, 30) || "exam";
+  let id = base;
+  let suffix = 2;
+  while (taken.has(id)) {
+    id = `${base}${suffix}`;
+    suffix += 1;
+  }
+  return id;
 }
 
 const FIVE_MINUTES = 5 * 60 * 1000;
@@ -1046,7 +1074,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.8.0",
+        version: "1.9.0",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
@@ -1852,7 +1880,7 @@ function createApp(options = {}) {
       try {
         const data = await store.read();
         const course = requireCourse(data, request.user, request.params.id, "run");
-        const totals = examTotals(course);
+        const exams = courseExams(course);
         const scores = new Map(
           data.courseMarks
             .filter((mark) => mark.courseId === course.id)
@@ -1861,7 +1889,7 @@ function createApp(options = {}) {
         const students = courseRoster(data, course.id).map((student) => {
           const rollNumber = String(student.rollNumber || "").toUpperCase();
           const marks = {};
-          EXAMS.forEach(({ id }) => {
+          exams.forEach(({ id }) => {
             marks[id] = scores.get(`${id}::${rollNumber}`)?.score ?? null;
           });
           return {
@@ -1871,48 +1899,61 @@ function createApp(options = {}) {
             marks,
           };
         });
-        response.json({
-          exams: EXAMS.map((exam) => ({ ...exam, maxMarks: totals[exam.id] })),
-          students,
-        });
+        response.json({ exams, students });
       } catch (error) {
         next(error);
       }
     },
   );
 
-  // Sets what every exam is marked out of, in one go, before any marks exist.
-  // Doing it up front means an upload never has to carry the total with it.
+  // The exams this course assesses: add, rename, reorder, set what each is out
+  // of, or remove one entirely. Sent as the complete list, because that is how
+  // the screen presents it and it makes a removal unambiguous.
   app.put(
-    "/api/courses/:id/exam-totals",
+    "/api/courses/:id/exams",
     authenticate,
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
-        const submitted = request.body.totals;
-        if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)) {
-          return response.status(400).json({ error: "Send the totals for each exam" });
+        const submitted = request.body.exams;
+        if (!Array.isArray(submitted)) {
+          return response.status(400).json({ error: "Send the list of exams" });
         }
+        if (submitted.length > MAX_EXAMS) {
+          return response
+            .status(400)
+            .json({ error: `A course can record up to ${MAX_EXAMS} exams` });
+        }
+
         const result = await store.update((database) => {
           const course = requireCourse(database, request.user, request.params.id, "run");
-          const next = { ...(course.examTotals || {}) };
+          const existing = courseExams(course);
+          const existingIds = new Set(existing.map((exam) => exam.id));
 
-          for (const [exam, value] of Object.entries(submitted)) {
-            if (!EXAM_IDS.has(exam)) {
-              const error = new Error(`Unknown exam: ${exam}`);
+          const taken = new Set();
+          const exams = submitted.map((entry, index) => {
+            const label = String(entry?.label || "").trim().slice(0, 60);
+            if (!label) {
+              const error = new Error(`Exam ${index + 1} needs a name`);
               error.status = 400;
               throw error;
             }
-            // A blank means the course does not sit that exam.
-            if (value === null || value === undefined || String(value).trim() === "") {
-              delete next[exam];
-              continue;
+            // Keeping the id of an exam that already exists is what lets it be
+            // renamed without orphaning the marks already recorded against it.
+            const requested = String(entry?.id || "").trim();
+            const id =
+              requested && existingIds.has(requested) && !taken.has(requested)
+                ? requested
+                : examIdFrom(label, taken);
+            taken.add(id);
+
+            const raw = entry?.maxMarks;
+            if (raw === null || raw === undefined || String(raw).trim() === "") {
+              return { id, label, maxMarks: null };
             }
-            const maxMarks = Number(value);
+            const maxMarks = Number(raw);
             if (!Number.isFinite(maxMarks) || maxMarks <= 0 || maxMarks > 1000) {
-              const error = new Error(
-                `${exam} must be out of a number between 1 and 1000`,
-              );
+              const error = new Error(`${label} must be out of a number between 1 and 1000`);
               error.status = 400;
               throw error;
             }
@@ -1920,24 +1961,36 @@ function createApp(options = {}) {
             // that cannot exist, so it is refused rather than silently kept.
             const tooHigh = database.courseMarks.find(
               (mark) =>
-                mark.courseId === course.id && mark.exam === exam && mark.score > maxMarks,
+                mark.courseId === course.id && mark.exam === id && mark.score > maxMarks,
             );
             if (tooHigh) {
               const error = new Error(
-                `${tooHigh.rollNumber} already has ${tooHigh.score} for this exam, so it cannot be out of ${maxMarks}`,
+                `${tooHigh.rollNumber} already has ${tooHigh.score} for ${label}, so it cannot be out of ${maxMarks}`,
               );
               error.status = 409;
               throw error;
             }
-            next[exam] = maxMarks;
+            return { id, label, maxMarks };
+          });
+
+          // An exam that is gone takes its marks with it; leaving them behind
+          // would keep scores nobody can see or correct.
+          const kept = new Set(exams.map((exam) => exam.id));
+          const orphaned = database.courseMarks.filter(
+            (mark) => mark.courseId === course.id && !kept.has(mark.exam),
+          );
+          if (orphaned.length) {
+            database.courseMarks = database.courseMarks.filter(
+              (mark) => !(mark.courseId === course.id && !kept.has(mark.exam)),
+            );
           }
 
-          course.examTotals = next;
-          return examTotals(course);
+          course.exams = exams;
+          // Superseded by the list above; cleared so there is one source.
+          delete course.examTotals;
+          return { exams, removedMarks: orphaned.length };
         });
-        response.json({
-          exams: EXAMS.map((exam) => ({ ...exam, maxMarks: result[exam.id] })),
-        });
+        response.json(result);
       } catch (error) {
         next(error);
       }
@@ -1954,14 +2007,18 @@ function createApp(options = {}) {
     async (request, response, next) => {
       try {
         const exam = String(request.params.exam || "");
-        if (!EXAM_IDS.has(exam)) {
-          return response.status(400).json({ error: "Unknown exam" });
-        }
         const entries = Array.isArray(request.body.entries)
           ? request.body.entries.slice(0, 2000)
           : [];
         const result = await store.update((database) => {
           const course = requireCourse(database, request.user, request.params.id, "run");
+          const exams = courseExams(course);
+          const target = exams.find((item) => item.id === exam);
+          if (!target) {
+            const error = new Error("That exam is not one this course records");
+            error.status = 400;
+            throw error;
+          }
           const roster = courseRoster(database, course.id);
           if (!roster.length) {
             const error = new Error("Upload the course roll list before entering marks");
@@ -1976,9 +2033,11 @@ function createApp(options = {}) {
               error.status = 400;
               throw error;
             }
-            course.examTotals = { ...(course.examTotals || {}), [exam]: maxMarks };
+            target.maxMarks = maxMarks;
+            course.exams = exams;
+            delete course.examTotals;
           }
-          const outOf = examTotals(course)[exam];
+          const outOf = target.maxMarks;
 
           const onRoster = new Map(
             roster.map((student) => [
@@ -2073,7 +2132,7 @@ function createApp(options = {}) {
           const rollNumber = String(
             enrolment.rollNumber || request.user.rollNumber || "",
           ).toUpperCase();
-          const totals = examTotals(course);
+          const exams = courseExams(course);
           const mine = new Map(
             data.courseMarks
               .filter(
@@ -2086,13 +2145,9 @@ function createApp(options = {}) {
             courseCode: course.courseCode,
             courseName: course.name,
             // Only exams the course has actually set up are worth showing.
-            exams: EXAMS.filter(
-              (exam) => totals[exam.id] || mine.has(exam.id),
-            ).map((exam) => ({
-              ...exam,
-              maxMarks: totals[exam.id],
-              score: mine.get(exam.id) ?? null,
-            })),
+            exams: exams
+              .filter((exam) => exam.maxMarks || mine.has(exam.id))
+              .map((exam) => ({ ...exam, score: mine.get(exam.id) ?? null })),
           };
         })
         .filter(Boolean);
@@ -2168,7 +2223,6 @@ function createApp(options = {}) {
         const held = sessions.length;
         const attended = sessions.filter((session) => session.present).length;
 
-        const totals = examTotals(course);
         const scored = new Map(
           data.courseMarks
             .filter(
@@ -2176,9 +2230,8 @@ function createApp(options = {}) {
             )
             .map((mark) => [mark.exam, mark.score]),
         );
-        const marks = EXAMS.map((exam) => ({
+        const marks = courseExams(course).map((exam) => ({
           ...exam,
-          maxMarks: totals[exam.id],
           score: scored.get(exam.id) ?? null,
         }));
 

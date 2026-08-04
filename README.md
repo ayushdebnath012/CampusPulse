@@ -217,9 +217,11 @@ Classes held before a student appeared on the roll list are left out of their to
 
 ## Exam marks
 
-A course records six tests, a mid sem and an end sem. Each is marked out of whatever the course sets, and a mark is only ever stored against a roll number that is on the roll list.
+Each course decides what it assesses. A new course starts with six tests, a mid sem and an end sem, because that suits the courses this began with — but that is only a starting point. **Students → Exams** renames them, adds a viva or a project or a lab report, and removes what the course does not set. A mark is only ever stored against a roll number that is on the roll list.
 
-**Students → Exam totals** sets what all eight exams are marked out of, in one place, before any marks are entered. Leave an exam blank if the course does not sit it. A total cannot be dropped below a mark already awarded — the student holding it is named rather than the score being quietly broken. Once a total is set, an upload no longer has to carry it.
+Renaming an exam keeps the marks already recorded for it, because marks hang off a stable identifier rather than the name on screen. Removing an exam deletes its marks, which the app confirms first and the API reports back.
+
+What each exam is marked out of is set in that same place, before any marks are entered. A total cannot be dropped below a mark already awarded — the student holding it is named rather than the score being quietly broken. Once a total is set, an upload no longer has to carry it.
 
 Marks go in two ways. **Students → Exam marks** takes a whole exam from a spreadsheet: pick the exam, say what it is out of, and upload an `.xlsx` or `.csv` with a roll number column and a marks column. The marks column is found by name where possible and inferred from the numbers where not, because exported sheets rarely use the heading you expect. Anyone missing from the sheet keeps the mark they already had, so uploading part of a class is normal rather than destructive — and roll numbers that are not on the roster are reported back rather than quietly stored.
 

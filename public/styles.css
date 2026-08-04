@@ -886,3 +886,9 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 .exam-total span { color:var(--muted); font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
 .exam-total .text-input { width:100%; padding:7px 10px; }
 @media (max-width: 640px) { .exam-totals-grid { grid-template-columns:1fr; } }
+
+.exam-rows { display:flex; flex-direction:column; gap:8px; margin-top:6px; }
+.exam-row { display:grid; grid-template-columns:minmax(0,1fr) 92px 34px; align-items:center; gap:8px; }
+.exam-row .text-input { padding:7px 10px; }
+.exam-row .icon-btn { width:34px; height:34px; }
+.exam-row .icon-btn svg { width:13px; height:13px; }

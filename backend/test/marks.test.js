@@ -250,7 +250,7 @@ test("roll numbers not on the roster are reported, not silently stored", async (
   assert.deepEqual(saved.body.ignored, ["24NOTHERE"]);
 });
 
-test("an unknown exam is refused", async (t) => {
+test("marks for an exam this course does not record are refused", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const { professorToken, courseId } = await classroom(server.baseUrl);
@@ -261,7 +261,7 @@ test("an unknown exam is refused", async (t) => {
     body: { maxMarks: 20, entries: [{ rollNumber: "24MRK001", score: 10 }] },
   });
   assert.equal(refused.status, 400);
-  assert.match(refused.body.error, /unknown exam/i);
+  assert.match(refused.body.error, /not one this course records/i);
 });
 
 test("a student sees their own marks and nobody else's", async (t) => {
@@ -349,18 +349,18 @@ test("every exam total can be set up front, before any marks exist", async (t) =
   t.after(() => server.close());
   const { professorToken, courseId } = await classroom(server.baseUrl);
 
-  const saved = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+  const saved = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
     method: "PUT",
     token: professorToken,
     body: {
-      totals: {
-        test1: 20,
-        test2: 20,
-        test3: 20,
-        midsem: 50,
-        endsem: 100,
-        // Left out on purpose: this course does not sit tests 4 to 6.
-      },
+      exams: [
+        { id: "test1", label: "Test 1", maxMarks: 20 },
+        { id: "test2", label: "Test 2", maxMarks: 20 },
+        { id: "test3", label: "Test 3", maxMarks: 20 },
+        { id: "test4", label: "Test 4", maxMarks: null },
+        { id: "midsem", label: "Mid Sem", maxMarks: 50 },
+        { id: "endsem", label: "End Sem", maxMarks: 100 },
+      ],
     },
   });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
@@ -369,7 +369,7 @@ test("every exam total can be set up front, before any marks exist", async (t) =
   assert.equal(byId.get("test1"), 20);
   assert.equal(byId.get("midsem"), 50);
   assert.equal(byId.get("endsem"), 100);
-  assert.equal(byId.get("test4"), null, "an exam the course does not sit stays unset");
+  assert.equal(byId.get("test4"), null, "an exam with no total yet stays unset");
 
   // An upload can then omit the total, because the course already knows it.
   const marks = await call(server.baseUrl, `/api/courses/${courseId}/marks/midsem`, {
@@ -400,68 +400,213 @@ test("a total cannot be dropped below a mark already awarded", async (t) => {
     body: { maxMarks: 20, entries: [{ rollNumber: "24MRK001", score: 18 }] },
   });
 
-  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
     method: "PUT",
     token: professorToken,
-    body: { totals: { test1: 10 } },
+    body: { exams: [{ id: "test1", label: "Test 1", maxMarks: 10 }] },
   });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.match(refused.body.error, /24MRK001 already has 18/);
 
   // Raising it is fine.
-  const raised = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+  const raised = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
     method: "PUT",
     token: professorToken,
-    body: { totals: { test1: 25 } },
+    body: { exams: [{ id: "test1", label: "Test 1", maxMarks: 25 }] },
   });
   assert.equal(raised.status, 200);
 });
 
-test("a blank total clears an exam the course no longer sits", async (t) => {
+test("a blank total leaves an exam listed but unmarked", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const { professorToken, courseId } = await classroom(server.baseUrl);
 
-  await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+  const cleared = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
     method: "PUT",
     token: professorToken,
-    body: { totals: { test6: 15 } },
-  });
-  const cleared = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
-    method: "PUT",
-    token: professorToken,
-    body: { totals: { test6: null } },
+    body: { exams: [{ id: "test6", label: "Test 6", maxMarks: null }] },
   });
   assert.equal(cleared.status, 200);
-  assert.equal(
-    cleared.body.exams.find((exam) => exam.id === "test6").maxMarks,
-    null,
-  );
+  assert.equal(cleared.body.exams.find((exam) => exam.id === "test6").maxMarks, null);
 });
 
-test("an unknown exam in the totals is refused", async (t) => {
-  const server = await startServer();
-  t.after(() => server.close());
-  const { professorToken, courseId } = await classroom(server.baseUrl);
-
-  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
-    method: "PUT",
-    token: professorToken,
-    body: { totals: { viva: 20 } },
-  });
-  assert.equal(refused.status, 400);
-  assert.match(refused.body.error, /unknown exam/i);
-});
-
-test("a student cannot set exam totals", async (t) => {
+test("a student cannot change the exams", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const { studentToken, courseId } = await classroom(server.baseUrl);
 
-  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
     method: "PUT",
     token: studentToken,
-    body: { totals: { test1: 5 } },
+    body: { exams: [{ label: "Test 1", maxMarks: 5 }] },
   });
   assert.equal(refused.status, 403);
+});
+
+test("a professor adds an exam of their own and records marks for it", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  // A course assessed by a viva and a project, not by six tests.
+  const saved = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: {
+      exams: [
+        { label: "Viva Voce", maxMarks: 30 },
+        { label: "Project Report", maxMarks: 70 },
+      ],
+    },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.exams.length, 2, "the default eight are replaced");
+  assert.deepEqual(
+    saved.body.exams.map((exam) => exam.label),
+    ["Viva Voce", "Project Report"],
+  );
+  const vivaId = saved.body.exams[0].id;
+
+  const marks = await call(server.baseUrl, `/api/courses/${courseId}/marks/${vivaId}`, {
+    method: "PUT",
+    token: professorToken,
+    body: { entries: [{ rollNumber: "24MRK001", score: 27 }] },
+  });
+  assert.equal(marks.status, 200, JSON.stringify(marks.body));
+
+  const grid = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {
+    token: professorToken,
+  });
+  assert.equal(grid.body.exams.length, 2);
+  const student = grid.body.students.find((item) => item.rollNumber === "24MRK001");
+  assert.equal(student.marks[vivaId], 27);
+});
+
+test("renaming an exam keeps the marks already recorded against it", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  await call(server.baseUrl, `/api/courses/${courseId}/marks/test1`, {
+    method: "PUT",
+    token: professorToken,
+    body: { maxMarks: 20, entries: [{ rollNumber: "24MRK001", score: 16 }] },
+  });
+
+  const renamed = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: { exams: [{ id: "test1", label: "Class Test I", maxMarks: 20 }] },
+  });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.body.exams[0].label, "Class Test I");
+  assert.equal(renamed.body.exams[0].id, "test1", "the identifier is what marks hang off");
+  assert.equal(renamed.body.removedMarks, 0);
+
+  const grid = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {
+    token: professorToken,
+  });
+  const student = grid.body.students.find((item) => item.rollNumber === "24MRK001");
+  assert.equal(student.marks.test1, 16, "a rename must not orphan a mark");
+});
+
+test("removing an exam takes its marks with it, and says how many", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  await call(server.baseUrl, `/api/courses/${courseId}/marks/test1`, {
+    method: "PUT",
+    token: professorToken,
+    body: {
+      maxMarks: 20,
+      entries: [
+        { rollNumber: "24MRK001", score: 16 },
+        { rollNumber: "24MRK002", score: 11 },
+      ],
+    },
+  });
+  await call(server.baseUrl, `/api/courses/${courseId}/marks/test2`, {
+    method: "PUT",
+    token: professorToken,
+    body: { maxMarks: 20, entries: [{ rollNumber: "24MRK001", score: 19 }] },
+  });
+
+  // Test 1 is dropped; Test 2 stays.
+  const removed = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: { exams: [{ id: "test2", label: "Test 2", maxMarks: 20 }] },
+  });
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  assert.equal(removed.body.removedMarks, 2, "both Test 1 marks go with the exam");
+
+  const stored = (await server.store.read()).courseMarks.filter(
+    (mark) => mark.courseId === courseId,
+  );
+  assert.equal(stored.length, 1, "no marks are left behind for a deleted exam");
+  assert.equal(stored[0].exam, "test2");
+});
+
+test("an exam needs a name, and a course cannot record hundreds", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  const unnamed = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: { exams: [{ label: "  ", maxMarks: 10 }] },
+  });
+  assert.equal(unnamed.status, 400);
+  assert.match(unnamed.body.error, /needs a name/i);
+
+  const tooMany = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: {
+      exams: Array.from({ length: 41 }, (_unused, index) => ({
+        label: `Exam ${index + 1}`,
+        maxMarks: 10,
+      })),
+    },
+  });
+  assert.equal(tooMany.status, 400);
+  assert.match(tooMany.body.error, /up to 40/);
+});
+
+test("two exams sharing a name still get distinct identifiers", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  const saved = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: {
+      exams: [
+        { label: "Quiz", maxMarks: 10 },
+        { label: "Quiz", maxMarks: 10 },
+      ],
+    },
+  });
+  assert.equal(saved.status, 200);
+  const [first, second] = saved.body.exams;
+  assert.notEqual(first.id, second.id, "one mark must never overwrite the other");
+});
+
+test("a course that has never been configured still records the usual exams", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  const grid = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {
+    token: professorToken,
+  });
+  assert.equal(grid.status, 200);
+  assert.deepEqual(
+    grid.body.exams.map((exam) => exam.id),
+    ["test1", "test2", "test3", "test4", "test5", "test6", "midsem", "endsem"],
+  );
 });

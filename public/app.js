@@ -1,4 +1,4 @@
-const APP_VERSION = "1.8.0";
+const APP_VERSION = "1.9.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -264,6 +264,26 @@ function searchBox(id, value, placeholder) {
       placeholder="${escapeHtml(placeholder)}" autocomplete="off" data-search-box />
   </label>`;
 }
+// Rows being edited in the exams card, held separately from the saved list so
+// an unsaved addition survives a re-render.
+let examDraft = null;
+
+function examEditorRows() {
+  if (examDraft) return examDraft;
+  return (courseMarks?.exams || EXAM_CHOICES.map(exam => ({ ...exam, maxMarks: null })))
+    .map(exam => ({ id: exam.id, label: exam.label, maxMarks: exam.maxMarks ?? null }));
+}
+
+// Reads whatever is currently typed into the card, so nothing is lost when a
+// row is added or removed.
+function readExamRows() {
+  return [...view.querySelectorAll("[data-exam-row]")].map(row => ({
+    id: row.querySelector("[data-exam-id]")?.value || "",
+    label: row.querySelector("[data-exam-label]")?.value || "",
+    maxMarks: row.querySelector("[data-exam-max]")?.value.trim() || null
+  }));
+}
+
 const EXAM_CHOICES = [
   { id: "test1", label: "Test 1" },
   { id: "test2", label: "Test 2" },
@@ -1448,6 +1468,7 @@ async function switchCourseContext(
   materialsCourseId = "";
   courseMarks = null;
   courseMarksLoadedFor = "";
+  examDraft = null;
   applyAttendanceSnapshot(null);
   applyQuizSnapshot(null);
   editingDraftId = "";
@@ -3901,29 +3922,30 @@ function renderStudents() {
           : "Nobody has joined yet. Share a course join code — students enter it with their roll number."}</p>`}
       </article>
       ${course && canManageRoster(course) ? `<aside class="card page-card" data-course-id="${escapeHtml(course.id)}">
-        <div class="section-head"><div><h3>Exam totals</h3><p class="stat-label">What each exam is marked out of. Leave an exam blank if this course does not sit it.</p></div></div>
-        <div class="exam-totals-grid">
-          ${EXAM_CHOICES.map(exam => {
-            const stored = courseMarks?.exams?.find(item => item.id === exam.id)?.maxMarks;
-            return `<label class="exam-total">
-              <span>${escapeHtml(exam.label)}</span>
-              <input class="text-input" type="number" min="1" max="1000" step="1"
-                data-total-for="${escapeHtml(exam.id)}" value="${stored ?? ""}" placeholder="—" />
-            </label>`;
-          }).join("")}
+        <div class="section-head"><div><h3>Exams</h3><p class="stat-label">Rename, reorder by editing, add what this course actually sets, and remove what it does not.</p></div></div>
+        <div class="exam-rows">
+          ${examEditorRows().map((exam, index) => `<div class="exam-row" data-exam-row>
+            <input class="text-input" type="text" maxlength="60" placeholder="Exam name"
+              data-exam-label value="${escapeHtml(exam.label)}" aria-label="Exam ${index + 1} name" />
+            <input class="text-input" type="number" min="1" max="1000" step="1" placeholder="Out of"
+              data-exam-max value="${exam.maxMarks ?? ""}" aria-label="Exam ${index + 1} marked out of" />
+            <input type="hidden" data-exam-id value="${escapeHtml(exam.id || "")}" />
+            <button class="icon-btn" type="button" data-action="remove-exam-row" aria-label="Remove ${escapeHtml(exam.label || "this exam")}">${icon("i-close")}</button>
+          </div>`).join("")}
         </div>
         <div class="setup-actions" style="margin-top:14px">
-          <button class="btn btn-primary" type="button" data-action="save-exam-totals" data-course-id="${escapeHtml(course.id)}">${icon("i-check")} Save totals</button>
+          <button class="btn btn-soft" type="button" data-action="add-exam-row">${icon("i-plus")} Add exam</button>
+          <button class="btn btn-primary" type="button" data-action="save-exams" data-course-id="${escapeHtml(course.id)}">${icon("i-check")} Save exams</button>
         </div>
+        <div class="security-note" style="margin-top:14px"><span class="lock">⌾</span><span>Removing an exam deletes the marks recorded for it. Renaming one keeps them.</span></div>
       </aside>
       <aside class="card page-card" data-course-id="${escapeHtml(course.id)}">
         <div class="section-head"><div><h3>Upload marks</h3><p class="stat-label">Record a whole exam from a spreadsheet, or open any student to type one mark.</p></div></div>
         <label for="examSelect">Exam</label>
         <select class="select" id="examSelect">
-          ${EXAM_CHOICES.map(exam => {
-            const stored = courseMarks?.exams?.find(item => item.id === exam.id)?.maxMarks;
-            return `<option value="${escapeHtml(exam.id)}" data-max-marks="${stored ?? ""}">${escapeHtml(exam.label)}${stored ? ` · out of ${stored}` : ""}</option>`;
-          }).join("")}
+          ${(courseMarks?.exams || []).map(exam =>
+            `<option value="${escapeHtml(exam.id)}" data-max-marks="${exam.maxMarks ?? ""}">${escapeHtml(exam.label)}${exam.maxMarks ? ` · out of ${exam.maxMarks}` : ""}</option>`
+          ).join("") || `<option value="">Save the exams first</option>`}
         </select>
         <label for="examOutOf" style="margin-top:12px">Marked out of</label>
         <input class="text-input" id="examOutOf" type="number" min="1" max="1000" step="1" placeholder="e.g. 20"
@@ -5025,31 +5047,60 @@ document.addEventListener("click", async event => {
     await openStudentRecord(student.courseId, student.rollNumber);
     return toast(`Saved ${changed.length} mark${changed.length === 1 ? "" : "s"}`);
   }
-  if (action === "save-exam-totals") {
+  if (action === "add-exam-row") {
+    examDraft = [...readExamRows(), { id: "", label: "", maxMarks: null }];
+    renderStudents();
+    // Land the caret in the row just added rather than making them find it.
+    const rows = view.querySelectorAll("[data-exam-row] [data-exam-label]");
+    return rows[rows.length - 1]?.focus();
+  }
+  if (action === "remove-exam-row") {
+    const row = event.target.closest("[data-exam-row]");
+    const rows = [...view.querySelectorAll("[data-exam-row]")];
+    const index = rows.indexOf(row);
+    if (index < 0) return;
+    examDraft = readExamRows().filter((_exam, position) => position !== index);
+    return renderStudents();
+  }
+  if (action === "save-exams") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId;
     if (!courseId) return toast("Choose a course first", "error");
-    const totals = {};
-    for (const input of view.querySelectorAll("[data-total-for]")) {
-      const typed = input.value.trim();
-      if (typed !== "" && !(Number(typed) > 0)) {
-        return toast("Every total must be a number above zero, or blank", "error");
-      }
-      totals[input.dataset.totalFor] = typed === "" ? null : Number(typed);
+    const rows = readExamRows();
+    if (rows.some(row => !row.label.trim())) {
+      return toast("Every exam needs a name", "error");
+    }
+    if (rows.some(row => row.maxMarks !== null && !(Number(row.maxMarks) > 0))) {
+      return toast("An exam is marked out of a number above zero, or left blank", "error");
+    }
+    // Removing an exam destroys its marks, so it is confirmed rather than done
+    // on a stray tap.
+    const kept = new Set(rows.map(row => row.id).filter(Boolean));
+    const dropped = (courseMarks?.exams || []).filter(exam => !kept.has(exam.id));
+    if (dropped.length) {
+      const names = dropped.map(exam => exam.label).join(", ");
+      const confirmed = window.confirm(
+        `Remove ${names}?\n\nAny marks recorded for ${dropped.length === 1 ? "it" : "them"} are deleted and cannot be recovered.`
+      );
+      if (!confirmed) return;
     }
     try {
-      courseMarks = {
-        ...(courseMarks || {}),
-        ...(await apiRequest(`/api/courses/${encodeURIComponent(courseId)}/exam-totals`, {
-          method: "PUT",
-          body: { totals }
-        }))
-      };
+      const saved = await apiRequest(`/api/courses/${encodeURIComponent(courseId)}/exams`, {
+        method: "PUT",
+        body: { exams: rows }
+      });
+      courseMarks = { ...(courseMarks || {}), exams: saved.exams };
+      examDraft = null;
+      // The grid and every total may have moved, so take them fresh.
+      await refreshCourseMarks(courseId);
     } catch (error) {
-      return toast(error.message || "Could not save those totals", "error");
+      return toast(error.message || "Could not save those exams", "error");
     }
     renderStudents();
-    const set = Object.values(totals).filter(value => value !== null).length;
-    return toast(`Saved totals for ${set} exam${set === 1 ? "" : "s"}`);
+    return toast(
+      dropped.length
+        ? `Saved. ${dropped.length} exam${dropped.length === 1 ? "" : "s"} removed.`
+        : `Saved ${rows.length} exam${rows.length === 1 ? "" : "s"}`
+    );
   }
   if (action === "upload-exam-marks") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId;
