@@ -2277,8 +2277,8 @@ function renderLiveAttendance() {
           <div><span>Connecting</span><strong>${icon("i-clock")} Starting broadcast…</strong></div>
           <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
         </div>`) : `<div class="proximity-code no-ble">
-          <div><span>Web browser</span><strong>${icon("i-close")} Use the app</strong></div>
-          <p>Bluetooth broadcasting requires the CampusPulse app. Students can still be marked present manually from the list below.</p>
+          <div><span>Web browser</span><strong>${icon("i-close")} Not broadcasting</strong></div>
+          <p>Bluetooth broadcasting needs the installed app. Students can still be marked present from the list below.</p>
         </div>`) : ""}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
