@@ -26,6 +26,9 @@ jobs:
       IOS_PROVISIONING_PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
       IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
       IOS_EXPORT_METHOD: ${{ secrets.IOS_EXPORT_METHOD }}
+      APP_STORE_CONNECT_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_BASE64 }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -158,3 +161,36 @@ jobs:
           path: CampusPulse.ipa
           if-no-files-found: error
           retention-days: 90
+
+      # An .ipa in a build artifact cannot be installed by a class of students.
+      # TestFlight can: it takes up to 10,000 testers from a single public link,
+      # which is the only realistic way to get this onto 300 iPhones.
+      #
+      # Requires IOS_EXPORT_METHOD=app-store, plus an App Store Connect API key
+      # (Users and Access -> Integrations). A key avoids two-factor prompts,
+      # which is why it is used instead of an Apple ID password.
+      - name: Send the build to TestFlight
+        if: env.IOS_CERTIFICATE_BASE64 != '' && env.APP_STORE_CONNECT_KEY_BASE64 != ''
+        run: |
+          set -euo pipefail
+          if [ "${IOS_EXPORT_METHOD:-ad-hoc}" != "app-store" ]; then
+            echo "IOS_EXPORT_METHOD must be 'app-store' to publish to TestFlight." >&2
+            echo "The signed .ipa is still attached to this run as an artifact." >&2
+            exit 1
+          fi
+
+          # altool looks for the key in this exact location, by key id.
+          KEYS="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEYS"
+          umask 077
+          printf '%s' "$APP_STORE_CONNECT_KEY_BASE64" | base64 --decode \
+            > "$KEYS/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+
+          xcrun altool --upload-app \
+            --type ios \
+            --file CampusPulse.ipa \
+            --apiKey "$APP_STORE_CONNECT_KEY_ID" \
+            --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+
+          rm -f "$KEYS/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          echo "Uploaded. It appears in TestFlight once Apple finishes processing."

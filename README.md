@@ -169,6 +169,25 @@ npm run ios:open   # then press Cmd+R in Xcode
 
 Bluetooth does not work in the iOS Simulator. Proximity attendance has to be tested on real hardware.
 
+### Getting it onto students' iPhones
+
+Attendance needs Bluetooth, and Safari has no Web Bluetooth, so an iPhone student cannot mark themselves present from the website — they need the installed app. Apple only allows that through a paid developer account. There is no way around this.
+
+**TestFlight is the route for a class.** It takes up to 10,000 testers from a single public link, so students install Apple's TestFlight app, open the link, and get CampusPulse. Builds stay valid for 90 days.
+
+1. Enrol in the [Apple Developer Program](https://developer.apple.com/programs/) (99 USD/year).
+2. In App Store Connect, create an app record with the bundle identifier `in.campuspulse.app`.
+3. Create a distribution certificate and an App Store provisioning profile, then add the six `IOS_*` secrets above, with `IOS_EXPORT_METHOD` set to `app-store`.
+4. Under **Users and Access → Integrations**, create an App Store Connect API key and add three more secrets — a key avoids two-factor prompts in CI:
+   - `APP_STORE_CONNECT_KEY_BASE64` — base64 of the downloaded `.p8`
+   - `APP_STORE_CONNECT_KEY_ID`
+   - `APP_STORE_CONNECT_ISSUER_ID`
+5. Push to `main`. The workflow signs the build and uploads it to TestFlight, where you enable public link testing and share the link.
+
+Until that account exists, iPhone users can sign in on the website and use everything except marking their own attendance — a professor or TA marks them from the roster. That works today and costs nothing.
+
+**iOS push notifications need one more piece.** The push plugin returns an Apple APNs token, but the backend delivers through Firebase, which will not accept it. To make alerts work on iPhone you also need the Firebase iOS SDK added to the Xcode project, a `GoogleService-Info.plist`, and an APNs auth key uploaded to Firebase. Android push is unaffected.
+
 ## Use CampusPulse without installing anything
 
 The browser version is the same app, built from the same `public/` directory and talking to the same API, so accounts, courses, attendance, and quizzes are shared with the installed apps:
