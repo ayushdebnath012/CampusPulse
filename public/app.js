@@ -1,4 +1,4 @@
-const APP_VERSION = "1.5.3";
+const APP_VERSION = "1.6.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -232,6 +232,8 @@ let proximityTimer = null;
 let pastAttendanceSessions = [];
 let pastSessionsLoadedFor = "";
 let viewingPastAttendance = null;
+// The student whose whole record the course team is looking at, if any.
+let studentRecord = null;
 let courseNotices = [];
 let quizResults = null;
 let pendingSignup = null;
@@ -443,8 +445,10 @@ function applyAttendanceSnapshot(attendance) {
     ? attendance.status === "open" ? "scanning" : "complete"
     : "not_started";
   if (attendance?.courseId) state.selectedCourseId = attendance.courseId;
-  // A newly applied snapshot is always today's session, not a past one being browsed.
+  // A newly applied snapshot is always today's session, not a past one being
+  // browsed, and not a student's record opened from some other course.
   viewingPastAttendance = null;
+  studentRecord = null;
 }
 
 async function selectAttendanceCourse(courseId) {
@@ -516,6 +520,71 @@ function pastSessionLabel(session) {
   else parts.push(started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
   parts.push(`${session.present}/${session.total} present`);
   return parts.join(" · ");
+}
+
+// One student's whole record in a course: every class held, whether they were
+// there, and the running percentage. Available to the course team only.
+async function openStudentRecord(courseId, rollNumber) {
+  try {
+    studentRecord = await apiRequest(
+      `/api/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(rollNumber)}`
+    );
+  } catch (error) {
+    studentRecord = null;
+    return toast(error.message || "Could not open that student's record", "error");
+  }
+  renderAttendance();
+}
+
+function renderStudentRecord() {
+  const { student, summary, sessions } = studentRecord;
+  const percentage = summary.percentage;
+  const detail = (label, value) =>
+    value ? `<div class="summary-item"><span>${label}</span><strong>${escapeHtml(value)}</strong></div>` : "";
+  setHeader(student.name || student.rollNumber, `${student.courseCode} · STUDENT RECORD`, false);
+  view.innerHTML = `
+    <button class="back-btn" type="button" data-action="close-student-record">${icon("i-back")} Back to attendance</button>
+    <div class="page-grid">
+      <article class="card page-card">
+        <div class="section-head">
+          <div>
+            <h2 style="margin:0 0 5px">${escapeHtml(student.name || "Unnamed student")}</h2>
+            <p class="stat-label">${escapeHtml(student.rollNumber)}${student.serial ? ` · No. ${student.serial}` : ""} · ${escapeHtml(student.courseCode)}</p>
+          </div>
+          <span class="badge ${percentage >= 75 ? "green" : percentage >= 50 ? "amber" : "red"}">${percentage}%</span>
+        </div>
+        <div class="stat-grid" style="margin-top:18px">
+          <article class="card stat"><div class="stat-top"><span class="stat-icon green">${icon("i-check")}</span></div><div class="stat-value">${summary.attended}</div><div class="stat-label">Present</div></article>
+          <article class="card stat"><div class="stat-top"><span class="stat-icon amber">${icon("i-clock")}</span></div><div class="stat-value">${summary.missed}</div><div class="stat-label">Absent</div></article>
+          <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span></div><div class="stat-value">${summary.held}</div><div class="stat-label">Classes held</div></article>
+        </div>
+        ${student.hasAccount
+          ? `<div class="summary-list" style="margin-top:16px">
+              ${detail("Email", student.email)}
+              ${detail("Department", student.department)}
+              ${detail("Phone", student.phone)}
+              ${detail("Hall", student.hall)}
+              ${detail("Joined", student.joinedAt ? new Date(student.joinedAt).toLocaleDateString() : "")}
+            </div>`
+          : `<div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>On the roll list, but has not signed up yet. Contact details appear once they create an account.</span></div>`}
+        <div class="setup-actions" style="margin-top:16px">
+          <button class="btn btn-soft" type="button" data-action="export-student-record">${icon("i-download")} Download record</button>
+        </div>
+      </article>
+      <article class="card page-card">
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Every class</h2><p class="stat-label">Newest first. Classes held before this student joined the roll list are not counted.</p></div><span class="badge gray">${sessions.length}</span></div>
+        ${sessions.length ? `<div class="class-list">
+          ${sessions.map(session => {
+            const when = new Date(session.startedAt);
+            return `<div class="class-row">
+              <div class="time">${escapeHtml(when.toLocaleDateString([], { weekday: "short" }))}<small>${escapeHtml(when.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
+              <div class="course"><strong>${escapeHtml(session.classLabel || when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</strong><span>${escapeHtml(session.room || "Room TBA")}${session.present && session.markedVia === "student" ? " · marked over Bluetooth" : ""}</span></div>
+              <span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span>
+            </div>`;
+          }).join("")}
+        </div>` : `<p class="stat-label">No attendance has been taken for this course yet.</p>`}
+      </article>
+    </div>`;
 }
 
 // Loads a past (closed) session's full roster for read-only review, or clears
@@ -1080,6 +1149,9 @@ function navigate(route, { fromHistory = false } = {}) {
   }
   clearInterval(scanTimer);
   clearTimeout(quizTimer);
+  // Leaving the attendance screen closes whichever student's record was open,
+  // so coming back lands on the register rather than on someone's history.
+  if (route !== "attendance") studentRecord = null;
   if (route === "students") managedCourseId = "";
   state.route = route;
   setNavigationState(route);
@@ -2169,6 +2241,8 @@ function renderAttendance() {
       if (state.route === "attendance" && state.selectedCourseId === course.id) renderAttendance();
     });
   }
+  // A student's record replaces the register while it is open.
+  if (studentRecord) return renderStudentRecord();
   // Browsing a past class wins over the setup screen, so history stays readable
   // on a day with no session of its own.
   if (viewingPastAttendance) return renderLiveAttendance();
@@ -2311,7 +2385,10 @@ function renderLiveAttendance() {
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
           <div class="scan-status">${viewingPast ? icon("i-check") + " Closed session" : complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
-          <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
+          <div class="roster-toolbar-actions">
+            <button class="btn btn-soft" type="button" data-action="export-day-attendance">${icon("i-download")} Excel</button>
+            <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
+          </div>
         </div>
         ${!complete ? `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>` : ""}
         <div class="roster roster-scroll">
@@ -2375,14 +2452,26 @@ function renderLiveAttendance() {
 function studentRow(student, index, interactive = false, rosterOnly = false) {
   const present = Boolean(student.present);
   const initials = student.name.split(" ").filter(Boolean).map(part => part[0]).join("").slice(0, 3);
-  const tag = interactive ? "button" : "div";
-  const action = interactive ? `type="button" data-action="toggle-attendance" data-roll-number="${escapeHtml(student.rollNumber)}" aria-pressed="${present}"` : "";
-  return `<${tag} class="student-row attendance-row ${interactive ? "is-interactive" : ""}" ${action}>
+  const roll = escapeHtml(student.rollNumber);
+  const body = `
     <span class="student-avatar">${escapeHtml(initials)}</span>
     <div class="student-name"><strong>${escapeHtml(student.name)}</strong><span>${escapeHtml(student.rollNumber)} · No. ${student.serial || index + 1}</span></div>
     <span class="signal ${present ? "good" : ""}"><i></i><i></i><i></i><i></i></span>
-    <span class="badge ${present ? "green" : rosterOnly ? "purple" : "gray"}">${present ? "Present" : rosterOnly ? "Rostered" : "Absent"}</span>
-  </${tag}>`;
+    <span class="badge ${present ? "green" : rosterOnly ? "purple" : "gray"}">${present ? "Present" : rosterOnly ? "Rostered" : "Absent"}</span>`;
+
+  // While the register is open the row toggles present/absent, so opening a
+  // student's record needs its own control rather than stealing that tap. A
+  // closed register has nothing to toggle, so the whole row opens the record.
+  if (!interactive) {
+    return `<div class="student-row-wrap">
+      <button class="student-row attendance-row is-interactive" type="button" data-action="open-student-record" data-roll-number="${roll}">${body}</button>
+      <span class="student-row-info" aria-hidden="true">${icon("i-arrow")}</span>
+    </div>`;
+  }
+  return `<div class="student-row-wrap">
+    <button class="student-row attendance-row is-interactive" type="button" data-action="toggle-attendance" data-roll-number="${roll}" aria-pressed="${present}">${body}</button>
+    <button class="student-row-info" type="button" data-action="open-student-record" data-roll-number="${roll}" aria-label="Attendance record for ${escapeHtml(student.name)}">${icon("i-arrow")}</button>
+  </div>`;
 }
 
 function renderQuiz() {
@@ -4071,17 +4160,27 @@ function zipStored(files) {
   });
 }
 
-function xlsxCell(reference, value) {
-  const text = String(value ?? "")
+function xlsxCellText(value) {
+  return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
     // Excel rejects control characters outright.
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "");
-  return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${text}</t></is></c>`;
 }
 
-function downloadXlsx(filename, headers, rows) {
+function xlsxCell(reference, value) {
+  return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${xlsxCellText(value)}</t></is></c>`;
+}
+
+// Excel rejects a sheet name containing any of : \ / ? * [ ] or over 31 chars.
+function xlsxSheetName(name) {
+  const cleaned = String(name || "").replace(/[:\\/?*[\]]/g, " ").trim().slice(0, 31);
+  return cleaned || "Sheet1";
+}
+
+function downloadXlsx(filename, headers, rows, sheetName = "Sheet1") {
   const columns = (index) => {
     let name = "";
     let value = index;
@@ -4099,7 +4198,7 @@ function downloadXlsx(filename, headers, rows) {
   const blob = zipStored([
     ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`],
     ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
-    ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Enrolled" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+    ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${xlsxCellText(xlsxSheetName(sheetName))}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
     ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`],
     ["xl/worksheets/sheet1.xml", `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`]
   ]);
@@ -4629,6 +4728,68 @@ document.addEventListener("click", async event => {
     applyAttendanceSnapshot(null);
     persist();
     return renderAttendanceSetup();
+  }
+  if (action === "export-day-attendance") {
+    const course = attendanceCourse() || selectedCourse();
+    const session = viewingPastAttendance || activeAttendance;
+    const records = viewingPastAttendance
+      ? viewingPastAttendance.records || []
+      : currentAttendanceRecords();
+    if (!course || !records.length) return toast("Nothing to export yet", "error");
+    const started = session?.startedAt ? new Date(session.startedAt) : new Date();
+    const stamp = started.toISOString().slice(0, 10);
+    const clock = started.toTimeString().slice(0, 5).replace(":", "");
+    const present = records.filter(record => record.present).length;
+    downloadXlsx(
+      `CampusPulse-${course.courseCode}-attendance-${stamp}-${clock}.xlsx`,
+      ["Sl.No.", "Roll No", "Name", "Status", "Marked at", "Marked by", "Bluetooth (m)", "Location checked"],
+      records.map((record, index) => [
+        record.serial || index + 1,
+        record.rollNumber || "",
+        record.name || "",
+        record.present ? "Present" : "Absent",
+        record.markedAt ? new Date(record.markedAt).toLocaleString() : "",
+        record.markedVia === "student" ? "Student (Bluetooth)" : record.markedAt ? "Course team" : "",
+        record.proximity?.bluetoothMetres ?? "",
+        record.proximity ? (record.proximity.locationVerified ? "Yes" : "No") : ""
+      ]),
+      `${stamp} attendance`
+    );
+    return toast(`Downloaded ${present}/${records.length} present`);
+  }
+  if (action === "open-student-record") {
+    const rollNumber = event.target.closest("[data-roll-number]")?.dataset.rollNumber;
+    const course = attendanceCourse() || selectedCourse();
+    if (!rollNumber || !course) return toast("No student selected", "error");
+    return openStudentRecord(course.id, rollNumber);
+  }
+  if (action === "close-student-record") {
+    studentRecord = null;
+    return renderAttendance();
+  }
+  if (action === "export-student-record") {
+    if (!studentRecord) return toast("Open a student first", "error");
+    const { student, summary, sessions } = studentRecord;
+    const safeRoll = String(student.rollNumber || "student").replace(/[^A-Za-z0-9]+/g, "-");
+    downloadXlsx(
+      `CampusPulse-${student.courseCode}-${safeRoll}.xlsx`,
+      ["Date", "Class", "Room", "Status", "Marked at", "Marked by"],
+      [
+        ...sessions.map(session => [
+          new Date(session.startedAt).toLocaleDateString(),
+          session.classLabel || new Date(session.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          session.room || "",
+          session.present ? "Present" : "Absent",
+          session.markedAt ? new Date(session.markedAt).toLocaleString() : "",
+          session.markedVia === "student" ? "Student (Bluetooth)" : session.markedAt ? "Course team" : ""
+        ]),
+        [],
+        ["Held", summary.held, "Attended", summary.attended, "Missed", summary.missed],
+        ["Percentage", `${summary.percentage}%`]
+      ],
+      `${student.rollNumber}`
+    );
+    return toast("Downloaded that student's record");
   }
   if (action === "retry-beacon") {
     // Granting the permission or switching the radio on happens outside the

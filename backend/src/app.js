@@ -1019,7 +1019,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.5.3",
+        version: "1.6.0",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
@@ -1810,6 +1810,101 @@ function createApp(options = {}) {
               left.name.localeCompare(right.name),
           );
         response.json({ students });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // One student's whole record in a course: who they are, and every class the
+  // course has held with whether they were there. The course team needs this to
+  // answer "why is my percentage that" without exporting the entire register.
+  app.get(
+    "/api/courses/:id/students/:rollNumber",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const data = await store.read();
+        const course = requireCourse(data, request.user, request.params.id, "run");
+        const rollNumber = String(request.params.rollNumber || "")
+          .trim()
+          .toUpperCase();
+        if (!rollNumber) {
+          return response.status(400).json({ error: "A roll number is required" });
+        }
+
+        const rosterEntry = courseRoster(data, course.id).find(
+          (student) => String(student.rollNumber || "").toUpperCase() === rollNumber,
+        );
+        // An account is optional: a name can sit on the roll list long before
+        // that student signs up, and their attendance still counts.
+        const enrollment = data.enrollments.find(
+          (item) =>
+            item.courseId === course.id &&
+            String(item.rollNumber || "").toUpperCase() === rollNumber,
+        );
+        const account = enrollment
+          ? data.users.find((user) => user.id === enrollment.userId)
+          : null;
+        if (!rosterEntry && !enrollment) {
+          return response
+            .status(404)
+            .json({ error: "That roll number is not on this course roster" });
+        }
+
+        const classById = new Map(data.schedule.map((item) => [item.id, item]));
+        const sessions = data.attendanceSessions
+          .filter((session) => session.courseId === course.id)
+          .map((session) => {
+            const record = (session.records || []).find(
+              (item) => String(item.rollNumber || "").toUpperCase() === rollNumber,
+            );
+            // A session held before this student was added to the roll list has
+            // no record, and counting it against them would be wrong.
+            if (!record) return null;
+            return {
+              id: session.id,
+              startedAt: session.startedAt,
+              closedAt: session.closedAt || null,
+              status: session.status,
+              classLabel: classLabelFor(classById.get(session.scheduleId)),
+              room: classById.get(session.scheduleId)?.room || course.room || "",
+              present: Boolean(record.present),
+              markedAt: record.markedAt || null,
+              markedVia: record.markedVia || "",
+              proximity: record.proximity || null,
+            };
+          })
+          .filter(Boolean)
+          .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
+
+        const held = sessions.length;
+        const attended = sessions.filter((session) => session.present).length;
+
+        response.json({
+          student: {
+            rollNumber,
+            serial: rosterEntry?.serial ?? null,
+            name: rosterEntry?.name || account?.name || "",
+            email: account?.email || "",
+            department: account?.department || "",
+            phone: account?.phone || "",
+            hall: account?.hall || "",
+            joinedAt: enrollment?.joinedAt || null,
+            hasAccount: Boolean(account),
+            courseId: course.id,
+            courseCode: course.courseCode,
+            courseName: course.name,
+          },
+          summary: {
+            held,
+            attended,
+            missed: held - attended,
+            percentage: held ? Math.round((attended / held) * 1000) / 10 : 0,
+          },
+          sessions,
+        });
       } catch (error) {
         next(error);
       }

@@ -256,12 +256,24 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .past-session-picker .select { width:auto; min-width:220px; }
 
 .roster-toolbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+.roster-toolbar-actions { display:flex; align-items:center; gap:10px; }
 .scan-status { display:flex; align-items:center; gap:8px; font-size:10px; font-weight:700; color:var(--green); }
 .pulse { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 0 5px rgba(22,155,115,.1); animation:pulse 1.5s infinite; }
 @keyframes pulse { 50% { box-shadow:0 0 0 9px rgba(22,155,115,0); } }
 .roster { border:1px solid var(--line); border-radius:14px; overflow:hidden; }
 .student-row { display:grid; grid-template-columns:36px minmax(0,1fr) auto auto; align-items:center; gap:12px; min-height:58px; padding:9px 14px; border-top:1px solid var(--line); }
 .student-row:first-child { border-top:0; }
+/* A row is now a toggle plus its own "open record" control, so the divider and
+   the alternating avatar colours move to the wrapper the two share. */
+.student-row-wrap { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; border-top:1px solid var(--line); }
+.student-row-wrap:first-child { border-top:0; }
+.student-row-wrap .student-row { border-top:0; }
+.student-row-wrap:nth-child(3n+2) .student-avatar { background:#e1e8f7; }
+.student-row-wrap:nth-child(3n) .student-avatar { background:#e1f2ea; }
+.student-row-info { display:grid; place-items:center; width:38px; align-self:stretch; padding:0; color:var(--muted); background:white; border:0; border-left:1px solid var(--line); cursor:pointer; }
+.student-row-info svg { width:14px; height:14px; }
+button.student-row-info:hover { color:var(--primary); background:#fafaff; }
+button.student-row-info:focus-visible { outline:2px solid var(--primary); outline-offset:-2px; }
 .attendance-row { width:100%; color:inherit; background:white; font:inherit; text-align:left; }
 .attendance-row.is-interactive { cursor:pointer; transition:background .15s ease, box-shadow .15s ease; }
 .attendance-row.is-interactive:hover { position:relative; z-index:1; background:#fafaff; box-shadow:inset 3px 0 0 var(--primary); }
@@ -281,8 +293,6 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .roster-search input { width:100%; border:0; outline:0; background:transparent; font:inherit; font-size:10px; }
 .professor-roster { max-height:660px; }
 .student-avatar { display:grid; place-items:center; width:32px; height:32px; border-radius:50%; font-size:9px; font-weight:800; background:#f0e2d8; }
-.student-row:nth-child(3n+2) .student-avatar { background:#e1e8f7; }
-.student-row:nth-child(3n) .student-avatar { background:#e1f2ea; }
 .student-name strong { display:block; font-size:10px; }
 .student-name span { color:var(--muted); font-size:9px; }
 .signal { display:flex; gap:2px; align-items:flex-end; height:15px; }

@@ -207,6 +207,14 @@ A register belongs to one class, so a course that meets twice on a Tuesday takes
 - A closed session is only offered as "current" on the day it was held. After that it moves into history.
 - **Previous classes** on the attendance screen lists every past register for the course, labelled with its date, its class time and topic, and the present count, so two classes on one day are never confused. Students see the same list, with their own attendance, under their attendance record.
 
+## Reading and exporting attendance
+
+Every register has a **Excel** button that downloads that class as an `.xlsx`: roll number, name, present or absent, when the mark was made, who made it, and what the two proximity signals measured. The file is written directly in the browser, so it works offline and on the website as well as in the app.
+
+Tapping any student on the register opens their whole record for the course — running percentage, classes attended and missed, contact details once they have signed up, and every class the course has held with whether they were there. That record downloads as its own spreadsheet too. It is visible to the professor who owns the course and to enrolled TAs, and to nobody else; a student cannot open it, not even their own.
+
+Classes held before a student appeared on the roll list are left out of their totals, so someone added mid-term does not start at zero percent.
+
 ## Bluetooth and location together
 
 Two signals decide whether a mark is genuine, and each covers the other's weakness.
