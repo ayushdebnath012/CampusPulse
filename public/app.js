@@ -1,4 +1,4 @@
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.8.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -238,6 +238,32 @@ let studentRecord = null;
 let studentRecordRoute = "attendance";
 // Which exam a marks spreadsheet is about to be recorded against.
 let pendingMarksUpload = null;
+// What is typed into the search box on the register and the student list.
+let rosterSearch = "";
+let studentSearch = "";
+// The marks grid for the selected course, so totals can be shown and prefilled.
+let courseMarks = null;
+let courseMarksLoadedFor = "";
+
+// Matches a student by name or roll number, ignoring case, spacing and the
+// punctuation that creeps into a roll number when it is copied around.
+function matchesSearch(student, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const name = String(student?.name || "").toLowerCase();
+  const roll = String(student?.rollNumber || "").toLowerCase();
+  if (name.includes(needle) || roll.includes(needle)) return true;
+  const loose = (value) => value.replace(/[^a-z0-9]/g, "");
+  return loose(roll).includes(loose(needle));
+}
+
+function searchBox(id, value, placeholder) {
+  return `<label class="roster-search">
+    <span class="visually-hidden">${escapeHtml(placeholder)}</span>
+    <input class="text-input" id="${id}" type="search" value="${escapeHtml(value)}"
+      placeholder="${escapeHtml(placeholder)}" autocomplete="off" data-search-box />
+  </label>`;
+}
 const EXAM_CHOICES = [
   { id: "test1", label: "Test 1" },
   { id: "test2", label: "Test 2" },
@@ -1420,6 +1446,8 @@ async function switchCourseContext(
   state.selectedCourseId = course.id;
   managedCourseId = "";
   materialsCourseId = "";
+  courseMarks = null;
+  courseMarksLoadedFor = "";
   applyAttendanceSnapshot(null);
   applyQuizSnapshot(null);
   editingDraftId = "";
@@ -2434,6 +2462,7 @@ function renderLiveAttendance() {
   const complete = viewingPast || state.attendanceStatus === "complete";
   const records = viewingPast ? (viewingPastAttendance.records || []) : currentAttendanceRecords();
   const count = records.filter(record => record.present).length;
+  const shown = records.filter(record => matchesSearch(record, rosterSearch));
   const reopenTargetId = viewingPast ? viewingPastAttendance.id : state.backendAttendanceId;
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
@@ -2469,9 +2498,11 @@ function renderLiveAttendance() {
             <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
           </div>
         </div>
+        ${searchBox("attendanceSearch", rosterSearch, "Search this class by name or roll number")}
+        ${rosterSearch ? `<p class="stat-label" style="margin:-4px 2px 10px">${shown.length} of ${records.length} students${shown.length ? "" : " — nothing matches that"}</p>` : ""}
         ${!complete ? `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>` : ""}
         <div class="roster roster-scroll">
-          ${records.map((student, index) => studentRow(student, index, !complete)).join("")}
+          ${shown.map(student => studentRow(student, records.indexOf(student), !complete)).join("")}
         </div>
         <div class="setup-actions">
           ${complete
@@ -3797,16 +3828,37 @@ function renderPlaceholder(route) {
 }
 
 // Everyone who signed up and joined, as opposed to the uploaded roll list.
+async function refreshCourseMarks(courseId) {
+  if (!backendConfigured() || !apiToken || !courseId) {
+    courseMarks = null;
+    courseMarksLoadedFor = "";
+    return;
+  }
+  courseMarksLoadedFor = courseId;
+  try {
+    courseMarks = await apiRequest(`/api/courses/${encodeURIComponent(courseId)}/marks`);
+  } catch {
+    courseMarks = null;
+    courseMarksLoadedFor = "";
+  }
+}
+
 function renderStudents() {
   if (state.userRole === "student") return navigate("dashboard");
   if (studentRecord) return renderStudentRecord();
   if (managedCourseId) return renderCourseRoster(managedCourseId);
   setHeader("Students", state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE", false);
   const course = selectedCourse();
+  if (course && canManageRoster(course) && courseMarksLoadedFor !== course.id) {
+    refreshCourseMarks(course.id).then(() => {
+      if (state.route === "students" && state.selectedCourseId === course.id) renderStudents();
+    });
+  }
   const visibleCourses = course ? [course] : [];
-  const enrolled = enrolledStudents.filter(
+  const allEnrolled = enrolledStudents.filter(
     student => !course || student.courseId === course.id
   );
+  const enrolled = allEnrolled.filter(student => matchesSearch(student, studentSearch));
   const byCourse = new Map();
   const officialRosterCourses = visibleCourses.filter(
     course => course.rosterSource === "owner-upload"
@@ -3821,7 +3873,8 @@ function renderStudents() {
   view.innerHTML = `
     <div class="page-grid roster-grid">
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled students</h2><p class="stat-label">Accounts that joined this course using their registered roll number</p></div><div class="setup-actions"><span class="badge ${enrolled.length ? "green" : "amber"}">${enrolled.length} enrolled</span><button class="btn" type="button" data-action="export-enrolled" ${enrolled.length ? "" : "disabled"}>${icon("i-download")} Excel</button></div></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Enrolled students</h2><p class="stat-label">Accounts that joined this course using their registered roll number</p></div><div class="setup-actions"><span class="badge ${allEnrolled.length ? "green" : "amber"}">${studentSearch ? `${enrolled.length} of ${allEnrolled.length}` : `${allEnrolled.length} enrolled`}</span><button class="btn" type="button" data-action="export-enrolled" ${enrolled.length ? "" : "disabled"}>${icon("i-download")} Excel</button></div></div>
+        ${allEnrolled.length ? searchBox("studentSearch", studentSearch, "Search students by name or roll number") : ""}
         ${pendingRosterCourses.length ? `<div class="setup-actions roster-upload-actions">
           ${pendingRosterCourses.map(course => `<button class="btn btn-soft" type="button" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload ${escapeHtml(course.courseCode)} roll list</button>`).join("")}
         </div>` : ""}
@@ -3843,16 +3896,38 @@ function renderStudents() {
               </table>
             </div>
           </div>`;
-        }).join("") : `<p class="stat-label" style="padding:14px 2px">Nobody has joined yet. Share a course join code — students enter it with their roll number.</p>`}
+        }).join("") : `<p class="stat-label" style="padding:14px 2px">${studentSearch
+          ? "No student here matches that name or roll number."
+          : "Nobody has joined yet. Share a course join code — students enter it with their roll number."}</p>`}
       </article>
       ${course && canManageRoster(course) ? `<aside class="card page-card" data-course-id="${escapeHtml(course.id)}">
-        <div class="section-head"><div><h3>Exam marks</h3><p class="stat-label">Record a whole exam from a spreadsheet, or open any student to type one mark.</p></div></div>
+        <div class="section-head"><div><h3>Exam totals</h3><p class="stat-label">What each exam is marked out of. Leave an exam blank if this course does not sit it.</p></div></div>
+        <div class="exam-totals-grid">
+          ${EXAM_CHOICES.map(exam => {
+            const stored = courseMarks?.exams?.find(item => item.id === exam.id)?.maxMarks;
+            return `<label class="exam-total">
+              <span>${escapeHtml(exam.label)}</span>
+              <input class="text-input" type="number" min="1" max="1000" step="1"
+                data-total-for="${escapeHtml(exam.id)}" value="${stored ?? ""}" placeholder="—" />
+            </label>`;
+          }).join("")}
+        </div>
+        <div class="setup-actions" style="margin-top:14px">
+          <button class="btn btn-primary" type="button" data-action="save-exam-totals" data-course-id="${escapeHtml(course.id)}">${icon("i-check")} Save totals</button>
+        </div>
+      </aside>
+      <aside class="card page-card" data-course-id="${escapeHtml(course.id)}">
+        <div class="section-head"><div><h3>Upload marks</h3><p class="stat-label">Record a whole exam from a spreadsheet, or open any student to type one mark.</p></div></div>
         <label for="examSelect">Exam</label>
         <select class="select" id="examSelect">
-          ${EXAM_CHOICES.map(exam => `<option value="${escapeHtml(exam.id)}">${escapeHtml(exam.label)}</option>`).join("")}
+          ${EXAM_CHOICES.map(exam => {
+            const stored = courseMarks?.exams?.find(item => item.id === exam.id)?.maxMarks;
+            return `<option value="${escapeHtml(exam.id)}" data-max-marks="${stored ?? ""}">${escapeHtml(exam.label)}${stored ? ` · out of ${stored}` : ""}</option>`;
+          }).join("")}
         </select>
         <label for="examOutOf" style="margin-top:12px">Marked out of</label>
-        <input class="text-input" id="examOutOf" type="number" min="1" max="1000" step="1" placeholder="e.g. 20" />
+        <input class="text-input" id="examOutOf" type="number" min="1" max="1000" step="1" placeholder="e.g. 20"
+          value="${courseMarks?.exams?.[0]?.maxMarks ?? ""}" />
         <div class="setup-actions" style="margin-top:14px">
           <button class="btn btn-soft" type="button" data-action="upload-exam-marks" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload marks sheet</button>
           <input id="examMarksFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
@@ -4950,6 +5025,32 @@ document.addEventListener("click", async event => {
     await openStudentRecord(student.courseId, student.rollNumber);
     return toast(`Saved ${changed.length} mark${changed.length === 1 ? "" : "s"}`);
   }
+  if (action === "save-exam-totals") {
+    const courseId = event.target.closest("[data-course-id]")?.dataset.courseId;
+    if (!courseId) return toast("Choose a course first", "error");
+    const totals = {};
+    for (const input of view.querySelectorAll("[data-total-for]")) {
+      const typed = input.value.trim();
+      if (typed !== "" && !(Number(typed) > 0)) {
+        return toast("Every total must be a number above zero, or blank", "error");
+      }
+      totals[input.dataset.totalFor] = typed === "" ? null : Number(typed);
+    }
+    try {
+      courseMarks = {
+        ...(courseMarks || {}),
+        ...(await apiRequest(`/api/courses/${encodeURIComponent(courseId)}/exam-totals`, {
+          method: "PUT",
+          body: { totals }
+        }))
+      };
+    } catch (error) {
+      return toast(error.message || "Could not save those totals", "error");
+    }
+    renderStudents();
+    const set = Object.values(totals).filter(value => value !== null).length;
+    return toast(`Saved totals for ${set} exam${set === 1 ? "" : "s"}`);
+  }
   if (action === "upload-exam-marks") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId;
     const exam = view.querySelector("#examSelect")?.value;
@@ -5611,6 +5712,12 @@ document.addEventListener("click", async event => {
 });
 
 document.addEventListener("change", async event => {
+  if (event.target.id === "examSelect") {
+    const outOf = view.querySelector("#examOutOf");
+    const stored = event.target.selectedOptions?.[0]?.dataset.maxMarks || "";
+    if (outOf) outOf.value = stored;
+    return;
+  }
   if (event.target.id === "materialUploadFile") {
     const file = event.target.files?.[0];
     const course = state.courses.find(item => item.id === materialsCourseId);
@@ -5834,11 +5941,39 @@ document.addEventListener("change", async event => {
 });
 
 document.addEventListener("input", event => {
-  if (event.target.id !== "rosterSearch") return;
-  const query = event.target.value.trim().toLowerCase();
-  document.querySelectorAll("#professorRoster .student-row").forEach(row => {
-    row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
-  });
+  // The roster-management screen filters its own rows in place.
+  if (event.target.id === "rosterSearch") {
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll("#professorRoster .student-row").forEach(row => {
+      row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
+    });
+    return;
+  }
+
+  // These two re-render their list, which destroys the input being typed into,
+  // so focus and caret position are restored afterwards.
+  const searches = {
+    attendanceSearch: value => {
+      rosterSearch = value;
+      renderLiveAttendance();
+    },
+    studentSearch: value => {
+      studentSearch = value;
+      renderStudents();
+    }
+  };
+  const apply = searches[event.target.id];
+  if (!apply) return;
+  const { id, selectionStart } = event.target;
+  apply(event.target.value);
+  const restored = document.querySelector(`#${id}`);
+  if (!restored) return;
+  restored.focus({ preventScroll: true });
+  try {
+    restored.setSelectionRange(selectionStart, selectionStart);
+  } catch {
+    // A search input refuses setSelectionRange in some browsers; focus is enough.
+  }
 });
 
 quickAction.addEventListener("click", openReminderModal);

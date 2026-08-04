@@ -1046,7 +1046,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.7.0",
+        version: "1.8.0",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
@@ -1874,6 +1874,69 @@ function createApp(options = {}) {
         response.json({
           exams: EXAMS.map((exam) => ({ ...exam, maxMarks: totals[exam.id] })),
           students,
+        });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  // Sets what every exam is marked out of, in one go, before any marks exist.
+  // Doing it up front means an upload never has to carry the total with it.
+  app.put(
+    "/api/courses/:id/exam-totals",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const submitted = request.body.totals;
+        if (!submitted || typeof submitted !== "object" || Array.isArray(submitted)) {
+          return response.status(400).json({ error: "Send the totals for each exam" });
+        }
+        const result = await store.update((database) => {
+          const course = requireCourse(database, request.user, request.params.id, "run");
+          const next = { ...(course.examTotals || {}) };
+
+          for (const [exam, value] of Object.entries(submitted)) {
+            if (!EXAM_IDS.has(exam)) {
+              const error = new Error(`Unknown exam: ${exam}`);
+              error.status = 400;
+              throw error;
+            }
+            // A blank means the course does not sit that exam.
+            if (value === null || value === undefined || String(value).trim() === "") {
+              delete next[exam];
+              continue;
+            }
+            const maxMarks = Number(value);
+            if (!Number.isFinite(maxMarks) || maxMarks <= 0 || maxMarks > 1000) {
+              const error = new Error(
+                `${exam} must be out of a number between 1 and 1000`,
+              );
+              error.status = 400;
+              throw error;
+            }
+            // Lowering a total under a mark already awarded would leave a score
+            // that cannot exist, so it is refused rather than silently kept.
+            const tooHigh = database.courseMarks.find(
+              (mark) =>
+                mark.courseId === course.id && mark.exam === exam && mark.score > maxMarks,
+            );
+            if (tooHigh) {
+              const error = new Error(
+                `${tooHigh.rollNumber} already has ${tooHigh.score} for this exam, so it cannot be out of ${maxMarks}`,
+              );
+              error.status = 409;
+              throw error;
+            }
+            next[exam] = maxMarks;
+          }
+
+          course.examTotals = next;
+          return examTotals(course);
+        });
+        response.json({
+          exams: EXAMS.map((exam) => ({ ...exam, maxMarks: result[exam.id] })),
         });
       } catch (error) {
         next(error);

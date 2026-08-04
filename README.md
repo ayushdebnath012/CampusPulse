@@ -219,6 +219,8 @@ Classes held before a student appeared on the roll list are left out of their to
 
 A course records six tests, a mid sem and an end sem. Each is marked out of whatever the course sets, and a mark is only ever stored against a roll number that is on the roll list.
 
+**Students → Exam totals** sets what all eight exams are marked out of, in one place, before any marks are entered. Leave an exam blank if the course does not sit it. A total cannot be dropped below a mark already awarded — the student holding it is named rather than the score being quietly broken. Once a total is set, an upload no longer has to carry it.
+
 Marks go in two ways. **Students → Exam marks** takes a whole exam from a spreadsheet: pick the exam, say what it is out of, and upload an `.xlsx` or `.csv` with a roll number column and a marks column. The marks column is found by name where possible and inferred from the numbers where not, because exported sheets rarely use the heading you expect. Anyone missing from the sheet keeps the mark they already had, so uploading part of a class is normal rather than destructive — and roll numbers that are not on the roster are reported back rather than quietly stored.
 
 Individual marks are typed directly on a student's record. A blank clears a mark rather than storing a zero: not sitting an exam and scoring nothing are different things, and the difference shows in the totals.
@@ -226,6 +228,8 @@ Individual marks are typed directly on a student's record. A blank clears a mark
 A mark above what the exam is out of is refused, and the whole upload is rejected together rather than half applied.
 
 Students see their own marks on their attendance screen, and only their own. The full grid is course-team only.
+
+Both the register and the student list have a search box that matches on name or roll number. It ignores case, surrounding spaces, and punctuation inside a roll number, so `22-me-31034` and `22ME31034` find the same student. Searching filters what is shown without changing the present count, which still describes the whole class.
 
 ## Bluetooth and location together
 

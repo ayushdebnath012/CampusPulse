@@ -343,3 +343,125 @@ test("marks cannot be entered before a roll list exists", async (t) => {
   assert.equal(refused.status, 409);
   assert.match(refused.body.error, /roll list/i);
 });
+
+test("every exam total can be set up front, before any marks exist", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  const saved = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: professorToken,
+    body: {
+      totals: {
+        test1: 20,
+        test2: 20,
+        test3: 20,
+        midsem: 50,
+        endsem: 100,
+        // Left out on purpose: this course does not sit tests 4 to 6.
+      },
+    },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+
+  const byId = new Map(saved.body.exams.map((exam) => [exam.id, exam.maxMarks]));
+  assert.equal(byId.get("test1"), 20);
+  assert.equal(byId.get("midsem"), 50);
+  assert.equal(byId.get("endsem"), 100);
+  assert.equal(byId.get("test4"), null, "an exam the course does not sit stays unset");
+
+  // An upload can then omit the total, because the course already knows it.
+  const marks = await call(server.baseUrl, `/api/courses/${courseId}/marks/midsem`, {
+    method: "PUT",
+    token: professorToken,
+    body: { entries: [{ rollNumber: "24MRK001", score: 48 }] },
+  });
+  assert.equal(marks.status, 200, JSON.stringify(marks.body));
+  assert.equal(marks.body.maxMarks, 50);
+
+  // And the stored total is still enforced.
+  const tooHigh = await call(server.baseUrl, `/api/courses/${courseId}/marks/midsem`, {
+    method: "PUT",
+    token: professorToken,
+    body: { entries: [{ rollNumber: "24MRK002", score: 51 }] },
+  });
+  assert.equal(tooHigh.status, 400);
+});
+
+test("a total cannot be dropped below a mark already awarded", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  await call(server.baseUrl, `/api/courses/${courseId}/marks/test1`, {
+    method: "PUT",
+    token: professorToken,
+    body: { maxMarks: 20, entries: [{ rollNumber: "24MRK001", score: 18 }] },
+  });
+
+  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: professorToken,
+    body: { totals: { test1: 10 } },
+  });
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(refused.body.error, /24MRK001 already has 18/);
+
+  // Raising it is fine.
+  const raised = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: professorToken,
+    body: { totals: { test1: 25 } },
+  });
+  assert.equal(raised.status, 200);
+});
+
+test("a blank total clears an exam the course no longer sits", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: professorToken,
+    body: { totals: { test6: 15 } },
+  });
+  const cleared = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: professorToken,
+    body: { totals: { test6: null } },
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal(
+    cleared.body.exams.find((exam) => exam.id === "test6").maxMarks,
+    null,
+  );
+});
+
+test("an unknown exam in the totals is refused", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, courseId } = await classroom(server.baseUrl);
+
+  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: professorToken,
+    body: { totals: { viva: 20 } },
+  });
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.error, /unknown exam/i);
+});
+
+test("a student cannot set exam totals", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { studentToken, courseId } = await classroom(server.baseUrl);
+
+  const refused = await call(server.baseUrl, `/api/courses/${courseId}/exam-totals`, {
+    method: "PUT",
+    token: studentToken,
+    body: { totals: { test1: 5 } },
+  });
+  assert.equal(refused.status, 403);
+});
