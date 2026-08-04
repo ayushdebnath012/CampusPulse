@@ -218,4 +218,31 @@ test(`${CLASS_SIZE} students mark attendance at once without losing anyone`, asy
     `${CLASS_SIZE} concurrent check-ins took ${elapsed}ms, which is too slow for a class`,
   );
   console.log(`    ${CLASS_SIZE} concurrent check-ins completed in ${elapsed}ms`);
+
+  // Closing writes a personally worded notification for every student. The
+  // professor must not be left waiting on that fan-out.
+  const closingStarted = Date.now();
+  const closed = await call(
+    server.baseUrl,
+    `/api/attendance/${encodeURIComponent(sessionId)}/close`,
+    { method: "POST", token: professorToken, body: {} },
+  );
+  const closingElapsed = Date.now() - closingStarted;
+  assert.equal(closed.status, 200, JSON.stringify(closed.body));
+  assert.ok(
+    closingElapsed < 10000,
+    `closing a ${CLASS_SIZE}-student register took ${closingElapsed}ms`,
+  );
+  console.log(`    closing a ${CLASS_SIZE}-student register took ${closingElapsed}ms`);
+
+  // Every student still gets told their result.
+  const stored = await server.store.read();
+  const closingNotices = stored.notifications.filter(
+    (item) => item.type === "attendance" && /marked (present|absent)/i.test(item.title),
+  );
+  assert.equal(
+    closingNotices.length,
+    CLASS_SIZE,
+    `every student should be told their result, got ${closingNotices.length}`,
+  );
 });

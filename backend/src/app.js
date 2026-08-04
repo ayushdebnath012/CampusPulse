@@ -19,6 +19,9 @@ const TEN_MINUTES = 10 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PUSH_DEVICES_PER_USER = 5;
 const PUSH_DELIVERY_CONCURRENCY = 20;
+// How long a request will wait for phone delivery before answering and
+// letting the rest finish in the background.
+const PUSH_DELIVERY_RESPONSE_BUDGET_MS = 1500;
 
 function cleanEmail(value = "") {
   return String(value).trim().toLowerCase();
@@ -977,6 +980,27 @@ function createApp(options = {}) {
         return null;
       })
       .catch(() => {});
+  }
+
+  /**
+   * Delivers push notifications without letting them hold up the response.
+   *
+   * A course event fans out to the whole class, so closing attendance for 310
+   * students means 310 phone deliveries. Making the professor's request wait
+   * for all of them is how "close attendance" turns into a timeout. The inbox
+   * rows are already committed by the time this runs, so nothing is lost by
+   * answering first and letting a slow delivery finish in the background.
+   */
+  async function deliverNotificationsWithoutBlocking(deliveries = []) {
+    if (!deliveries.length) return;
+    const delivery = deliverNotifications(deliveries).catch((error) => {
+      console.error("CampusPulse push delivery failed", error);
+    });
+    let release;
+    const cap = new Promise((resolve) => {
+      release = setTimeout(resolve, PUSH_DELIVERY_RESPONSE_BUDGET_MS);
+    });
+    await Promise.race([delivery.finally(() => clearTimeout(release)), cap]);
   }
 
   app.get("/api/health", async (_request, response, next) => {
@@ -2273,7 +2297,7 @@ function createApp(options = {}) {
           });
           return { material: publicMaterial(created), deliveries };
         });
-        await deliverNotifications(result.deliveries);
+        await deliverNotificationsWithoutBlocking(result.deliveries);
         response.status(201).json({ material: result.material });
       } catch (error) {
         next(error);
@@ -2621,7 +2645,7 @@ function createApp(options = {}) {
           });
           return { session: created, deliveries };
         });
-        await deliverNotifications(result.deliveries);
+        await deliverNotificationsWithoutBlocking(result.deliveries);
         response.status(201).json({ attendance: publicAttendance(result.session) });
       } catch (error) {
         next(error);
@@ -3158,7 +3182,7 @@ function createApp(options = {}) {
 
           return { session, deliveries: addPersonalNotifications(database, entries) };
         });
-        await deliverNotifications(attendance.deliveries);
+        await deliverNotificationsWithoutBlocking(attendance.deliveries);
         response.json({ attendance: publicAttendance(attendance.session) });
       } catch (error) {
         next(error);
@@ -3221,7 +3245,7 @@ function createApp(options = {}) {
 
           return { session, deliveries: addPersonalNotifications(database, entries) };
         });
-        await deliverNotifications(attendance.deliveries);
+        await deliverNotificationsWithoutBlocking(attendance.deliveries);
         response.json({ attendance: publicAttendance(attendance.session) });
       } catch (error) {
         next(error);
@@ -3282,7 +3306,7 @@ function createApp(options = {}) {
           }
           return { quiz: created, deliveries };
         });
-        await deliverNotifications(result.deliveries);
+        await deliverNotificationsWithoutBlocking(result.deliveries);
         response.status(201).json({ quiz: result.quiz });
       } catch (error) {
         next(error);
@@ -3677,7 +3701,7 @@ function createApp(options = {}) {
           });
           return { quiz: draft, deliveries };
         });
-        await deliverNotifications(result.deliveries);
+        await deliverNotificationsWithoutBlocking(result.deliveries);
         response.json({ quiz: result.quiz });
       } catch (error) {
         next(error);
