@@ -1086,9 +1086,6 @@ function createApp(options = {}) {
         if (!rollNumber || rollNumber.length > 40) {
           return response.status(400).json({ error: "Enter your roll number" });
         }
-        if (hall.length < 2) {
-          return response.status(400).json({ error: "Enter your hall of residence" });
-        }
       }
 
       const passwordHash = await hashPassword(password);
@@ -1173,9 +1170,6 @@ function createApp(options = {}) {
       if (role !== "faculty") {
         if (!rollNumber || rollNumber.length > 40) {
           return response.status(400).json({ error: "Enter your roll number" });
-        }
-        if (hall.length < 2) {
-          return response.status(400).json({ error: "Enter your hall of residence" });
         }
       }
 

@@ -626,7 +626,7 @@ const loginProfiles = {
     placeholder: "you@example.com",
     emailPattern: EMAIL_INPUT_PATTERN,
     emailTitle: "Any email address you can receive mail at",
-    emailHelp: "Your institute address is ideal, but any working email works.",
+    emailHelp: "Any address you can receive mail at — an institute one, Gmail, anything.",
     emailError: "Enter a valid email address",
     initials: "PF",
     name: "Professor Demo"
@@ -640,7 +640,7 @@ const loginProfiles = {
     placeholder: "you@example.com",
     emailPattern: EMAIL_INPUT_PATTERN,
     emailTitle: "Any email address you can receive mail at",
-    emailHelp: "Your institute address is ideal, but any working email works.",
+    emailHelp: "Any address you can receive mail at — an institute one, Gmail, anything.",
     emailError: "Enter a valid email address",
     initials: "TA",
     name: "Teaching Assistant"
@@ -654,7 +654,7 @@ const loginProfiles = {
     placeholder: "you@example.com",
     emailPattern: EMAIL_INPUT_PATTERN,
     emailTitle: "Any email address you can receive mail at",
-    emailHelp: "Your institute address is ideal, but any working email works.",
+    emailHelp: "Any address you can receive mail at — an institute one, Gmail, anything.",
     emailError: "Enter a valid email address",
     initials: "ST",
     name: "Student Demo"
@@ -727,11 +727,11 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
             ${selectedLoginRole === "faculty" ? "" : `
             <div class="auth-field-pair">
               <div><label for="signupRoll">Roll number</label><input id="signupRoll" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" required /></div>
-              <div><label for="signupHall">Hall of residence</label><input id="signupHall" name="hall" type="text" placeholder="e.g. Azad Hall" autocomplete="off" maxlength="80" required /></div>
+              <div><label for="signupHall">Hall of residence <span class="field-optional">(optional)</span></label><input id="signupHall" name="hall" type="text" placeholder="e.g. Azad Hall" autocomplete="off" maxlength="80" /></div>
             </div>`}
             <button class="btn btn-primary auth-submit" type="submit">${icon("i-arrow")} Create account & sign in</button>
           </form>
-          <div class="auth-demo-note"><span>${selectedLoginRole === "faculty" ? "Departmental email required" : "Student email required"}</span><p>${profile.emailHelp} We email a six-digit code to confirm it before the account is created.</p></div>` : `
+          <div class="auth-demo-note"><span>Any email address</span><p>${profile.emailHelp} We email a six-digit code to confirm it before the account is created.</p></div>` : `
           ${authMode === "forgot" ? `
           <form id="forgotPasswordForm" class="login-form">
             <label for="forgotEmail">Registered email</label>
@@ -788,7 +788,7 @@ function renderEmailVerification() {
     <div class="auth-layout">
       <section class="auth-story">
         <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
-        <div class="auth-story-copy"><span class="auth-kicker">ONE LAST STEP</span><h1>Check your inbox.</h1><p>Confirming the address keeps every classroom tied to a real institute account.</p></div>
+        <div class="auth-story-copy"><span class="auth-kicker">ONE LAST STEP</span><h1>Check your inbox.</h1><p>Confirming the address keeps every classroom tied to a real, reachable account.</p></div>
       </section>
       <section class="auth-panel">
         <div class="auth-card">
