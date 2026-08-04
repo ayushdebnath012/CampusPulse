@@ -3695,6 +3695,39 @@ function nativeDeviceStatus() {
   return window.Capacitor?.Plugins?.DeviceStatus || null;
 }
 
+// Attendance is verified against where the class is being held, so a fix is
+// required on both sides. Resolves to null when the device cannot or will not
+// provide one; the caller turns that into an explanation rather than a silent
+// failure.
+function currentLocation({ timeoutMs = 12000 } = {}) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation?.getCurrentPosition) return resolve(null);
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    // Some devices sit on a pending permission prompt indefinitely.
+    const timer = setTimeout(() => finish(null), timeoutMs + 1000);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        clearTimeout(timer);
+        finish({
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+        });
+      },
+      () => {
+        clearTimeout(timer);
+        finish(null);
+      },
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 30000 }
+    );
+  });
+}
+
 async function attendanceSignals({ requestWebBluetooth = false } = {}) {
   const nativePlugin = nativeDeviceStatus();
   if (nativePlugin) {
@@ -4539,10 +4572,18 @@ document.addEventListener("click", async event => {
   if (action === "start-scan") {
     if (!canRunAttendance(selectedCourse())) return toast("Course-team attendance access required", "error");
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
+    toast("Finding the classroom…");
+    const classLocation = await currentLocation();
+    if (!classLocation) {
+      return toast(
+        "Turn Location on and allow CampusPulse to use it — students are verified against where this class is held",
+        "error"
+      );
+    }
     try {
       const result = await apiRequest("/api/attendance/sessions", {
         method: "POST",
-        body: { courseId: state.selectedCourseId }
+        body: { courseId: state.selectedCourseId, location: classLocation }
       });
       activeAttendance = result.attendance;
       state.backendAttendanceId = result.attendance.id;
@@ -4807,26 +4848,35 @@ document.addEventListener("click", async event => {
       }
       toast("Looking for the class over Bluetooth…");
       const beacon = await findAttendanceBeacon();
-      if (!beacon.found) {
-        // "Heard but too far" and "not heard at all" call for different
-        // reactions, so they are not reported with the same sentence.
-        const outOfRange = beacon.outOfRange
-          ? `The class signal is about ${Math.round(beacon.distanceMeters)} m away, outside this classroom. Move inside and try again.`
-          : "";
+      const code = String(beacon.token || "").trim().toUpperCase();
+      // Hearing the beacon at all means being inside Bluetooth radio range.
+      // A token that read as too far is still submitted, because the distance
+      // estimate is the noisier of the two signals at that point and location
+      // can settle it — a student in the back row should not be turned away.
+      if (!code) {
         return toast(
           beacon.unsupported
             ? "Bluetooth proximity requires the CampusPulse app. Install it to mark attendance."
-            : outOfRange ||
-                beacon.error ||
-                "The class was not found nearby. Move closer and try again.",
+            : beacon.error || "The class was not found nearby. Move closer and try again.",
           "error"
         );
       }
-      const code = String(beacon.token || "").trim().toUpperCase();
-      if (!code) return toast("No signal received. Move closer and try again.", "error");
+      const location = await currentLocation();
+      if (!location) {
+        return toast(
+          "Turn Location on and allow CampusPulse to use it, then mark attendance again",
+          "error"
+        );
+      }
       await apiRequest(`/api/attendance/${sessionId}/check-in`, {
         method: "POST",
-        body: { rollNumber, signals, code }
+        body: {
+          rollNumber,
+          signals,
+          code,
+          location,
+          bluetoothDistanceMeters: beacon.distanceMeters,
+        }
       });
       state.checks = { wifi: true, bluetooth: true };
       persist();

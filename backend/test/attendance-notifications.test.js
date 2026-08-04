@@ -115,7 +115,7 @@ test("closing attendance tells every student their own result", async (t) => {
   const opened = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professorToken,
-    body: { courseId },
+    body: { courseId, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(opened.status, 201);
   const sessionId = opened.body.attendance.id;
@@ -162,7 +162,7 @@ test("overriding a student's mark notifies that student only", async (t) => {
   const opened = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professorToken,
-    body: { courseId },
+    body: { courseId, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(opened.status, 201);
   const sessionId = opened.body.attendance.id;

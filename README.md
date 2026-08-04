@@ -188,6 +188,20 @@ A register belongs to one class, so a course that meets twice on a Tuesday takes
 - A closed session is only offered as "current" on the day it was held. After that it moves into history.
 - **Previous classes** on the attendance screen lists every past register for the course, labelled with its date, its class time and topic, and the present count, so two classes on one day are never confused. Students see the same list, with their own attendance, under their attendance record.
 
+## Bluetooth and location together
+
+Two signals decide whether a mark is genuine, and each covers the other's weakness.
+
+**Bluetooth proves the room.** A phone has to hear the beacon over the air, which nothing outside the building can fake. Its distance estimate is honest but noisy — RSSI swings by 10 dB or more as people move.
+
+**Location proves the venue.** The professor's position is recorded when attendance opens, and every student's own fix is compared against it. This is the check that stops a mark being sent from a hostel room.
+
+Location is compulsory on both sides: attendance will not open without a fix, and a student who refuses the permission cannot mark themselves present.
+
+Because indoor GPS is only accurate to tens of metres, each reading's own error bar is subtracted before judging, and the radius is deliberately wider than a room — `ATTENDANCE_GEOFENCE_METRES`, 150 m by default. That is not sloppiness: wrongly rejecting a student who is genuinely sitting in the lecture is a worse failure than admitting someone in the corridor, and Bluetooth is what excludes the corridor. A student whose Bluetooth reading looks marginal but whose location agrees is still marked present, which is how the back row gets counted.
+
+Both measurements are stored on the record, so a disputed mark can be examined instead of argued about.
+
 ## Bluetooth proximity attendance
 
 When a professor opens attendance, their device advertises a rotating session token over Bluetooth LE. Student devices listen for it and send back what they heard, so a code never has to be read out and only a phone in the room can produce a valid token.

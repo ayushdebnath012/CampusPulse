@@ -152,7 +152,7 @@ test(`${CLASS_SIZE} students mark attendance at once without losing anyone`, asy
   const opened = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professorToken,
-    body: { courseId },
+    body: { courseId, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(opened.status, 201, JSON.stringify(opened.body));
   const sessionId = opened.body.attendance.id;
@@ -177,7 +177,7 @@ test(`${CLASS_SIZE} students mark attendance at once without losing anyone`, asy
           token: student.token,
           body: {
             rollNumber: rollNumber(student.index),
-            signals: { wifi: true, bluetooth: true },
+            signals: { wifi: true, bluetooth: true }, location: { latitude: 22.31492, longitude: 87.31053, accuracy: 15 },
             code: proximityCode,
           },
         },

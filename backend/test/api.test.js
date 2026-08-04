@@ -335,7 +335,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: professor.token,
-      body: { courseId: soft.id },
+      body: { courseId: soft.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
     },
   );
   assert.equal(openedAttendance.response.status, 201);
@@ -461,7 +461,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: teachingAssistant.token,
-      body: { courseId: kbs.id },
+      body: { courseId: kbs.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
     },
   );
   assert.equal(taOpenedKbs.response.status, 201);
@@ -632,7 +632,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: professor.token,
-      body: { courseId: soft.id },
+      body: { courseId: soft.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
     },
   );
   assert.equal(duplicateSoftAttendance.response.status, 409);
@@ -704,7 +704,7 @@ test("CampusPulse API connects professor attendance to the authoritative rosters
     {
       method: "POST",
       token: otherProfessor.token,
-      body: { courseId: soft.id },
+      body: { courseId: soft.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
     },
   );
   assert.equal(crossAttendanceAttempt.response.status, 403);
@@ -1151,7 +1151,7 @@ test("a course without an uploaded roster builds one from enrolled students", as
   const earlySession = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: course.id },
+    body: { courseId: course.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(earlySession.response.status, 201);
   assert.deepEqual(
@@ -1166,7 +1166,7 @@ test("a course without an uploaded roster builds one from enrolled students", as
       method: "POST",
       token: student.token,
       body: {
-        signals: { wifi: true, bluetooth: true },
+        signals: { wifi: true, bluetooth: true }, location: { latitude: 22.31492, longitude: 87.31053, accuracy: 15 },
         code: await attendanceCode(
           testServer.baseUrl,
           professor.token,
@@ -1236,6 +1236,8 @@ test("students mark their own attendance only while the professor's session is o
   }
 
   const goodSignals = { wifi: true, bluetooth: true };
+  // A fix a few metres from where the class was opened.
+  const goodLocation = { latitude: 22.31492, longitude: 87.31053, accuracy: 15 };
 
   // Nothing to join before the professor starts the session.
   const beforeOpen = await request(testServer.baseUrl, "/api/attendance/open", {
@@ -1246,14 +1248,14 @@ test("students mark their own attendance only while the professor's session is o
   const early = await request(testServer.baseUrl, "/api/attendance/attendance-missing/check-in", {
     method: "POST",
     token: student.token,
-    body: { rollNumber: "MFTEST0001", signals: goodSignals },
+    body: { rollNumber: "MFTEST0001", signals: goodSignals, location: goodLocation },
   });
   assert.equal(early.response.status, 404);
 
   const started = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: soft.id },
+    body: { courseId: soft.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(started.response.status, 201);
   const sessionId = started.body.attendance.id;
@@ -1281,6 +1283,7 @@ test("students mark their own attendance only while the professor's session is o
     body: {
       rollNumber: "MFTEST0001",
       signals: goodSignals,
+      location: goodLocation,
       code: await attendanceCode(testServer.baseUrl, professor.token, sessionId),
     },
   });
@@ -1295,7 +1298,8 @@ test("students mark their own attendance only while the professor's session is o
     const refused = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
       method: "POST",
       token: outsider.token,
-      body: { signals: goodSignals, code },
+      body: { signals: goodSignals,
+      location: goodLocation, code },
     });
     assert.equal(refused.response.status, 403);
   }
@@ -1321,6 +1325,7 @@ test("students mark their own attendance only while the professor's session is o
     body: {
       rollNumber: "MFTEST0001",
       signals: goodSignals,
+      location: goodLocation,
       code: await attendanceCode(testServer.baseUrl, professor.token, sessionId),
     },
   });
@@ -1333,6 +1338,7 @@ test("students mark their own attendance only while the professor's session is o
     token: student.token,
     body: {
       signals: goodSignals,
+      location: goodLocation,
       code: await attendanceCode(testServer.baseUrl, professor.token, sessionId),
     },
   });
@@ -1363,7 +1369,7 @@ test("students mark their own attendance only while the professor's session is o
   const afterClose = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
     token: student.token,
-    body: { signals: goodSignals },
+    body: { signals: goodSignals, location: goodLocation },
   });
   assert.equal(afterClose.response.status, 404);
   const noneOpen = await request(testServer.baseUrl, "/api/attendance/open", {
@@ -2288,7 +2294,7 @@ test("course activity raises notices that students can read but not change", asy
   await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: course.id },
+    body: { courseId: course.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   await request(testServer.baseUrl, "/api/quizzes", {
     method: "POST",
@@ -2413,13 +2419,13 @@ test("a student sees their own attendance record and their own quiz answers", as
   const first = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: course.id },
+    body: { courseId: course.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   await request(testServer.baseUrl, `/api/attendance/${first.body.attendance.id}/check-in`, {
     method: "POST",
     token: mine.token,
     body: {
-      signals: { wifi: true, bluetooth: true },
+      signals: { wifi: true, bluetooth: true }, location: { latitude: 22.31492, longitude: 87.31053, accuracy: 15 },
       code: await attendanceCode(testServer.baseUrl, professor.token, first.body.attendance.id),
     },
   });
@@ -2442,7 +2448,7 @@ test("a student sees their own attendance record and their own quiz answers", as
   const second = await request(testServer.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: professor.token,
-    body: { courseId: course.id },
+    body: { courseId: course.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   await request(testServer.baseUrl, `/api/attendance/${second.body.attendance.id}/close`, {
     method: "POST",

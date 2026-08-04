@@ -336,8 +336,67 @@ function attendanceRecord(student) {
 
 function publicAttendance(session) {
   if (!session) return session;
-  const { proximitySecret: _secret, ...rest } = session;
-  return rest;
+  // The exact coordinates of the room are not the class's business; whether a
+  // location was captured is.
+  const { proximitySecret: _secret, location, ...rest } = session;
+  return { ...rest, hasLocation: Boolean(location) };
+}
+
+/** A geolocation reading from a phone, or null if it is unusable. */
+function normalizeLocation(value) {
+  if (!value || typeof value !== "object") return null;
+  const latitude = Number(value.latitude);
+  const longitude = Number(value.longitude);
+  if (!Number.isFinite(latitude) || Math.abs(latitude) > 90) return null;
+  if (!Number.isFinite(longitude) || Math.abs(longitude) > 180) return null;
+  // Browsers report accuracy as a 68%-confidence radius in metres. A fix with
+  // no accuracy is treated as very rough rather than as perfect.
+  const accuracy = Number(value.accuracy);
+  return {
+    latitude,
+    longitude,
+    accuracy:
+      Number.isFinite(accuracy) && accuracy >= 0 ? Math.min(accuracy, 10000) : 2000,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+/** Great-circle distance in metres. */
+function metresBetween(from, to) {
+  const radius = 6371000;
+  const toRadians = (degrees) => (degrees * Math.PI) / 180;
+  const deltaLat = toRadians(to.latitude - from.latitude);
+  const deltaLon = toRadians(to.longitude - from.longitude);
+  const fromLat = toRadians(from.latitude);
+  const toLat = toRadians(to.latitude);
+  const h =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(fromLat) * Math.cos(toLat) * Math.sin(deltaLon / 2) ** 2;
+  return 2 * radius * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/**
+ * Whether a student's fix is consistent with being at the class.
+ *
+ * Bluetooth is what proves someone is in the room; this is the wider net that
+ * catches marking attendance from home. Indoor GPS is only accurate to tens of
+ * metres, so both readings' own error bars are subtracted before judging, and
+ * a missing fix never blocks a student whose Bluetooth already checked out —
+ * refusing someone who is genuinely sitting in the lecture is the worse error.
+ */
+function locationAgrees(sessionLocation, studentLocation, limitMetres) {
+  if (!sessionLocation || !studentLocation) {
+    return { verified: false, reason: "unavailable" };
+  }
+  const distance = metresBetween(sessionLocation, studentLocation);
+  const slack = sessionLocation.accuracy + studentLocation.accuracy;
+  const worstCase = distance - slack;
+  return {
+    verified: true,
+    within: worstCase <= limitMetres,
+    distance: Math.round(distance),
+    limitMetres,
+  };
 }
 
 function safeQuizForStudent(quiz, userId) {
@@ -761,6 +820,14 @@ function createApp(options = {}) {
     lastFailureAt: null,
     lastErrorCount: 0,
   };
+  // How far from the class a student's own fix may be. Deliberately wider than
+  // a room: indoors a phone is only accurate to tens of metres, and the point
+  // is to catch marking attendance from home, not to measure seating. Bluetooth
+  // is what establishes actual presence.
+  const geofenceMetres = Math.max(
+    25,
+    Number(env.ATTENDANCE_GEOFENCE_METRES || 150) || 150,
+  );
   const allowDevVerificationCode =
     String(env.NODE_ENV || "").toLowerCase() !== "production" &&
     String(env.ALLOW_DEV_VERIFICATION_CODE || "").toLowerCase() === "true";
@@ -2439,6 +2506,15 @@ function createApp(options = {}) {
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
+        // The class's own position is what every student is measured against,
+        // so attendance cannot open without it.
+        const sessionLocation = normalizeLocation(request.body.location);
+        if (!sessionLocation) {
+          return response.status(400).json({
+            error:
+              "Turn Location on and allow CampusPulse to use it — attendance is verified against where the class is being held",
+          });
+        }
         const result = await store.update((database) => {
           const courseId = String(request.body.courseId || "").trim();
           const course = requireCourse(database, request.user, courseId, "run");
@@ -2512,6 +2588,9 @@ function createApp(options = {}) {
             id: `attendance-${Date.now()}`,
             courseId,
             scheduleId,
+            // Where the class is being held, so a student's own fix can be
+            // compared against it.
+            location: sessionLocation,
             startedBy: request.user.id,
             startedAt: new Date().toISOString(),
             status: "open",
@@ -2878,6 +2957,7 @@ function createApp(options = {}) {
         const submittedCode = String(request.body.code || "").trim().toUpperCase();
         // The roll number belongs to the account, so it is never re-entered.
         const submittedRoll = String(request.user.rollNumber || "").trim().toUpperCase();
+        const studentLocation = normalizeLocation(request.body.location);
 
         const result = await store.update((database) => {
           const session = database.attendanceSessions.find(
@@ -2903,6 +2983,33 @@ function createApp(options = {}) {
               throw error;
             }
           }
+          // Two signals, each covering the other's weakness. The beacon token
+          // above already proves Bluetooth contact, which no phone outside the
+          // building can fake. Location then confirms the student is at the
+          // venue rather than relaying a token from elsewhere.
+          //
+          // Location is required, so a missing or refused fix stops here rather
+          // than quietly downgrading to a Bluetooth-only check.
+          if (!studentLocation) {
+            const error = new Error(
+              "Turn Location on and allow CampusPulse to use it, then mark attendance again",
+            );
+            error.status = 400;
+            throw error;
+          }
+          const agreement = locationAgrees(
+            session.location,
+            studentLocation,
+            geofenceMetres,
+          );
+          if (agreement.verified && !agreement.within) {
+            const error = new Error(
+              `You appear to be about ${agreement.distance} m from this class. Attendance can only be marked from the classroom.`,
+            );
+            error.status = 403;
+            throw error;
+          }
+
           const enrollment = database.enrollments.find(
             (item) =>
               item.userId === request.user.id && item.courseId === session.courseId,
@@ -2953,10 +3060,20 @@ function createApp(options = {}) {
           record.markedAt = new Date().toISOString();
           record.markedBy = request.user.id;
           record.markedVia = "student";
+          // What each signal actually measured, kept so a disputed mark can be
+          // examined rather than argued about.
+          record.proximity = {
+            bluetoothMetres: Number.isFinite(Number(request.body.bluetoothDistanceMeters))
+              ? Math.round(Number(request.body.bluetoothDistanceMeters))
+              : null,
+            locationMetres: agreement.verified ? agreement.distance : null,
+            locationAccuracy: Math.round(studentLocation.accuracy),
+          };
           return {
             courseId: session.courseId,
             rollNumber,
             markedAt: record.markedAt,
+            proximity: record.proximity,
           };
         });
         response.status(201).json({ checkedIn: true, ...result });

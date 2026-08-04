@@ -128,7 +128,7 @@ test("a course meeting twice in a day takes attendance twice", async (t) => {
   const morning = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
-    body: { courseId, scheduleId: classes[0].id },
+    body: { courseId, scheduleId: classes[0].id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(morning.status, 201, JSON.stringify(morning.body));
 
@@ -136,7 +136,7 @@ test("a course meeting twice in a day takes attendance twice", async (t) => {
   const repeat = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
-    body: { courseId, scheduleId: classes[0].id },
+    body: { courseId, scheduleId: classes[0].id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(repeat.status, 409);
   assert.match(repeat.body.error, /already taken for this class/i);
@@ -145,7 +145,7 @@ test("a course meeting twice in a day takes attendance twice", async (t) => {
   const afternoon = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
-    body: { courseId, scheduleId: classes[1].id },
+    body: { courseId, scheduleId: classes[1].id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(
     afternoon.status,
@@ -171,7 +171,7 @@ test("yesterday's session is not offered as today's attendance", async (t) => {
   const opened = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
-    body: { courseId, scheduleId: classes[0].id },
+    body: { courseId, scheduleId: classes[0].id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(opened.status, 201);
   const sessionId = opened.body.attendance.id;
@@ -213,7 +213,7 @@ test("yesterday's session is not offered as today's attendance", async (t) => {
   const reopenedDay = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
-    body: { courseId, scheduleId: classes[0].id },
+    body: { courseId, scheduleId: classes[0].id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(
     reopenedDay.status,
@@ -244,7 +244,7 @@ test("history names every past class so two on one day are distinguishable", asy
     const opened = await call(server.baseUrl, "/api/attendance/sessions", {
       method: "POST",
       token,
-      body: { courseId, scheduleId: scheduled.id },
+      body: { courseId, scheduleId: scheduled.id, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
     });
     assert.equal(opened.status, 201, JSON.stringify(opened.body));
     const closed = await call(
@@ -282,7 +282,7 @@ test("attendance opened without a named class is still keyed to one", async (t) 
   const opened = await call(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
-    body: { courseId },
+    body: { courseId, location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 } },
   });
   assert.equal(opened.status, 201, JSON.stringify(opened.body));
   assert.ok(

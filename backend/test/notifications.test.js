@@ -159,7 +159,11 @@ test("course events persist a private inbox and push to valid member devices", a
   const attendance = await request(server.baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token: server.tokens.professor,
-    body: { courseId: "course-1", scheduleId: "schedule-1" },
+    body: {
+      courseId: "course-1",
+      scheduleId: "schedule-1",
+      location: { latitude: 22.3149, longitude: 87.3105, accuracy: 12 },
+    },
   });
   assert.equal(attendance.response.status, 201);
   assert.deepEqual(pushes.map((item) => item.token), ["invalid-student-device"]);
