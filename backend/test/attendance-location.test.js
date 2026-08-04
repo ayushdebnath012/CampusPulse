@@ -127,24 +127,41 @@ async function currentCode(baseUrl, token, sessionId) {
   return result.body.code;
 }
 
-test("attendance cannot be opened without the classroom's own position", async (t) => {
+test("a session records the classroom's position when one is offered", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const { professorToken, courseId } = await classroom(server.baseUrl);
-
-  const refused = await call(server.baseUrl, "/api/attendance/sessions", {
-    method: "POST",
-    token: professorToken,
-    body: { courseId },
-  });
-  assert.equal(refused.status, 400);
-  assert.match(refused.body.error, /location/i);
 
   const opened = await openAttendance(server.baseUrl, professorToken, courseId);
   assert.equal(opened.status, 201);
   // The coordinates themselves are not handed back to the class.
   assert.equal(opened.body.attendance.location, undefined);
   assert.equal(opened.body.attendance.hasLocation, true);
+});
+
+test("attendance still opens on a device that cannot supply a position", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+
+  // An app already installed on a phone may have no way to ask for the
+  // location permission. Refusing to open the register would leave the
+  // professor unable to take attendance at all.
+  const opened = await call(server.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professorToken,
+    body: { courseId },
+  });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  assert.equal(opened.body.attendance.hasLocation, false);
+
+  const sessionId = opened.body.attendance.id;
+  const code = await currentCode(server.baseUrl, professorToken, sessionId);
+
+  // With no classroom position to compare against, Bluetooth alone decides.
+  const marked = await checkIn(server.baseUrl, studentToken, sessionId, code, BACK_ROW);
+  assert.equal(marked.status, 201, JSON.stringify(marked.body));
+  assert.equal(marked.body.proximity.locationVerified, false);
 });
 
 test("a student in the room is marked present, a student elsewhere is not", async (t) => {
@@ -164,7 +181,7 @@ test("a student in the room is marked present, a student elsewhere is not", asyn
   assert.equal(inRoom.body.checkedIn, true);
 });
 
-test("location is compulsory, so a refused fix blocks the mark", async (t) => {
+test("a student whose phone gives no fix still marks present on Bluetooth", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
@@ -172,17 +189,32 @@ test("location is compulsory, so a refused fix blocks the mark", async (t) => {
   const sessionId = opened.body.attendance.id;
   const code = await currentCode(server.baseUrl, professorToken, sessionId);
 
-  // Bluetooth alone is no longer enough.
+  // The beacon token is the proof of presence; locking out a phone that cannot
+  // produce a fix would exclude students who are genuinely in the room.
   const noFix = await checkIn(server.baseUrl, studentToken, sessionId, code, null);
-  assert.equal(noFix.status, 400);
-  assert.match(noFix.body.error, /location/i);
+  assert.equal(noFix.status, 201, JSON.stringify(noFix.body));
+  assert.equal(
+    noFix.body.proximity.locationVerified,
+    false,
+    "the mark is recorded as resting on Bluetooth alone",
+  );
+  assert.equal(noFix.body.proximity.locationMetres, null);
+});
+
+test("an unusable fix is treated as no fix, not as agreement", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const opened = await openAttendance(server.baseUrl, professorToken, courseId);
+  const sessionId = opened.body.attendance.id;
+  const code = await currentCode(server.baseUrl, professorToken, sessionId);
 
   const nonsense = await checkIn(server.baseUrl, studentToken, sessionId, code, {
     latitude: "not-a-number",
     longitude: 87.3105,
   });
-  assert.equal(nonsense.status, 400);
-  assert.match(nonsense.body.error, /location/i);
+  assert.equal(nonsense.status, 201, JSON.stringify(nonsense.body));
+  assert.equal(nonsense.body.proximity.locationVerified, false);
 });
 
 test("a rough fix in the room still passes, because its error bar is allowed for", async (t) => {

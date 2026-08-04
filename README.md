@@ -215,7 +215,7 @@ Two signals decide whether a mark is genuine, and each covers the other's weakne
 
 **Location proves the venue.** The professor's position is recorded when attendance opens, and every student's own fix is compared against it. This is the check that stops a mark being sent from a hostel room.
 
-Location is compulsory on both sides: attendance will not open without a fix, and a student who refuses the permission cannot mark themselves present.
+Location is asked for on both sides and used whenever it is available. It is not allowed to block a register, though: an app already installed on a phone may have no way to request the permission, and shutting those students — or their professor — out of attendance is a worse failure than a mark resting on Bluetooth alone. Every record stores which signals actually verified it, so a Bluetooth-only mark can be told apart from one both signals agreed on.
 
 Because indoor GPS is only accurate to tens of metres, each reading's own error bar is subtracted before judging, and the radius is deliberately wider than a room — `ATTENDANCE_GEOFENCE_METRES`, 150 m by default. That is not sloppiness: wrongly rejecting a student who is genuinely sitting in the lecture is a worse failure than admitting someone in the corridor, and Bluetooth is what excludes the corridor. A student whose Bluetooth reading looks marginal but whose location agrees is still marked present, which is how the back row gets counted.
 

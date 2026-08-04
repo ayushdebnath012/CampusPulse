@@ -1019,7 +1019,7 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.5.1",
+        version: "1.5.2",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
@@ -2519,15 +2519,12 @@ function createApp(options = {}) {
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
-        // The class's own position is what every student is measured against,
-        // so attendance cannot open without it.
+        // The class's own position is what students are measured against, but
+        // it cannot be insisted on: an already-installed app may be physically
+        // unable to supply one, and refusing to open attendance would leave a
+        // professor with no way to take the register at all. Without it the
+        // session simply falls back to Bluetooth-only proof.
         const sessionLocation = normalizeLocation(request.body.location);
-        if (!sessionLocation) {
-          return response.status(400).json({
-            error:
-              "Turn Location on and allow CampusPulse to use it — attendance is verified against where the class is being held",
-          });
-        }
         const result = await store.update((database) => {
           const courseId = String(request.body.courseId || "").trim();
           const course = requireCourse(database, request.user, courseId, "run");
@@ -3001,15 +2998,11 @@ function createApp(options = {}) {
           // building can fake. Location then confirms the student is at the
           // venue rather than relaying a token from elsewhere.
           //
-          // Location is required, so a missing or refused fix stops here rather
-          // than quietly downgrading to a Bluetooth-only check.
-          if (!studentLocation) {
-            const error = new Error(
-              "Turn Location on and allow CampusPulse to use it, then mark attendance again",
-            );
-            error.status = 400;
-            throw error;
-          }
+          // When either side cannot produce a fix the mark still stands on the
+          // Bluetooth proof alone. An app already installed on a phone may have
+          // no way to ask for the location permission, and locking those
+          // students out of attendance is a worse outcome than a mark resting
+          // on one signal. Which signals were used is recorded either way.
           const agreement = locationAgrees(
             session.location,
             studentLocation,
@@ -3080,7 +3073,10 @@ function createApp(options = {}) {
               ? Math.round(Number(request.body.bluetoothDistanceMeters))
               : null,
             locationMetres: agreement.verified ? agreement.distance : null,
-            locationAccuracy: Math.round(studentLocation.accuracy),
+            locationAccuracy: studentLocation ? Math.round(studentLocation.accuracy) : null,
+            // False when a fix was unavailable on either side, so a mark resting
+            // on Bluetooth alone can be told apart from one both signals agreed on.
+            locationVerified: agreement.verified,
           };
           return {
             courseId: session.courseId,

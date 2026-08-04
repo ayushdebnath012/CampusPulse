@@ -1,4 +1,4 @@
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.5.2";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -4606,17 +4606,17 @@ document.addEventListener("click", async event => {
     if (!canRunAttendance(selectedCourse())) return toast("Course-team attendance access required", "error");
     if (!backendConfigured()) return toast("Connect CampusPulse to its API first", "error");
     toast("Finding the classroom…");
+    // A fix makes the register stronger but must never prevent one being
+    // taken: an already-installed app may have no way to ask for the location
+    // permission, and a professor stuck at this step cannot teach the class.
     const classLocation = await currentLocation();
-    if (!classLocation) {
-      return toast(
-        "Turn Location on and allow CampusPulse to use it — students are verified against where this class is held",
-        "error"
-      );
-    }
     try {
       const result = await apiRequest("/api/attendance/sessions", {
         method: "POST",
-        body: { courseId: state.selectedCourseId, location: classLocation }
+        body: {
+          courseId: state.selectedCourseId,
+          ...(classLocation ? { location: classLocation } : {})
+        }
       });
       activeAttendance = result.attendance;
       state.backendAttendanceId = result.attendance.id;
@@ -4894,20 +4894,17 @@ document.addEventListener("click", async event => {
           "error"
         );
       }
+      // Bluetooth has already proved the room. A fix strengthens that, but a
+      // phone whose installed app cannot ask for the location permission must
+      // still be able to mark itself present.
       const location = await currentLocation();
-      if (!location) {
-        return toast(
-          "Turn Location on and allow CampusPulse to use it, then mark attendance again",
-          "error"
-        );
-      }
       await apiRequest(`/api/attendance/${sessionId}/check-in`, {
         method: "POST",
         body: {
           rollNumber,
           signals,
           code,
-          location,
+          ...(location ? { location } : {}),
           bluetoothDistanceMeters: beacon.distanceMeters,
         }
       });
