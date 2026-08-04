@@ -227,9 +227,33 @@ The API was rewritten to survive a whole hall signing in at once, which previous
 - Password hashing gets a wider thread pool, since libuv's default of four threads serialised sign-ins.
 - The client retries with backoff and a timeout, so a free-tier instance waking from sleep no longer surfaces as a bare failure.
 
-Measured locally with 300 concurrent students, sign-in went from 14.9 s to 4.7 s and bootstrap from 2.9 s to 1.6 s; against PostgreSQL over a network the gap is considerably larger, because the old code performed 300 sequential full-document reads and rewrites.
+Measured locally with 310 students taking a class end to end — sign-ups, sign-ins, the whole room marking attendance, then closing the register:
+
+| Step | 310 students |
+| --- | --- |
+| Sign-ups | 3.5 s, all succeeded |
+| Sign-ins | 4.5 s, all succeeded |
+| Concurrent check-ins | 1.3 s, **all 310 marks persisted** |
+| Closing the register | 53 ms |
+
+For comparison, the old code took 14.9 s for 310 sign-ins on the same machine. Against PostgreSQL over a network the gap is far wider, because it performed 310 sequential full-document reads and rewrites.
 
 Two things to be aware of on Render's free plan: the instance sleeps after 15 minutes idle and takes roughly a minute to wake, and its CPU is throttled. If a class reliably starts at a fixed time, keep the service warm or move to a paid instance.
+
+### Testing it on a real deployment
+
+`render.yaml` also defines `campuspulse-api-staging`, a throwaway copy on its own database. It sets `NODE_ENV=staging` and configures no email provider, so password sign-up works without an emailed code — which is what makes it possible to create a class of test accounts. Production deliberately cannot be put in that state: the bypass is gated on `NODE_ENV` not being `production`, so a live deployment always requires a real emailed code.
+
+Deploy that service once, then:
+
+```powershell
+$env:CAMPUSPULSE_API="https://campuspulse-api-staging.onrender.com"
+node scripts/load-test.mjs
+```
+
+It creates a professor, a course, 310 students, has them all mark attendance at once, reports timings, then deletes every account and the course. Cleanup runs even if a step fails, and everything it creates carries a unique tag so residue is identifiable. It refuses to run against the production host.
+
+Never point it at production, and never give the staging service the production database or the roster secret.
 
 ## If someone does not receive their code
 

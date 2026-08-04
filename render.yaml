@@ -29,9 +29,54 @@ services:
       - key: PROFESSOR_PROFILE_OVERRIDES_JSON
         sync: false
 
+  # A throwaway copy of the API for load testing, on its own database so no
+  # test account or attendance session can ever touch real student records.
+  #
+  # Two deliberate differences from production:
+  #   * NODE_ENV is not "production", and no email provider is configured, so
+  #     sign-up works without an emailed code. That is what makes it possible
+  #     to create a class of test accounts at all.
+  #   * No Firebase and no roster secret, so nothing real is reachable.
+  #
+  # Because of that, this service must never hold real data or be given the
+  # production database.
+  - type: web
+    name: campuspulse-api-staging
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    # Deployed on demand rather than on every push to main.
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: staging
+      - key: DATABASE_URL
+        fromDatabase:
+          name: campuspulse-staging-db
+          property: connectionString
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      # Left off on purpose: with no mailer and no dev code, password sign-up
+      # is open, which is the whole point of this service.
+      - key: ALLOW_DEV_VERIFICATION_CODE
+        value: "false"
+
 databases:
   - name: campuspulse-db
     plan: free
     region: singapore
     databaseName: campuspulse
     user: campuspulse
+
+  # Separate from production. Render's free tier may allow only one free
+  # database per account; if so, create this one on a paid plan for the
+  # duration of a test and remove it afterwards.
+  - name: campuspulse-staging-db
+    plan: free
+    region: singapore
+    databaseName: campuspulse_staging
+    user: campuspulse_staging
