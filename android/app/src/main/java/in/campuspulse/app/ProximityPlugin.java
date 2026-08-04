@@ -124,6 +124,31 @@ public class ProximityPlugin extends Plugin {
         return manager == null ? null : manager.getAdapter();
     }
 
+    /**
+     * Whether the radio is on.
+     *
+     * From Android 12 this reading needs BLUETOOTH_CONNECT. Without it the
+     * platform reports the radio as off even when it is plainly on, which is
+     * how "turn Bluetooth on" ends up in front of someone whose Bluetooth is
+     * already on. Callers must check {@link #missingConnectPermission()} first
+     * so they can say what is actually wrong.
+     */
+    private boolean bluetoothOn() {
+        BluetoothAdapter adapter = adapter();
+        if (adapter == null) return false;
+        try {
+            return adapter.isEnabled();
+        } catch (SecurityException error) {
+            return false;
+        }
+    }
+
+    private boolean missingConnectPermission() {
+        return isAndroid12OrLater()
+            && getPermissionState("advertise") != PermissionState.GRANTED
+            && getPermissionState("scan") != PermissionState.GRANTED;
+    }
+
     // Apps cannot silently flip the radio, but we can trigger the system's own
     // enable dialog so the professor/student only has to tap "Allow" once.
     private void ensureBluetoothOn(PluginCall call, Runnable action) {
@@ -132,8 +157,15 @@ public class ProximityPlugin extends Plugin {
             call.reject("This device does not support Bluetooth");
             return;
         }
-        if (adapter.isEnabled()) {
+        if (bluetoothOn()) {
             action.run();
+            return;
+        }
+        if (missingConnectPermission()) {
+            // The radio may well be on; we simply are not allowed to look.
+            call.reject(
+                "Allow CampusPulse the Nearby devices permission, then try again"
+            );
             return;
         }
         pendingBluetoothAction = action;
@@ -149,12 +181,27 @@ public class ProximityPlugin extends Plugin {
         Runnable action = pendingBluetoothAction;
         pendingBluetoothAction = null;
         if (call == null) return;
-        BluetoothAdapter adapter = adapter();
-        if (adapter != null && adapter.isEnabled() && action != null) {
-            action.run();
-        } else {
+        if (action == null) {
             call.reject("Turn Bluetooth on to continue");
+            return;
         }
+        // Enabling is asynchronous: the dialog returns as soon as it is tapped,
+        // while the adapter is still in STATE_TURNING_ON. Checking immediately
+        // reports Bluetooth as off even though the user just switched it on, so
+        // give it a moment to settle before deciding.
+        awaitBluetoothOn(call, action, 10);
+    }
+
+    private void awaitBluetoothOn(PluginCall call, Runnable action, int attemptsLeft) {
+        if (bluetoothOn()) {
+            action.run();
+            return;
+        }
+        if (attemptsLeft <= 0) {
+            call.reject("Turn Bluetooth on to continue");
+            return;
+        }
+        handler.postDelayed(() -> awaitBluetoothOn(call, action, attemptsLeft - 1), 250);
     }
 
     private boolean isAndroid12OrLater() {
@@ -187,7 +234,7 @@ public class ProximityPlugin extends Plugin {
     public void isSupported(PluginCall call) {
         BluetoothAdapter adapter = adapter();
         JSObject result = new JSObject();
-        boolean enabled = adapter != null && adapter.isEnabled();
+        boolean enabled = bluetoothOn();
         result.put("available", adapter != null);
         result.put("enabled", enabled);
         result.put(
@@ -233,7 +280,7 @@ public class ProximityPlugin extends Plugin {
             call.reject("This device cannot broadcast over Bluetooth LE");
             return;
         }
-        if (!adapter.isEnabled()) {
+        if (!bluetoothOn()) {
             ensureBluetoothOn(call, () -> continueAdvertising(call, token));
             return;
         }
@@ -242,7 +289,7 @@ public class ProximityPlugin extends Plugin {
 
     private void continueAdvertising(PluginCall call, String token) {
         BluetoothAdapter adapter = adapter();
-        if (adapter == null || !adapter.isEnabled()) {
+        if (adapter == null || !bluetoothOn()) {
             call.reject("Turn Bluetooth on to broadcast attendance");
             return;
         }
@@ -369,7 +416,7 @@ public class ProximityPlugin extends Plugin {
             );
             return;
         }
-        if (!adapter.isEnabled()) {
+        if (!bluetoothOn()) {
             ensureBluetoothOn(call, () -> continueScanning(call));
             return;
         }
@@ -389,7 +436,7 @@ public class ProximityPlugin extends Plugin {
 
     private void continueScanning(PluginCall call) {
         BluetoothAdapter adapter = adapter();
-        if (adapter == null || !adapter.isEnabled()) {
+        if (adapter == null || !bluetoothOn()) {
             call.reject("Turn Bluetooth on to mark attendance");
             return;
         }

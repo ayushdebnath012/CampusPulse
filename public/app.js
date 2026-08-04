@@ -1,4 +1,4 @@
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.5.3";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -1457,6 +1457,31 @@ function proximityPlugin() {
 
 // The teaching device broadcasts the rotating session token so students in the
 // room can pick it up over Bluetooth without anyone reading a code aloud.
+// Says what is actually wrong when the beacon will not start. The plugin's own
+// message can be misleading: from Android 12, reading whether the radio is on
+// needs the Nearby devices permission, so a phone with Bluetooth plainly on is
+// reported as off. Asking the plugin what it can see tells the two apart.
+async function beaconFailureReason(fallback) {
+  const plugin = proximityPlugin();
+  if (!plugin?.isSupported) return fallback;
+  try {
+    const support = await plugin.isSupported();
+    if (support?.available === false) {
+      return "This phone has no Bluetooth, so it cannot broadcast attendance.";
+    }
+    if (support?.enabled === false) {
+      // Either genuinely off, or the permission is missing and we cannot tell.
+      return "Turn Bluetooth on, and allow CampusPulse the Nearby devices permission when asked. If Bluetooth is already on, the permission is what is missing — grant it in Settings › Apps › CampusPulse › Permissions › Nearby devices.";
+    }
+    if (support?.canAdvertise === false) {
+      return "This phone cannot broadcast over Bluetooth LE. Run attendance from another device, or mark students from the list below.";
+    }
+  } catch {
+    // The diagnostic itself failed; the original message is all we have.
+  }
+  return fallback;
+}
+
 async function startAttendanceBeacon(token) {
   const plugin = proximityPlugin();
   if (!plugin || !token) return false;
@@ -1467,7 +1492,9 @@ async function startAttendanceBeacon(token) {
     return true;
   } catch (error) {
     beaconToken = "";
-    beaconError = error?.message || "Could not start broadcasting";
+    beaconError = await beaconFailureReason(
+      error?.message || "Could not start broadcasting"
+    );
     return false;
   }
 }
@@ -2273,6 +2300,7 @@ function renderLiveAttendance() {
         </div>` : proximityPlugin() ? (beaconError ? `<div class="proximity-code no-ble">
           <div><span>Bluetooth not available</span><strong>${icon("i-close")} Not broadcasting</strong></div>
           <p>${escapeHtml(beaconError)}</p>
+          <button class="btn btn-soft" type="button" data-action="retry-beacon">Try broadcasting again</button>
         </div>` : `<div class="proximity-code no-ble">
           <div><span>Connecting</span><strong>${icon("i-clock")} Starting broadcast…</strong></div>
           <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
@@ -4601,6 +4629,19 @@ document.addEventListener("click", async event => {
     applyAttendanceSnapshot(null);
     persist();
     return renderAttendanceSetup();
+  }
+  if (action === "retry-beacon") {
+    // Granting the permission or switching the radio on happens outside the
+    // app, so there has to be a way back in without restarting the session.
+    if (!proximityCode?.code) return toast("No active session to broadcast", "error");
+    beaconError = "";
+    renderLiveAttendance();
+    const started = await startAttendanceBeacon(proximityCode.code);
+    renderLiveAttendance();
+    return toast(
+      started ? "Broadcasting to the room" : beaconError || "Still not broadcasting",
+      started ? "success" : "error"
+    );
   }
   if (action === "start-scan") {
     if (!canRunAttendance(selectedCourse())) return toast("Course-team attendance access required", "error");
