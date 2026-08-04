@@ -46,4 +46,30 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
     }
 
+    // MARK: - Push notifications
+    //
+    // Apple hands the device token to the app delegate, and the push plugin
+    // reads it from here. Without these two the plugin's registration promise
+    // never settles and the phone is never reachable while the app is closed.
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        NotificationCenter.default.post(
+            name: .capacitorDidRegisterForRemoteNotifications,
+            object: deviceToken
+        )
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        NotificationCenter.default.post(
+            name: .capacitorDidFailToRegisterForRemoteNotifications,
+            object: error
+        )
+    }
+
 }

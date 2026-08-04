@@ -204,6 +204,71 @@ function notificationData(value) {
 // Inbox records are authoritative even when a phone is offline or Firebase is
 // temporarily unavailable. Device deliveries are returned separately so they
 // can happen after the database transaction has committed.
+/** The devices a signed-in user can currently be reached on. */
+function reachableDevices(database, userId) {
+  return database.pushDevices
+    .filter(
+      (device) =>
+        device.userId === userId &&
+        device.sessionTokenHash &&
+        database.sessions.some(
+          (session) =>
+            session.userId === userId &&
+            session.tokenHash === device.sessionTokenHash &&
+            Date.parse(session.expiresAt) > Date.now(),
+        ),
+    )
+    .map(({ token, platform }) => ({ token, platform }));
+}
+
+/** Trims a user's inbox without losing the useful recent history. */
+function trimInbox(database, userIds) {
+  for (const userId of userIds) {
+    const own = database.notifications.filter((item) => item.userId === userId);
+    if (own.length <= 500) continue;
+    const obsolete = new Set(own.slice(0, own.length - 500).map((item) => item.id));
+    database.notifications = database.notifications.filter(
+      (item) => !obsolete.has(item.id),
+    );
+  }
+}
+
+/**
+ * Notifications whose wording differs per recipient.
+ *
+ * "You were marked present" is only meaningful to the one student it is about,
+ * so unlike a course announcement each entry carries its own title and body.
+ */
+function addPersonalNotifications(database, entries) {
+  const users = new Set(database.users.map((user) => user.id));
+  const createdAt = new Date().toISOString();
+  const deliveries = [];
+  const touched = new Set();
+
+  for (const entry of entries) {
+    const userId = String(entry.userId || "");
+    if (!users.has(userId)) continue;
+    const notification = {
+      id: `notification-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      userId,
+      type: String(entry.type || "notice").slice(0, 40),
+      title: String(entry.title || "CampusPulse").slice(0, 120),
+      body: String(entry.body || "").slice(0, 500),
+      courseId: String(entry.courseId || ""),
+      route: String(entry.route || "dashboard").slice(0, 80),
+      data: notificationData(entry.data || {}),
+      createdAt,
+      readAt: null,
+    };
+    database.notifications.push(notification);
+    touched.add(userId);
+    deliveries.push({ notification, devices: reachableDevices(database, userId) });
+  }
+
+  trimInbox(database, touched);
+  return deliveries;
+}
+
 function addCourseNotifications(
   database,
   { courseId, actorId, type, title, body = "", route, data = {}, studentsOnly = false },
@@ -242,33 +307,10 @@ function addCourseNotifications(
       readAt: null,
     };
     database.notifications.push(notification);
-    deliveries.push({
-      notification,
-      devices: database.pushDevices
-        .filter(
-          (device) =>
-            device.userId === userId &&
-            device.sessionTokenHash &&
-            database.sessions.some(
-              (session) =>
-                session.userId === userId &&
-                session.tokenHash === device.sessionTokenHash &&
-                Date.parse(session.expiresAt) > Date.now(),
-            ),
-        )
-        .map(({ token, platform }) => ({ token, platform })),
-    });
+    deliveries.push({ notification, devices: reachableDevices(database, userId) });
   }
 
-  // Bound inbox growth without losing the useful recent history.
-  for (const userId of recipientIds) {
-    const own = database.notifications.filter((item) => item.userId === userId);
-    if (own.length <= 500) continue;
-    const obsolete = new Set(own.slice(0, own.length - 500).map((item) => item.id));
-    database.notifications = database.notifications.filter(
-      (item) => !obsolete.has(item.id),
-    );
-  }
+  trimInbox(database, recipientIds);
   return deliveries;
 }
 
@@ -2944,10 +2986,11 @@ function createApp(options = {}) {
             error.status = 404;
             throw error;
           }
-          requireCourse(database, request.user, session.courseId, "run");
+          const course = requireCourse(database, request.user, session.courseId, "run");
           const recordByRoll = new Map(
             session.records.map((record) => [record.rollNumber, record]),
           );
+          const changed = [];
           for (const update of updates) {
             const rollNumber = String(update.rollNumber || "").trim().toUpperCase();
             const record = recordByRoll.get(rollNumber);
@@ -2956,13 +2999,50 @@ function createApp(options = {}) {
               error.status = 400;
               throw error;
             }
-            record.present = update.present === true;
+            const present = update.present === true;
+            // Only a real change is worth telling a student about; re-saving
+            // the same value must not spam them.
+            if (record.present !== present) changed.push({ rollNumber, present });
+            record.present = present;
             record.markedAt = new Date().toISOString();
             record.markedBy = request.user.id;
           }
-          return session;
+
+          // The course team overrode a student's mark, so that student is told.
+          const label = course.courseCode || course.name || "your class";
+          const enrolmentByRoll = new Map(
+            database.enrollments
+              .filter(
+                (enrollment) =>
+                  enrollment.courseId === session.courseId &&
+                  enrollment.courseRole === "student",
+              )
+              .map((enrollment) => [enrollment.rollNumber, enrollment]),
+          );
+          const entries = changed
+            .map(({ rollNumber, present }) => {
+              const enrollment = enrolmentByRoll.get(rollNumber);
+              if (!enrollment || enrollment.userId === request.user.id) return null;
+              return {
+                userId: enrollment.userId,
+                type: "attendance",
+                title: present
+                  ? `Marked present in ${label}`
+                  : `Marked absent in ${label}`,
+                body: present
+                  ? `${request.user.name} recorded you as present.`
+                  : `${request.user.name} recorded you as absent.`,
+                courseId: session.courseId,
+                route: "attendance",
+                data: { attendanceId: session.id, present: present ? "1" : "0" },
+              };
+            })
+            .filter(Boolean);
+
+          return { session, deliveries: addPersonalNotifications(database, entries) };
         });
-        response.json({ attendance: publicAttendance(attendance) });
+        await deliverNotifications(attendance.deliveries);
+        response.json({ attendance: publicAttendance(attendance.session) });
       } catch (error) {
         next(error);
       }
@@ -2984,13 +3064,48 @@ function createApp(options = {}) {
             error.status = 409;
             throw error;
           }
-          requireCourse(database, request.user, session.courseId, "run");
+          const course = requireCourse(database, request.user, session.courseId, "run");
           session.status = "closed";
           session.closedAt = new Date().toISOString();
           session.closedBy = request.user.id;
-          return session;
+
+          // Closing the register is the moment a student's own result becomes
+          // final, so each one is told what it was rather than having to open
+          // the app and look. This is also the only notice an absent student
+          // gets, which is the one that actually matters to them.
+          const label = course.courseCode || course.name || "your class";
+          const entries = database.enrollments
+            .filter(
+              (enrollment) =>
+                enrollment.courseId === session.courseId &&
+                enrollment.courseRole === "student" &&
+                enrollment.userId !== request.user.id,
+            )
+            .map((enrollment) => {
+              const record = (session.records || []).find(
+                (item) => item.rollNumber === enrollment.rollNumber,
+              );
+              if (!record) return null;
+              return {
+                userId: enrollment.userId,
+                type: "attendance",
+                title: record.present
+                  ? `Marked present in ${label}`
+                  : `Marked absent in ${label}`,
+                body: record.present
+                  ? "Attendance has closed and you were recorded present."
+                  : "Attendance has closed and you were recorded absent. Speak to your professor if that is wrong.",
+                courseId: session.courseId,
+                route: "attendance",
+                data: { attendanceId: session.id, present: record.present ? "1" : "0" },
+              };
+            })
+            .filter(Boolean);
+
+          return { session, deliveries: addPersonalNotifications(database, entries) };
         });
-        response.json({ attendance: publicAttendance(attendance) });
+        await deliverNotifications(attendance.deliveries);
+        response.json({ attendance: publicAttendance(attendance.session) });
       } catch (error) {
         next(error);
       }
