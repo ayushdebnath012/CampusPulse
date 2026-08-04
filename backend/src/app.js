@@ -14,6 +14,7 @@ const {
 } = require("./security");
 
 const ROLES = new Set(["faculty", "ta", "student"]);
+const FIVE_MINUTES = 5 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PUSH_DEVICES_PER_USER = 5;
@@ -23,14 +24,33 @@ function cleanEmail(value = "") {
   return String(value).trim().toLowerCase();
 }
 
-function isCampusEmail(email) {
-  const domain = cleanEmail(email).split("@")[1] || "";
-  return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
+/**
+ * Any working mailbox is accepted, for every role.
+ *
+ * Sign-up used to be restricted to iitkgp.ac.in addresses, which locked out
+ * visiting staff, exchange students, and anyone whose institute account was not
+ * yet issued. Course access is controlled by the private join codes, not by the
+ * shape of an address, so the domain check bought less than it cost.
+ */
+function isValidEmail(email) {
+  const value = cleanEmail(email);
+  if (value.length < 6 || value.length > 254) return false;
+  const [local, domain, extraAddressPart] = value.split("@");
+  if (extraAddressPart !== undefined) return false;
+  if (!/^[a-z0-9][a-z0-9._%+-]*$/.test(local || "")) return false;
+  if (local.includes("..") || local.endsWith(".")) return false;
+  // At least one dot, and every label a plausible DNS label.
+  const labels = String(domain || "").split(".");
+  if (labels.length < 2) return false;
+  if (!/^[a-z]{2,63}$/.test(labels[labels.length - 1])) return false;
+  return labels.every((label) =>
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label),
+  );
 }
 
-// A professor's address identifies their department, for example
-// dkpra@mech.iitkgp.ac.in. The institute root and student subdomain are not
-// professor addresses.
+// Retained so existing course-owner mappings and any caller that still cares
+// can recognise a departmental IIT KGP address, for example
+// dkpra@mech.iitkgp.ac.in. It no longer gates who may sign up.
 function isFacultyEmail(email) {
   const [local, domain, extraAddressPart] = cleanEmail(email).split("@");
   const [department, institute, academic, country, extraDomainPart] = String(
@@ -512,6 +532,65 @@ const WEEKDAYS = [
   "Sunday",
 ];
 
+/** Names a scheduled class for a picker: "09:00 Introduction" or "09:00". */
+function classLabelFor(scheduled) {
+  if (!scheduled) return "";
+  const time = String(scheduled.start || "").trim();
+  const topic = String(scheduled.topic || "").trim();
+  return [time, topic].filter(Boolean).join(" · ").slice(0, 140);
+}
+
+/** Minutes past midnight for a timetable time such as "10:00" or "2:30 PM". */
+function minutesIntoDay(value) {
+  const match = String(value || "")
+    .trim()
+    .match(/^(\d{1,2})[:.]?(\d{2})?\s*([ap]\.?m\.?)?$/i);
+  if (!match) return null;
+  let hours = Number(match[1]);
+  const minutes = Number(match[2] || 0);
+  const meridiem = (match[3] || "").toLowerCase();
+  if (hours > 23 || minutes > 59) return null;
+  if (meridiem.startsWith("p") && hours < 12) hours += 12;
+  if (meridiem.startsWith("a") && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+}
+
+/**
+ * Which of today's scheduled classes an attendance session belongs to.
+ *
+ * Attendance is per class, not per day, so a course meeting twice on a Tuesday
+ * gets two separate registers. When the client does not name a class, the one
+ * nearest to now is used, which is what a professor starting attendance in the
+ * room actually means.
+ */
+function scheduledClassNow(database, courseId, now = new Date()) {
+  const today = WEEKDAYS[(now.getDay() + 6) % 7];
+  const candidates = database.schedule.filter(
+    (item) => item.courseId === courseId && item.day === today,
+  );
+  if (!candidates.length) return null;
+  if (candidates.length === 1) return candidates[0];
+
+  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  let best = null;
+  let bestDistance = Infinity;
+  candidates.forEach((entry) => {
+    const start = minutesIntoDay(entry.start);
+    if (start === null) return;
+    const end = minutesIntoDay(entry.end);
+    // Inside the slot wins outright; otherwise the closest start time does.
+    const distance =
+      end !== null && currentMinutes >= start && currentMinutes <= end
+        ? 0
+        : Math.abs(currentMinutes - start);
+    if (distance < bestDistance) {
+      best = entry;
+      bestDistance = distance;
+    }
+  });
+  return best || candidates[0];
+}
+
 function normalizeSchedule(classes, courseId, existingEntries = []) {
   if (!Array.isArray(classes) || classes.length > 60) {
     const error = new Error("Add up to 60 weekly classes");
@@ -807,11 +886,13 @@ function createApp(options = {}) {
       response.json({
         ok: true,
         service: "campuspulse-api",
-        version: "1.4.2",
+        version: "1.5.0",
         // Sign-up needs an emailed code whenever one can be sent.
         otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
         emailDelivery:
           mailer.provider || (mailer.configured ? "configured" : "disabled"),
+        // Makes "nobody got the code" answerable without server shell access.
+        ...(mailer.stats ? { emailRuntime: { ...mailer.stats } } : {}),
         pushDelivery: pushNotifier.configured
           ? pushNotifier.provider || "configured"
           : pushNotifier.status || "disabled",
@@ -851,13 +932,8 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Enter a valid full name" });
       if (department.length < 2)
         return response.status(400).json({ error: "Enter your department name" });
-      if (!isCampusEmail(email))
-        return response.status(400).json({ error: "Use an IIT KGP institutional email" });
-      if (role === "faculty" && !isFacultyEmail(email))
-        return response.status(400).json({
-          error:
-            "Professor accounts require name@department.iitkgp.ac.in (for example, dkpra@mech.iitkgp.ac.in)",
-        });
+      if (!isValidEmail(email))
+        return response.status(400).json({ error: "Enter a valid email address" });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
 
@@ -945,16 +1021,10 @@ function createApp(options = {}) {
         return response.status(400).json({ error: "Enter a valid full name" });
       if (department.length < 2)
         return response.status(400).json({ error: "Enter your department name" });
-      if (!isCampusEmail(email))
-        return response.status(400).json({ error: "Use an IIT KGP institutional email" });
+      if (!isValidEmail(email))
+        return response.status(400).json({ error: "Enter a valid email address" });
       if (password.length < 8 || password.length > 128)
         return response.status(400).json({ error: "Password must contain 8–128 characters" });
-
-      if (role === "faculty" && !isFacultyEmail(email))
-        return response.status(400).json({
-          error:
-            "Professor accounts require name@department.iitkgp.ac.in (for example, dkpra@mech.iitkgp.ac.in)",
-        });
 
       // The same details the account will carry once the code is confirmed.
       const phone = String(request.body.phone || "").trim();
@@ -2133,7 +2203,15 @@ function createApp(options = {}) {
           return response.status(404).json({ error: "Course material not found" });
         }
         requireCourse(database, request.user, material.courseId);
-        const data = Buffer.from(material.dataBase64, "base64");
+        // Shared reads no longer carry file bytes, so the stored blob is
+        // fetched only here, for the one material actually being downloaded.
+        const bytes =
+          material.dataBase64 ??
+          (store.readMaterialBlob ? await store.readMaterialBlob(material.id) : null);
+        if (!bytes) {
+          return response.status(404).json({ error: "Course material is unavailable" });
+        }
+        const data = Buffer.from(bytes, "base64");
         const fallbackName = material.fileName
           .replace(/[^\x20-\x7e]/g, "_")
           .replace(/["\\]/g, "_");
@@ -2330,28 +2408,53 @@ function createApp(options = {}) {
             error.status = 409;
             throw error;
           }
-          const scheduleId = String(request.body.scheduleId || "").trim() || null;
+          const requestedScheduleId = String(request.body.scheduleId || "").trim();
           if (
-            scheduleId &&
+            requestedScheduleId &&
             !database.schedule.some(
-              (item) => item.id === scheduleId && item.courseId === courseId,
+              (item) => item.id === requestedScheduleId && item.courseId === courseId,
             )
           ) {
             const error = new Error("Schedule does not belong to this course");
             error.status = 400;
             throw error;
           }
-          // Only one session per course per calendar day.
+          // Attendance belongs to a class, not to a date. A course that meets
+          // twice in a day takes it twice, and every class starts from a blank
+          // register rather than inheriting the last one. When the client does
+          // not name a class, today's nearest one stands in, so sessions stay
+          // keyed to a class even from the one-tap "start attendance" button.
+          const scheduleId =
+            requestedScheduleId ||
+            scheduledClassNow(database, courseId)?.id ||
+            null;
+
           const today = new Date().toISOString().slice(0, 10);
-          const existingToday = database.attendanceSessions.find(
+          const heldToday = database.attendanceSessions.filter(
             (item) =>
               item.courseId === courseId &&
               item.startedAt &&
               item.startedAt.slice(0, 10) === today,
           );
-          if (existingToday) {
+          // A repeat of the same class today is a double-tap, not a second
+          // class. Two *different* classes are two registers and both go ahead,
+          // however soon after each other they start.
+          const sameClass =
+            scheduleId && heldToday.some((item) => item.scheduleId === scheduleId);
+          // When either side has no class attached — an unscheduled class, or a
+          // session saved before attendance was tied to a class — there is
+          // nothing to compare, so only timing can tell a double-tap from a
+          // genuine second class.
+          const justOpened = heldToday.some(
+            (item) =>
+              (!item.scheduleId || !scheduleId) &&
+              Date.now() - Date.parse(item.startedAt) < FIVE_MINUTES,
+          );
+          if (sameClass || justOpened) {
             const error = new Error(
-              "Attendance was already taken for this course today. Reopen the previous session to add missed students.",
+              sameClass
+                ? "Attendance was already taken for this class today. Reopen that session to add missed students."
+                : "Attendance for this course was opened moments ago. Reopen that session to add missed students.",
             );
             error.status = 409;
             throw error;
@@ -2417,6 +2520,9 @@ function createApp(options = {}) {
         const accessibleIds = new Set(
           accessibleCourses(data, request.user).map((course) => course.id),
         );
+        // Which class a register belongs to, so a course meeting twice in a
+        // day is not two identical-looking entries in the history dropdown.
+        const classById = new Map(data.schedule.map((item) => [item.id, item]));
         const sessions = data.attendanceSessions
           .filter(
             (item) =>
@@ -2425,6 +2531,7 @@ function createApp(options = {}) {
               item.status === "closed",
           )
           .map((item) => ({
+            classLabel: classLabelFor(classById.get(item.scheduleId)),
             id: item.id,
             courseId: item.courseId,
             scheduleId: item.scheduleId,
@@ -2458,9 +2565,16 @@ function createApp(options = {}) {
             accessibleIds.has(item.courseId) &&
             (!courseId || item.courseId === courseId),
         );
+        // An open session is the live one. Otherwise only today's counts as
+        // current: falling back to the newest session of any age made the app
+        // open on yesterday's register, which then looked like today's class
+        // had already been taken. Older sessions are reached through history.
+        const today = new Date().toISOString().slice(0, 10);
         const attendance =
           [...sessions].reverse().find((item) => item.status === "open") ||
-          [...sessions].reverse().find(Boolean);
+          [...sessions]
+            .reverse()
+            .find((item) => item.startedAt && item.startedAt.slice(0, 10) === today);
         response.json({ attendance: publicAttendance(attendance) || null });
       } catch (error) {
         next(error);
@@ -3492,7 +3606,10 @@ function createApp(options = {}) {
     // is reported rather than hidden behind a generic failure.
     if (error.deliveryFailed) {
       console.error(error);
-      return response.status(502).json({ error: error.message });
+      // 424 rather than 502: the mailer already retried, so this is a settled
+      // upstream failure. A 502 would tell the client the server never ran the
+      // request and invite it to send the whole sign-up again.
+      return response.status(424).json({ error: error.message });
     }
     const status = error.status || 500;
     if (status >= 500) console.error(error);
@@ -3504,4 +3621,4 @@ function createApp(options = {}) {
   return { app, store };
 }
 
-module.exports = { createApp, isCampusEmail };
+module.exports = { createApp, isValidEmail, isFacultyEmail };

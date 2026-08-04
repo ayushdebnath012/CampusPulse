@@ -2532,7 +2532,7 @@ test("a student sees their own attendance record and their own quiz answers", as
   assert.equal(denied.response.status, 403);
 });
 
-test("professors require a department-subdomain address, including dotted names", async (t) => {
+test("any working email address may sign up, in every role", async (t) => {
   const overrideEmail = "profile.override@mech.iitkgp.ac.in";
   const testServer = await createTestServer({
     env: {
@@ -2576,50 +2576,58 @@ test("professors require a department-subdomain address, including dotted names"
   assert.equal(storedDepartmentProfessor.phone, "+91 90000 00000");
   assert.equal(storedDepartmentProfessor.department, "Mechanical Engineering");
 
-  const plainProfessor = await request(testServer.baseUrl, "/api/auth/signup/request", {
-    method: "POST",
-    body: {
-      role: "faculty",
-      name: "Institute Professor",
-      department: "Mechanical Engineering",
-      email: "someone@iitkgp.ac.in",
-      password: "professor-password",
-      phone: "9876543210",
-    },
-  });
-  assert.equal(plainProfessor.response.status, 400);
-  assert.match(plainProfessor.body.error, /name@department\.iitkgp\.ac\.in/i);
+  // Addresses that used to be turned away are now accepted for every role:
+  // the institute root, the student subdomain, and an outside provider.
+  const accepted = [
+    { role: "faculty", email: "someone@iitkgp.ac.in" },
+    { role: "faculty", email: "visiting.lecturer@gmail.com" },
+    { role: "faculty", email: "guest@kgpian.iitkgp.ac.in" },
+    { role: "ta", email: "assistant@outlook.com" },
+    { role: "student", email: "exchange.student@gmail.com" },
+  ];
+  for (const [index, entry] of accepted.entries()) {
+    const attempt = await request(testServer.baseUrl, "/api/auth/signup/request", {
+      method: "POST",
+      body: {
+        role: entry.role,
+        name: `Signing Up ${index}`,
+        department: "Mechanical Engineering",
+        email: entry.email,
+        password: "a-good-password",
+        phone: "9876543210",
+        ...(entry.role === "faculty"
+          ? {}
+          : { rollNumber: `24OPEN${index}`, hall: "Nehru Hall" }),
+      },
+    });
+    assert.equal(
+      attempt.response.status,
+      202,
+      `${entry.role} <${entry.email}> should be allowed to sign up, got ${attempt.body.error}`,
+    );
+  }
 
-  // A student address may not register as faculty.
-  const studentAsProfessor = await request(testServer.baseUrl, "/api/auth/signup/request", {
-    method: "POST",
-    body: {
-      role: "faculty",
-      name: "Not A Professor",
-      department: "Mechanical Engineering",
-      email: "student@kgpian.iitkgp.ac.in",
-      password: "professor-password",
-      phone: "9876543210",
-    },
-  });
-  assert.equal(studentAsProfessor.response.status, 400);
-  assert.match(studentAsProfessor.body.error, /name@department\.iitkgp\.ac\.in/i);
-
-  const outsider = await request(testServer.baseUrl, "/api/auth/signup/request", {
-    method: "POST",
-    body: {
-      role: "faculty",
-      name: "Outsider",
-      department: "Mechanical Engineering",
-      email: "someone@example.com",
-      password: "professor-password",
-      phone: "9876543210",
-    },
-  });
-  assert.equal(outsider.response.status, 400);
+  // A malformed address is still refused; only the domain rule was dropped.
+  for (const email of ["not-an-email", "missing@tld", "two@@at.example.com"]) {
+    const rejected = await request(testServer.baseUrl, "/api/auth/signup/request", {
+      method: "POST",
+      body: {
+        role: "student",
+        name: "Malformed Address",
+        department: "Mechanical Engineering",
+        email,
+        password: "a-good-password",
+        phone: "9876543210",
+        rollNumber: "24BAD001",
+        hall: "Nehru Hall",
+      },
+    });
+    assert.equal(rejected.response.status, 400, `${email} should be refused`);
+    assert.match(rejected.body.error, /valid email/i);
+  }
 });
 
-test("password-only signup applies the same professor email rule", async (t) => {
+test("password-only signup accepts any valid address too", async (t) => {
   const testServer = await createTestServer({
     env: { NODE_ENV: "production", ALLOW_DEV_VERIFICATION_CODE: "false" },
   });
@@ -2635,25 +2643,30 @@ test("password-only signup applies the same professor email rule", async (t) => 
     phone: "9876543210",
   };
 
-  const rootAddress = await request(testServer.baseUrl, "/api/auth/signup", {
-    method: "POST",
-    body: { ...body, email: "professor@iitkgp.ac.in" },
-  });
-  assert.equal(rootAddress.response.status, 400);
-  assert.match(rootAddress.body.error, /name@department\.iitkgp\.ac\.in/i);
+  for (const email of [
+    "professor@iitkgp.ac.in",
+    "professor@kgpian.iitkgp.ac.in",
+    "first.last@mech.iitkgp.ac.in",
+    "visiting.professor@gmail.com",
+  ]) {
+    const created = await request(testServer.baseUrl, "/api/auth/signup", {
+      method: "POST",
+      body: { ...body, email },
+    });
+    assert.equal(
+      created.response.status,
+      201,
+      `${email} should create an account, got ${created.body.error}`,
+    );
+    assert.equal(created.body.user.role, "faculty");
+  }
 
-  const studentAddress = await request(testServer.baseUrl, "/api/auth/signup", {
+  const malformed = await request(testServer.baseUrl, "/api/auth/signup", {
     method: "POST",
-    body: { ...body, email: "professor@kgpian.iitkgp.ac.in" },
+    body: { ...body, email: "professor@localhost" },
   });
-  assert.equal(studentAddress.response.status, 400);
-
-  const departmentAddress = await request(testServer.baseUrl, "/api/auth/signup", {
-    method: "POST",
-    body: { ...body, email: "first.last@mech.iitkgp.ac.in" },
-  });
-  assert.equal(departmentAddress.response.status, 201);
-  assert.equal(departmentAddress.body.user.role, "faculty");
+  assert.equal(malformed.response.status, 400);
+  assert.match(malformed.body.error, /valid email/i);
 });
 
 test("passwords can be changed while signed in and reset by email", async (t) => {

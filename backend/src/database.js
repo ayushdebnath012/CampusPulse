@@ -103,16 +103,19 @@ function normalizeData(value, env = process.env) {
     ]),
   );
   normalized.courses = normalizeCourseJoinCodes(normalized.courses);
+  // Indexed once: a linear scan per enrollment made normalization quadratic,
+  // and normalization runs on every load of the shared document.
+  const usersById = new Map(normalized.users.map((user) => [user.id, user]));
   normalized.enrollments = normalized.enrollments
     .map((enrollment) => {
-      const user = normalized.users.find((item) => item.id === enrollment.userId);
+      const user = usersById.get(enrollment.userId);
       const courseRole =
         enrollment.courseRole ||
         (user?.role === "student" || user?.role === "ta" ? user.role : null);
       return courseRole ? { ...enrollment, courseRole } : null;
     })
     .filter(Boolean);
-  const userIds = new Set(normalized.users.map((user) => user.id));
+  const userIds = new Set(usersById.keys());
   normalized.notifications = normalized.notifications
     .filter(
       (notification) =>
@@ -164,18 +167,30 @@ function normalizeData(value, env = process.env) {
     });
   });
   normalized.pushDevices = [...devicesByToken.values()];
+  // Built only if some session still needs the one-time legacy migration, so
+  // an already-migrated database pays nothing for it.
+  let rosterByCourse = null;
+  function rosterFor(courseId) {
+    if (!rosterByCourse) {
+      rosterByCourse = new Map();
+      normalized.courseStudents.forEach((student) => {
+        const group = rosterByCourse.get(student.courseId);
+        if (group) group.push(student);
+        else rosterByCourse.set(student.courseId, [student]);
+      });
+    }
+    return rosterByCourse.get(courseId) || [];
+  }
   normalized.attendanceSessions = normalized.attendanceSessions.map((session) => {
     if (Array.isArray(session.records) && session.records.length) return session;
-    const roster = normalized.courseStudents.filter(
-      (student) => student.courseId === session.courseId,
-    );
+    const roster = rosterFor(session.courseId);
     if (!roster.length) {
       const { records: _unusableRecords, ...unmigratedSession } = session;
       return unmigratedSession;
     }
     const legacyPresentByName = new Map(
       (Array.isArray(session.present) ? session.present : []).map((entry) => {
-        const user = normalized.users.find((item) => item.id === entry.userId);
+        const user = usersById.get(entry.userId);
         return [String(user?.name || "").trim().toLowerCase(), entry];
       }),
     );
@@ -196,7 +211,89 @@ function normalizeData(value, env = process.env) {
 }
 
 function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+  // Measurably cheaper than a JSON round-trip on the whole shared document,
+  // which every request clones.
+  return value === undefined ? value : structuredClone(value);
+}
+
+/**
+ * Turns a burst of concurrent writes into one load-mutate-save cycle.
+ *
+ * Every mutator used to pay for its own full read and full rewrite of the
+ * shared document while everyone else waited, so a room signing in together
+ * queued up until requests timed out. Mutators waiting at the same moment are
+ * now applied to one loaded copy and persisted once.
+ *
+ * `runCycle(apply)` loads the document, awaits `apply(data)`, and persists it.
+ * If any mutator in a batch throws, the whole cycle is discarded and the batch
+ * is replayed one at a time, so a failing mutator still cannot commit a partial
+ * change or take its neighbours down with it.
+ */
+function createBatchingUpdater(runCycle, options = {}) {
+  const maxBatch = Number(options.maxBatch || 64);
+  let pending = [];
+  let running = false;
+
+  async function runBatch(batch) {
+    const results = new Array(batch.length);
+    await runCycle(async (data) => {
+      for (let index = 0; index < batch.length; index += 1) {
+        results[index] = await batch[index].mutator(data);
+      }
+      return null;
+    });
+    batch.forEach((entry, index) => entry.resolve(clone(results[index])));
+  }
+
+  async function runIndividually(batch) {
+    for (const entry of batch) {
+      try {
+        let result;
+        await runCycle(async (data) => {
+          result = await entry.mutator(data);
+          return null;
+        });
+        entry.resolve(clone(result));
+      } catch (error) {
+        entry.reject(error);
+      }
+    }
+  }
+
+  async function drain() {
+    running = true;
+    try {
+      while (pending.length) {
+        const batch = pending.slice(0, maxBatch);
+        pending = pending.slice(batch.length);
+        if (batch.length === 1) {
+          await runIndividually(batch);
+          continue;
+        }
+        try {
+          await runBatch(batch);
+        } catch {
+          await runIndividually(batch);
+        }
+      }
+    } finally {
+      running = false;
+    }
+  }
+
+  return function update(mutator) {
+    return new Promise((resolve, reject) => {
+      pending.push({ mutator, resolve, reject });
+      if (!running) {
+        drain().catch((error) => {
+          // `drain` settles each entry itself; reaching here means the loop
+          // machinery failed, and silently stranding callers would be worse.
+          pending.splice(0).forEach((entry) => entry.reject(error));
+          running = false;
+        });
+      }
+    });
+  };
 }
 
 async function renameWithRetry(source, destination) {
@@ -217,7 +314,19 @@ async function renameWithRetry(source, destination) {
 function createStore(filePath, options = {}) {
   const absolutePath = path.resolve(filePath);
   const env = options.env || process.env;
-  let queue = Promise.resolve();
+  // The document last read from disk, reused while the file is untouched.
+  let cache = null;
+  let inFlightRead = null;
+
+  async function fileStamp() {
+    try {
+      const stats = await fs.stat(absolutePath);
+      return `${stats.mtimeMs}:${stats.size}`;
+    } catch (error) {
+      if (error.code === "ENOENT") return "absent";
+      throw error;
+    }
+  }
 
   async function load() {
     try {
@@ -240,35 +349,60 @@ function createStore(filePath, options = {}) {
     await renameWithRetry(temporaryPath, absolutePath);
   }
 
+  async function readSnapshot() {
+    const stamp = await fileStamp();
+    if (cache && cache.stamp === stamp) return cache.data;
+    const { data, joinCodesMigrated } = await load();
+    // A read may be the first operation after upgrading. Persist generated
+    // legacy TA codes immediately so they never change between requests.
+    if (joinCodesMigrated) await save(data);
+    cache = { data, stamp: await fileStamp() };
+    return cache.data;
+  }
+
+  const runUpdates = createBatchingUpdater(async (apply) => {
+    const { data } = await load();
+    try {
+      const outcome = await apply(data);
+      await save(data);
+      cache = { data, stamp: await fileStamp() };
+      return outcome;
+    } catch (error) {
+      cache = null;
+      throw error;
+    }
+  });
+
   return {
     read() {
-      const operation = queue.then(async () => {
-        const { data, joinCodesMigrated } = await load();
-        // A read may be the first operation after upgrading. Persist generated
-        // legacy TA codes immediately so they never change between requests.
-        if (joinCodesMigrated) await save(data);
-        return clone(data);
-      });
-      queue = operation.catch(() => {});
-      return operation;
+      // Concurrent callers share one load instead of each re-reading and
+      // re-normalizing the whole file.
+      if (!inFlightRead) {
+        inFlightRead = readSnapshot().finally(() => {
+          inFlightRead = null;
+        });
+      }
+      return inFlightRead.then(clone);
     },
     update(mutator) {
-      const operation = queue.then(async () => {
-        const { data } = await load();
-        const result = await mutator(data);
-        await save(data);
-        return clone(result);
-      });
-      queue = operation.catch(() => {});
-      return operation;
+      return runUpdates(mutator);
+    },
+    async readMaterialBlob(materialId) {
+      const data = await readSnapshot();
+      const material = (data.courseMaterials || []).find(
+        (item) => item.id === String(materialId),
+      );
+      return material?.dataBase64 || null;
     },
     path: absolutePath,
   };
 }
 
 module.exports = {
+  clone,
   courseJoinCodesNeedPersistence,
   configuredCourseOwners,
+  createBatchingUpdater,
   createStore,
   initialData,
   normalizeCourseJoinCodes,

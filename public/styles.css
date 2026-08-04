@@ -819,3 +819,41 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 32px); letter-spacing: -.04em; }
 .label-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .label-row label { margin: 0; }
 .label-row .text-btn { font-size: 10px; }
+
+/* Pull-to-refresh. Sits above the page and is dragged into view by the gesture,
+   so it never occupies layout space when idle. */
+.pull-refresh {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-top: -44px;
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow: 0 6px 18px rgba(35, 35, 74, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 0);
+}
+.pull-refresh:not(.active) { transition: transform .22s ease, opacity .22s ease; }
+.pull-refresh-spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--line);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  transition: border-top-color .15s ease;
+}
+/* Past the trigger point, so the pull reads as "let go now". */
+.pull-refresh.ready .pull-refresh-spinner { border-color: var(--primary-soft); border-top-color: var(--primary); }
+.pull-refresh.refreshing .pull-refresh-spinner { animation: pullSpin .7s linear infinite; }
+@keyframes pullSpin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .pull-refresh:not(.active) { transition: none; }
+  .pull-refresh.refreshing .pull-refresh-spinner { animation-duration: 1.8s; }
+}

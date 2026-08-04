@@ -1,3 +1,11 @@
+// Password hashing runs on libuv's thread pool, which defaults to four threads.
+// A class signing in together queued behind those four and requests timed out,
+// so the pool is widened before anything touches it. This has to happen before
+// the first async crypto or fs call, which is why it leads the file.
+if (!process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = "16";
+}
+
 const path = require("node:path");
 const { createApp } = require("./app");
 const { deleteExistingAccountsOnce, clearAttendanceAndQuizzesOnce } = require("./maintenance");

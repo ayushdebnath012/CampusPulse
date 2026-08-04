@@ -4,7 +4,7 @@ CampusPulse is a classroom operations app inspired by Acadly. This rollout conta
 
 ## Included
 
-- Password sign-up and login with a required department; professors use `name@department.iitkgp.ac.in`
+- Password sign-up and login with a required department, open to any working email address in all three roles
 - Password hashing, bearer sessions, and role-based API authorization
 - Separate private TA and Student join codes for every course, visible only to its professor owner
 - A selected-course switcher that changes the full workspace together
@@ -15,7 +15,9 @@ CampusPulse is a classroom operations app inspired by Acadly. This rollout conta
 - A persistent notification inbox plus Android phone alerts when attendance opens or a quiz or material is posted
 - Browser-local student CSV/ICS timetable import
 - Persistent JSON storage locally and PostgreSQL storage in cloud deployments
-- Capacitor Android project, native class reminders, and automated APK builds
+- Bluetooth LE proximity attendance across Android and iOS, sized for a full lecture theatre
+- Capacitor Android **and iOS** projects, native class reminders, and automated APK/IPA builds
+- A browser version on GitHub Pages that shares the same API and accounts as the installed apps
 
 ## Run the complete app locally
 
@@ -27,7 +29,7 @@ $env:COURSE_OWNER_EMAILS_JSON='{"soft401":"professor@mech.iitkgp.ac.in","kbs6035
 npm.cmd start
 ```
 
-Open `http://127.0.0.1:8787`. Password sign-up works without OTP. SMTP or Resend is optional and is used only by the legacy verification and password-recovery routes.
+Open `http://127.0.0.1:8787`. Password sign-up works without OTP. SMTP, Brevo, or Resend is optional and is used only by the emailed verification and password-recovery routes.
 
 Run the backend test:
 
@@ -35,6 +37,12 @@ Run the backend test:
 cd backend
 npm.cmd test
 ```
+
+## Who can create an account
+
+Any address that can receive mail works, in every role — an institute address, Gmail, Outlook, anything. Sign-up used to be restricted to `iitkgp.ac.in`, which locked out visiting staff, exchange students, and anyone whose institute account had not been issued yet.
+
+Course access does not depend on the address. A student or TA still needs that course's private join code, and those codes are visible only to the professor who owns the course. Note the trade-off this makes: because the professor role no longer requires a departmental address, anyone with the sign-up form can register as a professor and create their own courses. They cannot reach an existing course without its code, but if you want professor accounts gated again, set `FACULTY_SIGNUP_CODE` back up or restore the domain rule in `isValidEmail`.
 
 ## Deploy the backend
 
@@ -95,7 +103,7 @@ Do not commit the roster file or paste the secret into source code, build logs, 
 
 Every push to `main` runs `.github/workflows/build-android.yml`, which also publishes the built APK to a public download link (no GitHub login required) that always points at the latest build:
 
-```
+```text
 https://github.com/ayushdebnath012/CampusPulse/releases/download/android-latest/CampusPulse.apk
 ```
 
@@ -112,7 +120,7 @@ The debug APK is generated at `android/app/build/outputs/apk/debug/app-debug.apk
 
 Android builds include a local fallback copy of the app and the Capacitor updater. Every push to `main` packages `public/` as a versioned ZIP, publishes it through GitHub Pages, and writes a SHA-256 protected update manifest. Installed Android copies check that manifest on launch, download a newer web bundle in the background, and apply it after the app is restarted or backgrounded. The update status and a **Restart and update** action are available in **Settings**.
 
-Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.4.2 once; later web-only changes can arrive through the in-app updater.
+Only HTML, CSS, and JavaScript changes can be delivered this way. Changes to Android code, permissions, Capacitor configuration, or native plugins require a new APK. Install version 1.5.0 once; later web-only changes can arrive through the in-app updater.
 
 ### Keep Android upgrades installable
 
@@ -130,3 +138,87 @@ Create the base64 secret from a private keystore with:
 ```
 
 When those secrets are present, the workflow produces a signed release APK. Without them it produces a debug APK for testing; debug artifacts from different GitHub runners are not guaranteed to install over one another.
+
+## Build the iOS app
+
+The Xcode project is committed at `ios/`, with both native plugins, their `Info.plist` permission strings, and plugin registration already wired in. Nothing has to be assembled by hand.
+
+Every push to `main` runs `.github/workflows/build-ios.yml` on a macOS runner. Without any Apple credentials it still compiles the whole project for the simulator and uploads `CampusPulse-iOS-Simulator`, which is enough to catch a broken build. **A build you can install on a real iPhone needs a paid Apple Developer account** — that is Apple's rule, not a limitation of this project. Add these repository secrets and the same workflow also produces a signed `CampusPulse.ipa`:
+
+- `IOS_CERTIFICATE_BASE64` — base64 of your exported `.p12` distribution certificate
+- `IOS_CERTIFICATE_PASSWORD` — the password used when exporting it
+- `IOS_PROVISIONING_PROFILE_BASE64` — base64 of a `.mobileprovision` for `in.campuspulse.app`
+- `IOS_PROVISIONING_PROFILE_NAME` — that profile's name, exactly as Apple shows it
+- `IOS_TEAM_ID` — your ten-character Apple team identifier
+- `IOS_EXPORT_METHOD` — `ad-hoc`, `app-store`, or `enterprise` (defaults to `ad-hoc`)
+
+Create the base64 secrets with:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("distribution.p12"))
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("CampusPulse.mobileprovision"))
+```
+
+On a Mac you can build and run it directly:
+
+```bash
+npm install
+npm run ios:sync
+npm run ios:open   # then press Cmd+R in Xcode
+```
+
+Bluetooth does not work in the iOS Simulator. Proximity attendance has to be tested on real hardware.
+
+## Use CampusPulse without installing anything
+
+The browser version is the same app, built from the same `public/` directory and talking to the same API, so accounts, courses, attendance, and quizzes are shared with the installed apps:
+
+```text
+https://ayushdebnath012.github.io/CampusPulse/
+```
+
+It is the fallback for anyone who cannot install the app — including iPhone users, while a signed build is not yet distributed. Everything works there except Bluetooth proximity, which needs the native plugin: on the website a student cannot mark themselves present from the beacon, so use the app for attendance and the website for everything else.
+
+## Attendance is per class, not per day
+
+A register belongs to one class, so a course that meets twice on a Tuesday takes attendance twice and each starts from a blank roll. Every new day likewise opens on a fresh register rather than showing the previous one.
+
+- Opening attendance without naming a class attaches it to whichever of today's scheduled classes is nearest to now, so the one-tap button still produces a properly keyed session.
+- Repeating the *same* class on the same day is refused as a double-tap; the professor is pointed at **reopen** instead, which is how missed students are added after the fact.
+- A closed session is only offered as "current" on the day it was held. After that it moves into history.
+- **Previous classes** on the attendance screen lists every past register for the course, labelled with its date, its class time and topic, and the present count, so two classes on one day are never confused. Students see the same list, with their own attendance, under their attendance record.
+
+## Bluetooth proximity attendance
+
+When a professor opens attendance, their device advertises a rotating session token over Bluetooth LE. Student devices listen for it and send back what they heard, so a code never has to be read out and only a phone in the room can produce a valid token.
+
+Range is judged by **estimated distance**, not by a raw signal reading. A scan samples the beacon for a couple of seconds and takes the median of the strongest readings, because a single packet's RSSI swings by 10 dB or more as someone shifts in a seat. The default limit is 30 m, chosen to reach the back row of a large lecture theatre: wrongly excluding a student who is actually in the class is worse than including someone just outside it, and walls cost a further 10–20 dB, so the corridor mostly falls outside the limit on its own. Adjust `ATTENDANCE_RANGE_METRES` in `public/app.js` to change it.
+
+Android and iOS interoperate in both directions, which takes some care because iOS refuses to put service data in an advertisement:
+
+| Beacon | Carries the token in | Read by |
+| --- | --- | --- |
+| Android | BLE service data | Android and iOS |
+| iOS | the advertised local name (`CP` + token) | Android and iOS |
+
+Android 11 and below also need `ACCESS_FINE_LOCATION` **and** Location switched on before a scan returns anything; the app now asks for both and says which one is missing instead of timing out silently.
+
+## Running a class of 300
+
+The API was rewritten to survive a whole hall signing in at once, which previously showed up as "could not fetch":
+
+- Reads share one load. Requests arriving together no longer queue behind each other, and the loaded document is reused until a write moves it on.
+- Writes are batched. Concurrent writes are applied to one loaded copy and saved once, so 300 sign-ins cost a handful of database round trips instead of 300. If a mutator fails, the batch is replayed one at a time so nobody else's write is lost.
+- Uploaded files are no longer shipped on every request. Material bytes are projected out of the shared document and fetched only by the download route.
+- Password hashing gets a wider thread pool, since libuv's default of four threads serialised sign-ins.
+- The client retries with backoff and a timeout, so a free-tier instance waking from sleep no longer surfaces as a bare failure.
+
+Measured locally with 300 concurrent students, sign-in went from 14.9 s to 4.7 s and bootstrap from 2.9 s to 1.6 s; against PostgreSQL over a network the gap is considerably larger, because the old code performed 300 sequential full-document reads and rewrites.
+
+Two things to be aware of on Render's free plan: the instance sleeps after 15 minutes idle and takes roughly a minute to wake, and its CPU is throttled. If a class reliably starts at a fixed time, keep the service warm or move to a paid instance.
+
+## If someone does not receive their code
+
+Email providers cap how fast they accept mail — Resend's free plan allows two requests a second — and a class signing up together sails past that. Rejected sends were previously reported as successful, so those students never received anything. Sends are now paced to the provider's limit, retried on throttling, and logged by recipient when they fail. `GET /api/health` reports `emailRuntime` with queued/delivered/failed counts and the last error, so a missing code can be diagnosed without shell access.
+
+If failures persist, check that `EMAIL_FROM` uses a domain you have verified with the provider. An unverified sender is rejected for every recipient except your own address.

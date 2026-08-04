@@ -4,21 +4,23 @@
   const TRUSTED_BUNDLE_PREFIX =
     "https://ayushdebnath012.github.io/CampusPulse/updates/";
   const updater = window.Capacitor?.Plugins?.CapacitorUpdater || null;
-  const isNativeAndroid =
-    window.Capacitor?.getPlatform?.() === "android" && Boolean(updater);
+  // The Capacitor updater works the same on both native platforms, so an
+  // installed iPhone picks up web-only changes just like an Android phone.
+  const isNativeApp =
+    ["android", "ios"].includes(window.Capacitor?.getPlatform?.()) && Boolean(updater);
   const listeners = new Set();
   let activeCheck = null;
   // The app registers a guard so a bundle never reloads mid-attendance.
   let applyGuard = null;
 
   const state = {
-    supported: isNativeAndroid,
-    status: isNativeAndroid ? "idle" : "unavailable",
+    supported: isNativeApp,
+    status: isNativeApp ? "idle" : "unavailable",
     currentVersion: "embedded",
     latestVersion: "",
     stagedVersion: localStorage.getItem("campusPulseStagedWebVersion") || "",
     progress: 0,
-    message: isNativeAndroid
+    message: isNativeApp
       ? "Automatic web updates are enabled"
       : "Updates are delivered with the website",
   };
@@ -95,7 +97,7 @@
   }
 
   async function checkForUpdate({ manual = false } = {}) {
-    if (!isNativeAndroid) {
+    if (!isNativeApp) {
       publish({ status: "unavailable" });
       return snapshot();
     }
@@ -174,7 +176,7 @@
   }
 
   async function restartToUpdate() {
-    if (!isNativeAndroid || state.status !== "ready") return false;
+    if (!isNativeApp || state.status !== "ready") return false;
     publish({ status: "applying", message: "Restarting with the update…" });
     await updater.reload();
     return true;
@@ -182,7 +184,7 @@
 
   // Called when the app leaves a screen that was too busy to interrupt.
   async function applyStagedUpdate() {
-    if (!isNativeAndroid || state.status !== "ready" || !state.stagedVersion) return false;
+    if (!isNativeApp || state.status !== "ready" || !state.stagedVersion) return false;
     if (!canApplyNow()) return false;
     publish({ status: "applying", message: "Installing the update…" });
     await updater.reload();
@@ -204,7 +206,7 @@
     subscribe,
   };
 
-  if (!isNativeAndroid) return;
+  if (!isNativeApp) return;
 
   // This must happen before any network work so a healthy downloaded bundle is
   // not rolled back simply because the API or update host is temporarily slow.

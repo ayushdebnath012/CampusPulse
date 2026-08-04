@@ -1,6 +1,39 @@
-const APP_VERSION = "1.4.3";
+const APP_VERSION = "1.5.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
+
+// A free-tier API sleeps when idle and takes the better part of a minute to
+// wake, and a whole class opening the app at once arrives while it is still
+// waking. Without a timeout a request could hang indefinitely; without a retry
+// one unlucky moment surfaced to the student as a bare "could not fetch".
+const REQUEST_TIMEOUT_MS = 60000;
+// A sleeping or restarting instance answers with these before any handler runs,
+// so the request provably had no effect and replaying it is safe.
+const UNSERVED_STATUSES = new Set([502, 503, 504]);
+// Safe to replay only for reads, where a repeat cannot change anything even if
+// the first attempt did reach a handler.
+const BUSY_STATUSES = new Set([429, 500, 522, 524]);
+const RETRY_DELAYS_MS = [800, 2000, 4500];
+
+function isOffline() {
+  return typeof navigator !== "undefined" && navigator.onLine === false;
+}
+
+async function fetchOnce(path, options, headers) {
+  // `AbortSignal.timeout` is missing on some older in-app webviews.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(`${API_BASE}${path}`, {
+      method: options.method || "GET",
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function apiRequest(path, options = {}) {
   if (!API_BASE) {
@@ -11,22 +44,72 @@ async function apiRequest(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.auth !== false && apiToken) headers.Authorization = `Bearer ${apiToken}`;
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: options.method || "GET",
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
-  if (response.status === 204) return null;
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
-  if (!response.ok) {
-    const error = new Error(payload?.error || `Backend request failed (${response.status})`);
-    error.status = response.status;
-    throw error;
+  const method = options.method || "GET";
+  const isRead = method === "GET" || method === "HEAD";
+  const attempts = options.retry === false ? 1 : RETRY_DELAYS_MS.length + 1;
+
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (attempt > 0) {
+      const base = RETRY_DELAYS_MS[attempt - 1];
+      // Jitter keeps a room full of phones from retrying in lockstep.
+      const wait = base + Math.random() * base * 0.5;
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+
+    let response;
+    try {
+      response = await fetchOnce(path, options, headers);
+    } catch (error) {
+      // A dropped connection, a DNS failure, or our own timeout.
+      lastError = new Error(
+        isOffline()
+          ? "You appear to be offline. Reconnect and try again."
+          : "Could not reach CampusPulse. The server may be waking up — trying again.",
+      );
+      lastError.code = "NETWORK";
+      lastError.cause = error;
+      continue;
+    }
+
+    const worthRetrying =
+      UNSERVED_STATUSES.has(response.status) ||
+      (isRead && BUSY_STATUSES.has(response.status));
+    if (!response.ok && worthRetrying) {
+      lastError = new Error(
+        response.status === 429
+          ? "CampusPulse is busy right now. Trying again."
+          : "CampusPulse is starting up. Trying again.",
+      );
+      lastError.status = response.status;
+      continue;
+    }
+
+    if (response.status === 204) return null;
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json")
+      ? await response.json()
+      : await response.text();
+    if (!response.ok) {
+      const error = new Error(
+        payload?.error || `Backend request failed (${response.status})`,
+      );
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
   }
-  return payload;
+
+  const failure =
+    lastError || new Error("Could not reach CampusPulse. Try again in a moment.");
+  if (failure.code === "NETWORK" && !isOffline()) {
+    failure.message =
+      "Could not reach CampusPulse after several tries. Check your connection, or the server may still be starting up.";
+  } else if (failure.status) {
+    failure.message =
+      "CampusPulse is still busy. Wait a few seconds and try again.";
+  }
+  throw failure;
 }
 
 async function apiFileUpload(path, file) {
@@ -397,6 +480,22 @@ async function refreshPastSessions(courseId) {
   }
 }
 
+// Every register is one class on one day, so the label needs both. A course
+// meeting twice on a Tuesday would otherwise show two identical entries.
+function pastSessionLabel(session) {
+  const started = new Date(session.startedAt);
+  const day = started.toLocaleDateString([], {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+  const parts = [day];
+  if (session.classLabel) parts.push(session.classLabel);
+  else parts.push(started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  parts.push(`${session.present}/${session.total} present`);
+  return parts.join(" · ");
+}
+
 // Loads a past (closed) session's full roster for read-only review, or clears
 // back to today's session when the dropdown is reset to its default option.
 async function openPastAttendanceSession(sessionId) {
@@ -487,18 +586,23 @@ function persist() {
   localStorage.setItem("campusPulseState", JSON.stringify(state));
 }
 
+// The browser's own `pattern` check, kept deliberately permissive so it never
+// rejects an address the server would accept.
+const EMAIL_INPUT_PATTERN =
+  "[A-Za-z0-9][A-Za-z0-9._%+\\-]*@[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?)*\\.[A-Za-z]{2,63}";
+
 const loginProfiles = {
   faculty: {
     title: "Professor login",
     shortTitle: "Professor",
     description: "Create and manage your exclusive courses, rosters, attendance, and quizzes.",
-    idLabel: "Departmental IIT KGP email",
-    emailLabel: "Departmental IIT KGP email",
+    idLabel: "Email address",
+    emailLabel: "Email address",
     placeholder: "dkpra@mech.iitkgp.ac.in",
-    emailPattern: "[A-Za-z0-9][A-Za-z0-9._%+\\-]*@(?![Kk][Gg][Pp][Ii][Aa][Nn]\\.)[A-Za-z0-9](?:[A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
-    emailTitle: "Use your departmental address, for example dkpra@mech.iitkgp.ac.in",
-    emailHelp: "Use name@department.iitkgp.ac.in, for example dkpra@mech.iitkgp.ac.in.",
-    emailError: "Professor accounts require a departmental email such as dkpra@mech.iitkgp.ac.in",
+    emailPattern: EMAIL_INPUT_PATTERN,
+    emailTitle: "Any email address you can receive mail at",
+    emailHelp: "Your institute address is ideal, but any working email works.",
+    emailError: "Enter a valid email address",
     initials: "PF",
     name: "Professor Demo"
   },
@@ -506,13 +610,13 @@ const loginProfiles = {
     title: "Teaching Assistant login",
     shortTitle: "TA",
     description: "Sign in like a student, then use the TA course code to access teaching-team tools.",
-    idLabel: "Student institute email",
-    emailLabel: "Student institute email",
+    idLabel: "Email address",
+    emailLabel: "Email address",
     placeholder: "ta@kgpian.iitkgp.ac.in",
-    emailPattern: "[A-Za-z0-9._%+\\-]+@[Kk][Gg][Pp][Ii][Aa][Nn]\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
-    emailTitle: "Use the same @kgpian.iitkgp.ac.in address used for a student account",
-    emailHelp: "Use your @kgpian.iitkgp.ac.in student address.",
-    emailError: "TA accounts require your @kgpian.iitkgp.ac.in student email",
+    emailPattern: EMAIL_INPUT_PATTERN,
+    emailTitle: "Any email address you can receive mail at",
+    emailHelp: "Your institute address is ideal, but any working email works.",
+    emailError: "Enter a valid email address",
     initials: "TA",
     name: "Teaching Assistant"
   },
@@ -520,13 +624,13 @@ const loginProfiles = {
     title: "Student login",
     shortTitle: "Student",
     description: "Join professor-owned courses by code, mark your attendance when class starts, take quizzes, and view your calendar.",
-    idLabel: "Student institute email",
-    emailLabel: "Student institute email",
+    idLabel: "Email address",
+    emailLabel: "Email address",
     placeholder: "student@kgpian.iitkgp.ac.in",
-    emailPattern: "[A-Za-z0-9._%+\\-]+@[Kk][Gg][Pp][Ii][Aa][Nn]\\.[Ii][Ii][Tt][Kk][Gg][Pp]\\.[Aa][Cc]\\.[Ii][Nn]",
-    emailTitle: "Use your @kgpian.iitkgp.ac.in student address",
-    emailHelp: "Use your @kgpian.iitkgp.ac.in student address.",
-    emailError: "Student accounts require an @kgpian.iitkgp.ac.in email",
+    emailPattern: EMAIL_INPUT_PATTERN,
+    emailTitle: "Any email address you can receive mail at",
+    emailHelp: "Your institute address is ideal, but any working email works.",
+    emailError: "Enter a valid email address",
     initials: "ST",
     name: "Student Demo"
   }
@@ -681,26 +785,25 @@ function renderEmailVerification() {
   setTimeout(() => document.querySelector("#verificationCode")?.focus(), 0);
 }
 
-function isCampusEmail(email = "") {
-  const domain = email.trim().toLowerCase().split("@")[1] || "";
-  return domain === "iitkgp.ac.in" || domain.endsWith(".iitkgp.ac.in");
+// Any working mailbox is accepted, for every role. Course access is controlled
+// by the private join codes rather than by the shape of an address, so an
+// institute-only rule mainly locked out people who belonged in the class.
+// Mirrors isValidEmail on the server.
+function isValidEmail(email = "") {
+  const value = email.trim().toLowerCase();
+  if (value.length < 6 || value.length > 254) return false;
+  const [local, domain, extra] = value.split("@");
+  if (extra !== undefined) return false;
+  if (!/^[a-z0-9][a-z0-9._%+-]*$/.test(local || "")) return false;
+  if (local.includes("..") || local.endsWith(".")) return false;
+  const labels = String(domain || "").split(".");
+  if (labels.length < 2) return false;
+  if (!/^[a-z]{2,63}$/.test(labels[labels.length - 1])) return false;
+  return labels.every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
 }
 
-function isStudentEmail(email = "") {
-  const domain = email.trim().toLowerCase().split("@")[1] || "";
-  return domain === "kgpian.iitkgp.ac.in";
-}
-
-function isProfessorEmail(email = "") {
-  const [local, domain, extra] = email.trim().toLowerCase().split("@");
-  return !extra
-    && /^[a-z0-9][a-z0-9_%+.-]*$/.test(local || "")
-    && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.iitkgp\.ac\.in$/.test(domain || "")
-    && domain !== "kgpian.iitkgp.ac.in";
-}
-
-function isEmailForRole(role, email = "") {
-  return role === "faculty" ? isProfessorEmail(email) : isStudentEmail(email);
+function isEmailForRole(_role, email = "") {
+  return isValidEmail(email);
 }
 
 async function credentialHash(email, password) {
@@ -1355,13 +1458,30 @@ async function stopAttendanceBeacon() {
   }
 }
 
-// Students listen for the class beacon; a weak signal is treated as elsewhere.
+// How far the beacon is allowed to be and still count as "in this class".
+// Sized for a full lecture theatre rather than a small room: a student in the
+// back row belongs in the register, and the walls exclude the corridor far more
+// reliably than a tighter number would.
+const ATTENDANCE_RANGE_METRES = 30;
+
+// Students listen for the class beacon. The plugin samples the signal for a
+// couple of seconds and reports an estimated distance, so a single unlucky
+// packet no longer decides whether someone is marked present.
 async function findAttendanceBeacon() {
   const plugin = proximityPlugin();
   if (!plugin) return { found: false, unsupported: true };
   try {
-    const result = await plugin.scanForBeacon({ timeoutMs: 8000, minRssi: -85 });
-    return { found: Boolean(result?.found), token: result?.token || "", rssi: result?.rssi };
+    const result = await plugin.scanForBeacon({
+      timeoutMs: 12000,
+      maxDistanceMeters: ATTENDANCE_RANGE_METRES,
+    });
+    return {
+      found: Boolean(result?.found),
+      token: result?.token || "",
+      rssi: result?.rssi,
+      distanceMeters: result?.distanceMeters,
+      outOfRange: Boolean(result?.outOfRange),
+    };
   } catch (error) {
     return { found: false, error: error?.message || "Bluetooth scan failed" };
   }
@@ -2118,10 +2238,10 @@ function renderLiveAttendance() {
           viewingPast ? "gray" : complete ? "green" : "purple"
         )}
         ${pastAttendanceSessions.length ? `<label class="past-session-picker">
-          <span>Previous days</span>
+          <span>Previous classes</span>
           <select class="select" id="pastSessionSelect">
             <option value="">Today's session</option>
-            ${pastAttendanceSessions.map(session => `<option value="${escapeHtml(session.id)}" ${viewingPastAttendance?.id === session.id ? "selected" : ""}>${escapeHtml(new Date(session.startedAt).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }))} · ${session.present}/${session.total} present</option>`).join("")}
+            ${pastAttendanceSessions.map(session => `<option value="${escapeHtml(session.id)}" ${viewingPastAttendance?.id === session.id ? "selected" : ""}>${escapeHtml(pastSessionLabel(session))}</option>`).join("")}
           </select>
         </label>` : ""}
         ${!complete ? (beaconToken ? `<div class="proximity-code">
@@ -2135,7 +2255,7 @@ function renderLiveAttendance() {
           <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
         </div>`) : `<div class="proximity-code no-ble">
           <div><span>Web browser</span><strong>${icon("i-close")} Use the app</strong></div>
-          <p>Bluetooth broadcasting requires the CampusPulse Android app. Students can still be marked present manually from the list below.</p>
+          <p>Bluetooth broadcasting requires the CampusPulse app. Students can still be marked present manually from the list below.</p>
         </div>`) : ""}
         ${stepper(complete ? 3 : 2)}
         <div class="roster-toolbar">
@@ -3251,7 +3371,7 @@ function notificationStatusMarkup(status = {}) {
   }
   if (!status.supported) {
     return {
-      message: "This inbox stays synced here. Install the Android app to receive alerts while CampusPulse is closed.",
+      message: "This inbox stays synced here. Install the app to receive alerts while CampusPulse is closed.",
       action: "",
     };
   }
@@ -3425,9 +3545,9 @@ function openReminderModal() {
         </div>
         ${supported
           ? entries.length
-            ? `<div class="security-note"><span class="lock">${icon("i-clock")}</span><span>CampusPulse schedules these alerts on this Android phone. No SMS, email service, or internet connection is needed when an alert fires.</span></div>`
+            ? `<div class="security-note"><span class="lock">${icon("i-clock")}</span><span>CampusPulse schedules these alerts on this phone. No SMS, email service, or internet connection is needed when an alert fires.</span></div>`
             : `<div class="security-note"><span class="lock">${icon("i-calendar")}</span><span>Add or import a weekly timetable before enabling reminders.</span></div>`
-          : `<div class="security-note"><span class="lock">${icon("i-download")}</span><span>Phone reminders need the latest CampusPulse Android APK. This browser cannot reliably alert you while it is closed.</span></div>`}
+          : `<div class="security-note"><span class="lock">${icon("i-download")}</span><span>Phone reminders need the installed CampusPulse app. This browser cannot reliably alert you while it is closed.</span></div>`}
         <div class="setup-actions">
           <button type="button" class="btn" data-action="close-modal">Cancel</button>
           ${!entries.length ? `<button type="button" class="btn btn-soft" data-action="open-reminder-schedule">${icon("i-calendar")} Open schedule</button>` : ""}
@@ -3542,7 +3662,7 @@ function renderSettings() {
       </article>
       <article class="card page-card update-settings-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">App updates</h2><p id="webUpdateDetail" class="stat-label">${escapeHtml(updateState.message || "Updates are delivered with the website")}</p></div><span id="webUpdateStatus" class="badge ${updateState.status === "error" ? "amber" : "green"}">${updateStatusLabel(updateState.status)}</span></div>
-        <p class="update-explainer">Web features, fixes, and styling download and install automatically in the Android app, except while a class is running — those wait until you leave the screen. Native Android changes still require a newly signed APK.</p>
+        <p class="update-explainer">Web features, fixes, and styling download and install automatically in the installed app, except while a class is running — those wait until you leave the screen. Native changes still require a new APK or IPA.</p>
         ${updateState.supported ? `<div class="setup-actions"><button class="btn" type="button" data-action="check-for-updates">Check now</button>${updateState.status === "ready" ? `<button class="btn btn-primary" type="button" data-action="restart-to-update">Restart and update</button>` : ""}</div>` : ""}
       </article>
     </div>`;
@@ -4408,6 +4528,8 @@ document.addEventListener("click", async event => {
       return toast(error.message || "Could not open attendance", "error");
     }
     state.attendanceStatus = "scanning";
+    // An earlier class today may have just moved into the history.
+    await refreshPastSessions(state.selectedCourseId);
     persist(); renderLiveAttendance(); toast(`Attendance opened with ${currentAttendanceRecords().length} rostered students`);
   }
   if (action === "toggle-attendance") {
@@ -4457,6 +4579,8 @@ document.addEventListener("click", async event => {
     }
     clearInterval(scanTimer);
     state.attendanceStatus = "complete";
+    // The class just closed belongs in the history dropdown straight away.
+    await refreshPastSessions(state.selectedCourseId);
     persist(); renderLiveAttendance(); toast(`Attendance saved for ${currentPresentCount()} students`);
   }
   if (action === "reopen-session") {
@@ -4661,10 +4785,17 @@ document.addEventListener("click", async event => {
       toast("Looking for the class over Bluetooth…");
       const beacon = await findAttendanceBeacon();
       if (!beacon.found) {
+        // "Heard but too far" and "not heard at all" call for different
+        // reactions, so they are not reported with the same sentence.
+        const outOfRange = beacon.outOfRange
+          ? `The class signal is about ${Math.round(beacon.distanceMeters)} m away, outside this classroom. Move inside and try again.`
+          : "";
         return toast(
           beacon.unsupported
-            ? "Bluetooth proximity requires the CampusPulse Android app. Install it to mark attendance."
-            : beacon.error || "The class was not found nearby. Move closer and try again.",
+            ? "Bluetooth proximity requires the CampusPulse app. Install it to mark attendance."
+            : outOfRange ||
+                beacon.error ||
+                "The class was not found nearby. Move closer and try again.",
           "error"
         );
       }
@@ -5226,7 +5357,6 @@ document.addEventListener("submit", async event => {
     if (!profile) return toast("Choose a valid account type", "error");
     if (name.length < 2) return toast("Enter your full name", "error");
     if (department.length < 2) return toast("Enter your department name", "error");
-    if (!isCampusEmail(email)) return toast("Use a valid IIT KGP institutional email", "error");
     if (!isEmailForRole(data.role, email)) return toast(profile.emailError, "error");
     if (String(data.password).length < 8) return toast("Password must contain at least 8 characters", "error");
     if (data.password !== data.confirmPassword) return toast("The passwords do not match", "error");
@@ -5567,6 +5697,139 @@ document.addEventListener("visibilitychange", () => {
     if (state.authenticated) pushManager?.refresh?.({ silent: true }).catch(() => {});
   }
 });
+
+// Reloads everything the current screen is showing, and asks for a newer web
+// bundle at the same time. A phone user's instinct after something looks stale
+// is to pull down, so that gesture has to do both.
+async function refreshEverything() {
+  if (!backendConfigured() || !apiToken) {
+    render();
+    return;
+  }
+  await syncBackendState();
+  const courseId = state.selectedCourseId;
+  const course = selectedCourse();
+  const refreshes = [refreshOpenAttendance({ rerender: false })];
+  if (courseId) {
+    refreshes.push(refreshNotices(courseId));
+    if (course && canRunAttendance(course)) {
+      refreshes.push(selectAttendanceCourse(courseId), refreshPastSessions(courseId));
+    }
+    if (state.userRole === "student") {
+      refreshes.push(refreshAttendanceHistory(courseId), refreshMyQuizzes(courseId));
+    }
+    if (course && canPublishQuiz(course)) {
+      refreshes.push(refreshQuizHistory(courseId), refreshQuizDrafts(courseId));
+    }
+    if (state.route === "materials") {
+      refreshes.push(loadCourseMaterials(courseId, { force: true }));
+    }
+  }
+  // One failed panel must not blank the rest of the screen.
+  await Promise.allSettled(refreshes);
+  persist();
+  render();
+  // A pull is also the moment to look for a newer app bundle.
+  window.CAMPUSPULSE_UPDATES?.checkForUpdate?.({ manual: true })?.catch?.(() => {});
+}
+
+// Pull-to-refresh. The page scrolls on the document, so a pull only counts when
+// the document is already at the top and the finger started somewhere that is
+// not itself a scrolled-down list.
+(() => {
+  const TRIGGER_PX = 72;
+  const MAX_PULL_PX = 130;
+  const indicator = document.createElement("div");
+  indicator.className = "pull-refresh";
+  indicator.innerHTML = `<div class="pull-refresh-spinner"></div>`;
+  indicator.setAttribute("aria-hidden", "true");
+  document.body.append(indicator);
+
+  let startY = 0;
+  let pull = 0;
+  let tracking = false;
+  let refreshing = false;
+
+  function scrolledToTop() {
+    return (window.scrollY || document.documentElement.scrollTop || 0) <= 0;
+  }
+
+  // A finger inside a list that is scrolled down is scrolling that list.
+  function insideScrolledRegion(target) {
+    for (let node = target; node && node !== document.body; node = node.parentElement) {
+      if (node.scrollTop > 0 && node.scrollHeight > node.clientHeight) return true;
+    }
+    return false;
+  }
+
+  function setPull(distance) {
+    pull = distance;
+    indicator.style.transform = `translate(-50%, ${Math.min(distance, MAX_PULL_PX)}px)`;
+    indicator.style.opacity = String(Math.min(distance / TRIGGER_PX, 1));
+    indicator.classList.toggle("ready", distance >= TRIGGER_PX);
+  }
+
+  function reset() {
+    tracking = false;
+    setPull(0);
+    indicator.classList.remove("active", "ready");
+    indicator.style.transform = "";
+    indicator.style.opacity = "";
+  }
+
+  document.addEventListener(
+    "touchstart",
+    (event) => {
+      if (refreshing || event.touches.length !== 1) return;
+      if (appShell?.hidden || !state.authenticated) return;
+      if (!scrolledToTop() || insideScrolledRegion(event.target)) return;
+      startY = event.touches[0].clientY;
+      tracking = true;
+    },
+    { passive: true }
+  );
+
+  document.addEventListener(
+    "touchmove",
+    (event) => {
+      if (!tracking || refreshing) return;
+      const distance = event.touches[0].clientY - startY;
+      if (distance <= 0 || !scrolledToTop()) {
+        if (pull) reset();
+        return;
+      }
+      // Rubber band, so the pull slows as it lengthens.
+      setPull(Math.min(distance * 0.5, MAX_PULL_PX));
+      indicator.classList.add("active");
+      // Stops the browser's own overscroll fighting the gesture.
+      if (event.cancelable) event.preventDefault();
+    },
+    { passive: false }
+  );
+
+  async function finish() {
+    if (!tracking || refreshing) return reset();
+    const shouldRefresh = pull >= TRIGGER_PX;
+    if (!shouldRefresh) return reset();
+
+    refreshing = true;
+    tracking = false;
+    indicator.classList.add("active", "refreshing");
+    setPull(TRIGGER_PX);
+    try {
+      await refreshEverything();
+    } catch (error) {
+      toast(error?.message || "Could not refresh. Try again.", "error");
+    } finally {
+      refreshing = false;
+      indicator.classList.remove("refreshing");
+      reset();
+    }
+  }
+
+  document.addEventListener("touchend", finish, { passive: true });
+  document.addEventListener("touchcancel", reset, { passive: true });
+})();
 
 persist();
 if (backendConfigured() && apiToken) {
