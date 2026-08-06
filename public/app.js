@@ -631,10 +631,13 @@ function pastSessionsListCard() {
       ${pastAttendanceSessions.map(session => {
         const started = new Date(session.startedAt);
         const share = sessionTurnout(session);
-        return `<button class="class-row attendance-day" type="button" data-action="open-past-session" data-session-id="${escapeHtml(session.id)}">
+        // The register already on screen is marked, so the list reads as a
+        // place in the term rather than a set of identical-looking links.
+        const open = viewingPastAttendance?.id === session.id;
+        return `<button class="class-row attendance-day" type="button" data-action="open-past-session" data-session-id="${escapeHtml(session.id)}"${open ? ' aria-current="true"' : ""}>
           <div class="time">${escapeHtml(started.toLocaleDateString([], { weekday: "short" }))}<small>${escapeHtml(started.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
           <div class="course"><strong>${escapeHtml(session.classLabel || started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</strong><span>${session.present}/${session.total} present</span></div>
-          <span class="badge ${turnoutTone(share)}">${share}%</span>
+          <span class="badge ${open ? "purple" : turnoutTone(share)}">${open ? "Viewing" : `${share}%`}</span>
           <span class="chevron">${icon("i-arrow")}</span>
         </button>`;
       }).join("")}
@@ -2551,53 +2554,57 @@ function renderLiveAttendance() {
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
-      <article class="card page-card">
-        ${sessionHeading(
-          viewingPast ? "Past attendance" : complete ? "Review attendance" : "Mark attendance",
-          viewingPast
-            ? new Date(viewingPastAttendance.startedAt).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" })
-            : complete ? "Session closed and saved" : "Select each student who is present",
-          viewingPast ? "gray" : complete ? "green" : "purple"
-        )}
-        ${pastSessionsPicker()}
-        ${!complete ? (beaconToken ? `<div class="proximity-code">
-          <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
-          <p>Students nearby pick this up over Bluetooth automatically — nothing to read out. Only phones within range can mark themselves present.</p>
-        </div>` : proximityPlugin() ? (beaconError ? `<div class="proximity-code no-ble">
-          <div><span>Bluetooth not available</span><strong>${icon("i-close")} Not broadcasting</strong></div>
-          <p>${escapeHtml(beaconError)}</p>
-          <button class="btn btn-soft" type="button" data-action="retry-beacon">Try broadcasting again</button>
-        </div>` : `<div class="proximity-code no-ble">
-          <div><span>Connecting</span><strong>${icon("i-clock")} Starting broadcast…</strong></div>
-          <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
-        </div>`) : `<div class="proximity-code no-ble">
-          <div><span>Web browser</span><strong>${icon("i-close")} Not broadcasting</strong></div>
-          <p>Bluetooth broadcasting needs the installed app. Students can still be marked present from the list below.</p>
-        </div>`) : ""}
-        ${stepper(complete ? 3 : 2)}
-        <div class="roster-toolbar">
-          <div class="scan-status">${viewingPast ? icon("i-check") + " Closed session" : complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
-          <div class="roster-toolbar-actions">
-            <button class="btn btn-soft" type="button" data-action="export-day-attendance">${icon("i-download")} Excel</button>
-            <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
+      <div class="left-stack">
+        <article class="card page-card">
+          ${sessionHeading(
+            viewingPast ? "Past attendance" : complete ? "Review attendance" : "Mark attendance",
+            viewingPast
+              ? new Date(viewingPastAttendance.startedAt).toLocaleDateString([], { weekday: "long", day: "numeric", month: "short" })
+              : complete ? "Session closed and saved" : "Select each student who is present",
+            viewingPast ? "gray" : complete ? "green" : "purple"
+          )}
+          ${pastSessionsPicker()}
+          ${!complete ? (beaconToken ? `<div class="proximity-code">
+            <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
+            <p>Students nearby pick this up over Bluetooth automatically — nothing to read out. Only phones within range can mark themselves present.</p>
+          </div>` : proximityPlugin() ? (beaconError ? `<div class="proximity-code no-ble">
+            <div><span>Bluetooth not available</span><strong>${icon("i-close")} Not broadcasting</strong></div>
+            <p>${escapeHtml(beaconError)}</p>
+            <button class="btn btn-soft" type="button" data-action="retry-beacon">Try broadcasting again</button>
+          </div>` : `<div class="proximity-code no-ble">
+            <div><span>Connecting</span><strong>${icon("i-clock")} Starting broadcast…</strong></div>
+            <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
+          </div>`) : `<div class="proximity-code no-ble">
+            <div><span>Web browser</span><strong>${icon("i-close")} Not broadcasting</strong></div>
+            <p>Bluetooth broadcasting needs the installed app. Students can still be marked present from the list below.</p>
+          </div>`) : ""}
+          ${stepper(complete ? 3 : 2)}
+          <div class="roster-toolbar">
+            <div class="scan-status">${viewingPast ? icon("i-check") + " Closed session" : complete ? icon("i-check") + " Attendance closed" : '<span class="pulse"></span> Changes save to the course roster'}</div>
+            <div class="roster-toolbar-actions">
+              <button class="btn btn-soft" type="button" data-action="export-day-attendance">${icon("i-download")} Excel</button>
+              <span class="badge ${complete ? "green" : "purple"}">${count} present</span>
+            </div>
           </div>
-        </div>
-        ${searchBox("attendanceSearch", rosterSearch, "Search this class by name or roll number")}
-        ${rosterSearch ? `<p class="stat-label" style="margin:-4px 2px 10px">${shown.length} of ${records.length} students${shown.length ? "" : " — nothing matches that"}</p>` : ""}
-        ${!complete ? `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>` : ""}
-        <div class="roster roster-scroll">
-          ${shown.map(student => studentRow(student, records.indexOf(student), !complete)).join("")}
-        </div>
-        <div class="setup-actions">
-          ${complete
-            ? `<button class="btn" data-action="reopen-session" data-session-id="${escapeHtml(reopenTargetId || "")}">${icon("i-play")} Reopen to add students</button>`
-            : `<div class="manual-add-row">
-                <input class="text-input" id="manualRollInput" type="text" placeholder="Roll number to add" autocomplete="off" style="flex:1" />
-                <button class="btn btn-soft" type="button" data-action="add-student-manual">${icon("i-plus")} Add</button>
-              </div>
-              <button class="btn btn-danger" data-action="end-session">Close attendance</button>`}
-        </div>
-      </article>
+          ${searchBox("attendanceSearch", rosterSearch, "Search this class by name or roll number")}
+          ${rosterSearch ? `<p class="stat-label" style="margin:-4px 2px 10px">${shown.length} of ${records.length} students${shown.length ? "" : " — nothing matches that"}</p>` : ""}
+          ${!complete ? `<div class="roster-bulk-actions"><button class="btn btn-soft" data-action="mark-all-attendance">Mark all present</button><button class="btn" data-action="clear-attendance">Clear all</button></div>` : ""}
+          <div class="roster roster-scroll">
+            ${shown.map(student => studentRow(student, records.indexOf(student), !complete)).join("")}
+          </div>
+          <div class="setup-actions">
+            ${complete
+              ? `<button class="btn" data-action="reopen-session" data-session-id="${escapeHtml(reopenTargetId || "")}">${icon("i-play")} Reopen to add students</button>`
+              : `<div class="manual-add-row">
+                  <input class="text-input" id="manualRollInput" type="text" placeholder="Roll number to add" autocomplete="off" style="flex:1" />
+                  <button class="btn btn-soft" type="button" data-action="add-student-manual">${icon("i-plus")} Add</button>
+                </div>
+                <button class="btn btn-danger" data-action="end-session">Close attendance</button>`}
+          </div>
+        </article>
+      ${attendanceOverview()}
+      ${pastSessionsListCard()}
+      </div>
       ${attendanceSidePanel(records, viewingPast ? viewingPastAttendance : null)}
     </div>`;
 
