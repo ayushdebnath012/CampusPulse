@@ -237,6 +237,72 @@ test("an import is refused rather than quietly recording the wrong register", as
   assert.equal(forged.response.status, 403);
 });
 
+test("a filed register reaches the TA's login, not just the professor's", async (t) => {
+  const server = await createTestServer();
+  t.after(() => server.close());
+  const { professor, course } = await professorWithCourse(server.baseUrl);
+
+  for (const date of ["2026-08-03", "2026-08-04"]) {
+    const filed = await request(server.baseUrl, "/api/attendance/import", {
+      method: "POST",
+      token: professor.token,
+      body: { courseId: course.id, startedAt: date, present: ["23ME10094", "24ME10127"] },
+    });
+    assert.equal(filed.response.status, 201);
+  }
+
+  const assistant = await signIn(server.baseUrl, {
+    role: "ta",
+    name: "Course Assistant",
+    email: "ta-import@kgpian.iitkgp.ac.in",
+    password: "assistant-password",
+    rollNumber: "TA00042",
+    hall: "Azad Hall",
+  });
+
+  // Before joining, the TA assists no course and the page is closed to them.
+  const beforeJoin = await request(server.baseUrl, `/api/attendance/past?courseId=${course.id}`, {
+    token: assistant.token,
+  });
+  assert.equal(beforeJoin.response.status, 403);
+
+  const joined = await request(server.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: assistant.token,
+    body: { code: course.taCode },
+  });
+  assert.equal(joined.response.status, 201, JSON.stringify(joined.body));
+
+  // The capability the attendance page keys off has to be true for the TA, or
+  // the nav hides the tab however good the data behind it is.
+  const listed = await request(server.baseUrl, "/api/courses", { token: assistant.token });
+  const seen = listed.body.courses.find((item) => item.id === course.id);
+  assert.equal(seen.capabilities.canRunAttendance, true);
+  assert.equal(seen.capabilities.canViewAttendanceRoster, true);
+
+  // Both past registers, with the counts the overview adds up.
+  const past = await request(server.baseUrl, `/api/attendance/past?courseId=${course.id}`, {
+    token: assistant.token,
+  });
+  assert.equal(past.response.status, 200);
+  assert.equal(past.body.sessions.length, 2);
+  assert.deepEqual(
+    past.body.sessions.map((item) => `${item.present}/${item.total}`),
+    ["2/3", "2/3"],
+  );
+
+  // And opening one gives the TA the full register, the same as the professor.
+  const opened = await request(server.baseUrl, `/api/attendance/${past.body.sessions[0].id}`, {
+    token: assistant.token,
+  });
+  assert.equal(opened.response.status, 200);
+  assert.equal(opened.body.attendance.records.length, 3);
+  assert.deepEqual(
+    opened.body.attendance.records.filter((r) => r.present).map((r) => r.rollNumber).sort(),
+    ["23ME10094", "24ME10127"],
+  );
+});
+
 test("a filed register attaches to the class that runs on that weekday", async (t) => {
   const server = await createTestServer();
   t.after(() => server.close());

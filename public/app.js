@@ -582,6 +582,66 @@ function pastSessionLabel(session) {
   return parts.join(" · ");
 }
 
+/** A past register's turnout as a whole percentage. */
+function sessionTurnout(session) {
+  return session.total ? Math.round((session.present / session.total) * 100) : 0;
+}
+
+function turnoutTone(percentage) {
+  return percentage >= 75 ? "green" : percentage >= 50 ? "amber" : "gray";
+}
+
+// What the register adds up to across the course. A professor opening
+// attendance on a quiet day is usually there to look back, not to start
+// something, so the page leads with the shape of the term rather than with an
+// empty setup form.
+function attendanceOverview() {
+  if (!pastAttendanceSessions.length) return "";
+  const possible = pastAttendanceSessions.reduce((sum, item) => sum + (item.total || 0), 0);
+  const attended = pastAttendanceSessions.reduce((sum, item) => sum + (item.present || 0), 0);
+  // Averaged over seats rather than over classes, so a class with a fuller
+  // roll list counts for proportionally more.
+  const average = possible ? Math.round((attended / possible) * 100) : 0;
+  const turnouts = pastAttendanceSessions.filter(item => item.total).map(sessionTurnout);
+  const lowest = turnouts.length ? Math.min(...turnouts) : 0;
+  return `
+    <article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Attendance so far</h2><p class="stat-label">Across every class recorded for this course.</p></div><span class="badge ${turnoutTone(average)}">${average}%</span></div>
+      <div class="stat-grid" style="margin-top:18px">
+        <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span></div><div class="stat-value">${pastAttendanceSessions.length}</div><div class="stat-label">Classes held</div></article>
+        <article class="card stat"><div class="stat-top"><span class="stat-icon green">${icon("i-check")}</span><span class="trend">${attended} of ${possible}</span></div><div class="stat-value">${average}%</div><div class="stat-label">Average attendance</div></article>
+        <article class="card stat"><div class="stat-top"><span class="stat-icon amber">${icon("i-clock")}</span></div><div class="stat-value">${lowest}%</div><div class="stat-label">Lowest turnout</div></article>
+      </div>
+    </article>`;
+}
+
+// The dropdown is right for switching classes while a register is on screen,
+// but on the setup page the past classes are the reason to be there at all, so
+// they are listed instead of hidden inside a select.
+function pastSessionsListCard() {
+  if (!pastAttendanceSessions.length) {
+    return `<article class="card page-card">
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Previous classes</h2><p class="stat-label">Registers already taken for this course.</p></div><span class="badge gray">0</span></div>
+      <p class="stat-label">No class recorded yet. Each register appears here once you close it.</p>
+    </article>`;
+  }
+  return `<article class="card page-card">
+    <div class="section-head"><div><h2 style="margin:0 0 5px">Previous classes</h2><p class="stat-label">Open one to see who was there.</p></div><span class="badge gray">${pastAttendanceSessions.length}</span></div>
+    <div class="class-list">
+      ${pastAttendanceSessions.map(session => {
+        const started = new Date(session.startedAt);
+        const share = sessionTurnout(session);
+        return `<button class="class-row attendance-day" type="button" data-action="open-past-session" data-session-id="${escapeHtml(session.id)}">
+          <div class="time">${escapeHtml(started.toLocaleDateString([], { weekday: "short" }))}<small>${escapeHtml(started.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
+          <div class="course"><strong>${escapeHtml(session.classLabel || started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</strong><span>${session.present}/${session.total} present</span></div>
+          <span class="badge ${turnoutTone(share)}">${share}%</span>
+          <span class="chevron">${icon("i-arrow")}</span>
+        </button>`;
+      }).join("")}
+    </div>
+  </article>`;
+}
+
 // One student's whole record in a course: every class held, whether they were
 // there, and the running percentage. Available to the course team only.
 async function openStudentRecord(courseId, rollNumber) {
@@ -2411,33 +2471,36 @@ function renderAttendanceSetup() {
   view.innerHTML = `
     <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
     <div class="page-grid">
-      <article class="card page-card">
-        ${sessionHeading(ready ? "Choose the official roster" : "Upload the roll list first", "Attendance has not started yet", "amber")}
-        ${pastSessionsPicker()}
-        ${stepper(1)}
-        <div class="roster-picker">
-          <label for="attendanceCourseSelect">Course roster</label>
-          <select class="select" id="attendanceCourseSelect">
-            ${availableCourses.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)} (${item.students})</option>`).join("")}
-          </select>
-          <div class="roster-source-card">
-            <span class="student-avatar">${roster.length}</span>
-            <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${ready ? `${roster.length} students` : "no roll list uploaded yet"}</p></div>
-            <span class="badge ${ready ? "green" : "amber"}">${ready ? "Official roster ready" : "Roll list required"}</span>
+      <div class="left-stack">
+        <article class="card page-card">
+          ${sessionHeading(ready ? "Choose the official roster" : "Upload the roll list first", "Attendance has not started yet", "amber")}
+          ${stepper(1)}
+          <div class="roster-picker">
+            <label for="attendanceCourseSelect">Course roster</label>
+            <select class="select" id="attendanceCourseSelect">
+              ${availableCourses.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === course.id ? "selected" : ""}>${escapeHtml(item.courseCode)} · ${escapeHtml(item.name)} (${item.students})</option>`).join("")}
+            </select>
+            <div class="roster-source-card">
+              <span class="student-avatar">${roster.length}</span>
+              <div><strong>${escapeHtml(course.name)}</strong><p>${escapeHtml(course.courseCode)} · ${ready ? `${roster.length} students` : "no roll list uploaded yet"}</p></div>
+              <span class="badge ${ready ? "green" : "amber"}">${ready ? "Official roster ready" : "Roll list required"}</span>
+            </div>
           </div>
-        </div>
-        ${ready
-          ? `<div class="security-note"><span class="lock">⌾</span><span>This list is visible only to the course-owning professor and enrolled teaching assistants. Each session stores a roster snapshot so marks stay linked to roll numbers.</span></div>`
-          : `<div class="security-note"><span class="lock">⌾</span><span>Attendance runs against your official roll list. Upload it as Excel (.xlsx), PDF, CSV, or JSON — it needs a roll number column and a name column. Students can only mark themselves once a roll list exists.</span></div>`}
-        <div class="setup-actions">
-          <button class="btn" data-route-link="dashboard">Cancel</button>
           ${ready
-            ? `<button class="btn btn-primary" data-action="start-scan">${icon("i-play")} Take attendance</button>`
-            : canManageRoster(course)
-              ? `<button class="btn btn-primary" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload roll list</button>`
-              : `<span class="badge gray">Waiting for the professor's roll list</span>`}
-        </div>
-      </article>
+            ? `<div class="security-note"><span class="lock">⌾</span><span>This list is visible only to the course-owning professor and enrolled teaching assistants. Each session stores a roster snapshot so marks stay linked to roll numbers.</span></div>`
+            : `<div class="security-note"><span class="lock">⌾</span><span>Attendance runs against your official roll list. Upload it as Excel (.xlsx), PDF, CSV, or JSON — it needs a roll number column and a name column. Students can only mark themselves once a roll list exists.</span></div>`}
+          <div class="setup-actions">
+            <button class="btn" data-route-link="dashboard">Cancel</button>
+            ${ready
+              ? `<button class="btn btn-primary" data-action="start-scan">${icon("i-play")} Take attendance</button>`
+              : canManageRoster(course)
+                ? `<button class="btn btn-primary" data-action="view-course-roster" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload roll list</button>`
+                : `<span class="badge gray">Waiting for the professor's roll list</span>`}
+          </div>
+        </article>
+        ${attendanceOverview()}
+        ${pastSessionsListCard()}
+      </div>
       ${attendanceSidePanel(roster.map(student => ({ ...student, present: false })))}
     </div>`;
 }
@@ -5553,6 +5616,11 @@ document.addEventListener("click", async event => {
   if (action === "open-attendance-day") {
     attendanceDayId = event.target.closest("[data-session-id]")?.dataset.sessionId || "";
     return navigate("attendanceday");
+  }
+  if (action === "open-past-session") {
+    const sessionId = event.target.closest("[data-session-id]")?.dataset.sessionId || "";
+    if (!sessionId) return;
+    return openPastAttendanceSession(sessionId);
   }
   if (action === "open-quiz-questions") {
     if (!quizResults) return toast("Choose a quiz first", "error");
