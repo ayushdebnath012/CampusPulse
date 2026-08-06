@@ -1393,6 +1393,15 @@ function renderDashboard() {
   const courseAttendanceStatus = attendanceMatchesCourse ? state.attendanceStatus : "not_started";
   const coursePresentCount = attendanceMatchesCourse ? currentPresentCount() : 0;
   setHeader(`Good morning, ${roleDisplayName()}`, todayLabel());
+  // The classes already recorded belong on the overview too. "Today's classes"
+  // comes off the timetable, so it is empty on any day the course does not
+  // meet — which is most days — and the page then says nothing about a term
+  // that may already be well under way.
+  if (canRunAttendance(course) && backendConfigured() && apiToken && pastSessionsLoadedFor !== course.id) {
+    refreshPastSessions(course.id).then(() => {
+      if (state.route === "dashboard" && selectedCourse()?.id === course.id) renderDashboard();
+    });
+  }
   const stats = workspaceStats();
   const todaysClasses = scheduleForToday();
   view.innerHTML = `
@@ -1434,6 +1443,8 @@ function renderDashboard() {
               : `<p class="stat-label" style="padding:6px 2px">No classes scheduled for today. Add a timetable from the Schedule page.</p>`}
           </div>
         </article>
+
+        ${canRunAttendance(course) ? pastSessionsListCard() : ""}
       </div>
 
       <div class="right-stack">
@@ -5627,6 +5638,9 @@ document.addEventListener("click", async event => {
   if (action === "open-past-session") {
     const sessionId = event.target.closest("[data-session-id]")?.dataset.sessionId || "";
     if (!sessionId) return;
+    // The list also sits on the dashboard, so the route has to move with the
+    // click or the register would render underneath the wrong tab.
+    if (state.route !== "attendance") navigate("attendance");
     return openPastAttendanceSession(sessionId);
   }
   if (action === "open-quiz-questions") {
