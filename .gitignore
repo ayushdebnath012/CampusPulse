@@ -8,3 +8,10 @@ next-env.d.ts
 *.keystore
 android/local.properties
 artifacts/*.apk
+.vscode/
+
+# Scanned paper attendance sheets. This repository is public and the scans are
+# student names, roll numbers and signatures, so they stay on the machine that
+# transcribes them. The transcription itself lives in backend/data, which is
+# ignored for the same reason.
+Attendance/

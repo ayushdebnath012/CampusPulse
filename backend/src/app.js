@@ -72,6 +72,7 @@ function examIdFrom(label, taken) {
 const FIVE_MINUTES = 5 * 60 * 1000;
 const TEN_MINUTES = 10 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+const ONE_YEAR = 365 * 24 * 60 * 60 * 1000;
 const MAX_PUSH_DEVICES_PER_USER = 5;
 const PUSH_DELIVERY_CONCURRENCY = 20;
 // How long a request will wait for phone delivery before answering and
@@ -390,6 +391,45 @@ function attendanceRecord(student) {
     markedAt: null,
     markedBy: null,
   };
+}
+
+/**
+ * The day a paper register was taken, for a class that has already happened.
+ *
+ * A bare "2026-08-04" is read as midday in the server's own timezone: the
+ * weekday then picks out the right scheduled class, and the date the session is
+ * filed under cannot slip either side of midnight when it is written back as
+ * UTC.
+ */
+function pastClassDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    const error = new Error("A class date is required");
+    error.status = 400;
+    throw error;
+  }
+  const parts = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const when = parts
+    ? new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]), 12, 0, 0)
+    : new Date(raw);
+  if (Number.isNaN(when.getTime())) {
+    const error = new Error("That class date is not a real date");
+    error.status = 400;
+    throw error;
+  }
+  if (when.getTime() > Date.now()) {
+    const error = new Error(
+      "A register can only be imported for a class that has already happened",
+    );
+    error.status = 400;
+    throw error;
+  }
+  if (Date.now() - when.getTime() > ONE_YEAR) {
+    const error = new Error("That class date is more than a year ago");
+    error.status = 400;
+    throw error;
+  }
+  return when;
 }
 
 function publicAttendance(session) {
@@ -3082,6 +3122,130 @@ function createApp(options = {}) {
         });
         await deliverNotificationsWithoutBlocking(result.deliveries);
         response.status(201).json({ attendance: publicAttendance(result.session) });
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  /**
+   * Files a register that was taken on paper.
+   *
+   * The live route cannot express a past class: it stamps the session with the
+   * current time and refuses a second register for the same course on the same
+   * day, so a term's worth of paper sheets could never be entered in one
+   * sitting. Here the class date is given outright and the whole register
+   * arrives in one call.
+   *
+   * The session is stored closed. A class from a fortnight ago must never
+   * appear as one students can still check into, and nobody is notified —
+   * announcing that attendance is open for a lecture that already happened
+   * would be nonsense to 310 people.
+   */
+  app.post(
+    "/api/attendance/import",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const startedAt = pastClassDate(request.body.startedAt);
+        const session = await store.update((database) => {
+          const courseId = String(request.body.courseId || "").trim();
+          requireCourse(database, request.user, courseId, "run");
+          const roster = courseRoster(database, courseId);
+          if (!roster.length) {
+            const error = new Error(
+              "Upload the course roll list before importing attendance",
+            );
+            error.status = 409;
+            throw error;
+          }
+          const requestedScheduleId = String(request.body.scheduleId || "").trim();
+          if (
+            requestedScheduleId &&
+            !database.schedule.some(
+              (item) => item.id === requestedScheduleId && item.courseId === courseId,
+            )
+          ) {
+            const error = new Error("Schedule does not belong to this course");
+            error.status = 400;
+            throw error;
+          }
+          // The class the register belongs to, found from the weekday it was
+          // taken on rather than from today.
+          const scheduleId =
+            requestedScheduleId ||
+            scheduledClassNow(database, courseId, startedAt)?.id ||
+            null;
+
+          const day = startedAt.toISOString().slice(0, 10);
+          // Re-running an import must not leave two registers for one class.
+          // Two *different* classes on one day are two registers and both
+          // stand, but when either side has no class attached there is nothing
+          // to tell them apart, so the date alone has to decide — otherwise
+          // adding a timetable between two runs would silently duplicate every
+          // register filed before it.
+          const clash = database.attendanceSessions.some(
+            (item) =>
+              item.courseId === courseId &&
+              item.startedAt &&
+              item.startedAt.slice(0, 10) === day &&
+              (!scheduleId || !item.scheduleId || item.scheduleId === scheduleId),
+          );
+          if (clash) {
+            const error = new Error(
+              `A register already exists for this class on ${day}`,
+            );
+            error.status = 409;
+            throw error;
+          }
+
+          const present = new Set(
+            (Array.isArray(request.body.present) ? request.body.present : [])
+              .map((entry) => String(entry || "").trim().toUpperCase())
+              .filter(Boolean),
+          );
+          // A roll number the roster does not know is a transcription error, and
+          // silently dropping it would quietly mark a student absent.
+          const known = new Set(roster.map((student) => student.rollNumber));
+          const unknown = [...present].filter((roll) => !known.has(roll));
+          if (unknown.length) {
+            const error = new Error(
+              `Not on this course's roll list: ${unknown.slice(0, 10).join(", ")}`,
+            );
+            error.status = 400;
+            throw error;
+          }
+
+          const filedAt = new Date().toISOString();
+          const created = {
+            id: `attendance-${startedAt.getTime()}-${randomToken().slice(0, 6)}`,
+            courseId,
+            scheduleId,
+            // Nobody stood in the room with a phone, so there is no fix to
+            // compare a student against.
+            location: null,
+            startedBy: request.user.id,
+            startedAt: startedAt.toISOString(),
+            status: "closed",
+            closedAt: filedAt,
+            closedBy: request.user.id,
+            // Marks a register that came off paper rather than off phones.
+            importedAt: filedAt,
+            records: roster.map((student) => {
+              const record = attendanceRecord(student);
+              if (present.has(student.rollNumber)) {
+                record.present = true;
+                record.markedAt = startedAt.toISOString();
+                record.markedBy = request.user.id;
+              }
+              return record;
+            }),
+          };
+          database.attendanceSessions.push(created);
+          return created;
+        });
+        response.status(201).json({ attendance: publicAttendance(session) });
       } catch (error) {
         next(error);
       }
