@@ -190,6 +190,60 @@ test("adding a timetable between two runs does not duplicate a filed register", 
   assert.equal(data.attendanceSessions.length, 1);
 });
 
+test("a register is only replaced when the caller asks for it", async (t) => {
+  const server = await createTestServer();
+  t.after(() => server.close());
+  const { professor, course } = await professorWithCourse(server.baseUrl);
+
+  const first = await request(server.baseUrl, "/api/attendance/import", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: course.id, startedAt: "2026-08-04", present: ["23ME10094"] },
+  });
+  assert.equal(first.response.status, 201);
+  const originalId = first.body.attendance.id;
+
+  // Without asking, the existing register stands.
+  const refused = await request(server.baseUrl, "/api/attendance/import", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: course.id, startedAt: "2026-08-04", present: ["24MF10049", "24ME10127"] },
+  });
+  assert.equal(refused.response.status, 409);
+
+  const replaced = await request(server.baseUrl, "/api/attendance/import", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      startedAt: "2026-08-04",
+      present: ["24MF10049", "24ME10127"],
+      replace: true,
+    },
+  });
+  assert.equal(replaced.response.status, 201, JSON.stringify(replaced.body));
+
+  // Replaced in place: same class day, same id, contents rewritten.
+  assert.equal(replaced.body.attendance.id, originalId);
+  assert.equal(replaced.body.attendance.startedAt.slice(0, 10), "2026-08-04");
+  assert.equal(replaced.body.attendance.status, "closed");
+  assert.ok(replaced.body.attendance.replacedAt);
+  assert.deepEqual(
+    replaced.body.attendance.records.filter((r) => r.present).map((r) => r.rollNumber).sort(),
+    ["24ME10127", "24MF10049"],
+  );
+  // The student who was present before is now absent, because the sheet says so.
+  assert.equal(
+    replaced.body.attendance.records.find((r) => r.rollNumber === "23ME10094").present,
+    false,
+  );
+
+  // Still exactly one register for that day, and still no student notified.
+  const data = await server.store.read();
+  assert.equal(data.attendanceSessions.length, 1);
+  assert.equal(data.notifications.length, 0);
+});
+
 test("an import is refused rather than quietly recording the wrong register", async (t) => {
   const server = await createTestServer();
   t.after(() => server.close());

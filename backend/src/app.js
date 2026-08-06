@@ -3185,14 +3185,18 @@ function createApp(options = {}) {
           // to tell them apart, so the date alone has to decide — otherwise
           // adding a timetable between two runs would silently duplicate every
           // register filed before it.
-          const clash = database.attendanceSessions.some(
+          const clash = database.attendanceSessions.find(
             (item) =>
               item.courseId === courseId &&
               item.startedAt &&
               item.startedAt.slice(0, 10) === day &&
               (!scheduleId || !item.scheduleId || item.scheduleId === scheduleId),
           );
-          if (clash) {
+          // Replacing is never the default. A register already on the server may
+          // be the one the class actually marked from their phones, and the
+          // paper sheet does not automatically win — the caller has to say so.
+          const replacing = clash && request.body.replace === true;
+          if (clash && !replacing) {
             const error = new Error(
               `A register already exists for this class on ${day}`,
             );
@@ -3218,6 +3222,34 @@ function createApp(options = {}) {
           }
 
           const filedAt = new Date().toISOString();
+          const markedAt = (clash?.startedAt || startedAt.toISOString());
+          const records = roster.map((student) => {
+            const record = attendanceRecord(student);
+            if (present.has(student.rollNumber)) {
+              record.present = true;
+              record.markedAt = markedAt;
+              record.markedBy = request.user.id;
+            }
+            return record;
+          });
+
+          if (replacing) {
+            // The class day itself is kept — including the real time it was
+            // taken at, if phones recorded one — and only the register's
+            // contents are rewritten from the sheet. Replacing in place rather
+            // than deleting keeps the session's id, so anything already
+            // pointing at this class still resolves.
+            clash.records = records;
+            clash.status = "closed";
+            clash.closedAt = clash.closedAt || filedAt;
+            clash.closedBy = request.user.id;
+            clash.importedAt = filedAt;
+            clash.replacedAt = filedAt;
+            clash.replacedBy = request.user.id;
+            delete clash.proximitySecret;
+            return clash;
+          }
+
           const created = {
             id: `attendance-${startedAt.getTime()}-${randomToken().slice(0, 6)}`,
             courseId,
@@ -3232,15 +3264,7 @@ function createApp(options = {}) {
             closedBy: request.user.id,
             // Marks a register that came off paper rather than off phones.
             importedAt: filedAt,
-            records: roster.map((student) => {
-              const record = attendanceRecord(student);
-              if (present.has(student.rollNumber)) {
-                record.present = true;
-                record.markedAt = startedAt.toISOString();
-                record.markedBy = request.user.id;
-              }
-              return record;
-            }),
+            records,
           };
           database.attendanceSessions.push(created);
           return created;

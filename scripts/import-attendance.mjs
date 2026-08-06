@@ -10,9 +10,16 @@
  *   node scripts/import-attendance.mjs --email prof@example.edu [options]
  *
  *   --api <url>             API base (default: https://campuspulse-api-ayush.onrender.com)
+ *   --list                  Show which registers are already on the server, and
+ *                           how their counts compare with the paper sheets
  *   --dry-run               Print what would be sent and change nothing
  *   --skip-schedule         Leave the timetable alone, import registers only
  *   --skip-registers        Save the timetable only
+ *   --overwrite             Replace a register already on the server with the
+ *                           paper one. The existing register is written to
+ *                           backend/data/attendance-backups first, because the
+ *                           one being replaced may be what the class marked
+ *                           from their phones and there is no undo.
  *   --include-unreviewed    Also import sessions flagged needsReview. Read the
  *                           'note' on each one first — they are flagged because
  *                           importing them would record students absent on the
@@ -21,13 +28,15 @@
  * The password is read from CAMPUSPULSE_PASSWORD so it stays out of your shell
  * history and the process list.
  */
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_API = "https://campuspulse-api-ayush.onrender.com";
+// Ignored by backend/.gitignore along with the rest of backend/data.
+const BACKUP_DIR = path.join(root, "backend/data/attendance-backups");
 
 function parseArgs(argv) {
   const flags = new Set();
@@ -51,6 +60,7 @@ const { flags, values } = parseArgs(process.argv.slice(2));
 const apiBase = (values.get("api") || DEFAULT_API).replace(/\/+$/, "");
 const dryRun = flags.has("dry-run");
 const includeUnreviewed = flags.has("include-unreviewed");
+const overwrite = flags.has("overwrite");
 
 async function api(route, { method = "GET", token, body } = {}) {
   const response = await fetch(`${apiBase}${route}`, {
@@ -151,8 +161,9 @@ async function main() {
   }
   console.log("✓ Every class date falls on a day the course runs.\n");
 
+  // A dry run never contacts the API, so it needs no credentials at all.
   const email = values.get("email");
-  if (!email) fail("Pass --email <your professor login>");
+  if (!email && !dryRun) fail("Pass --email followed by your professor login, e.g. --email you@kgpian.iitkgp.ac.in");
   let password = process.env.CAMPUSPULSE_PASSWORD;
   if (!password && !dryRun) {
     const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -187,6 +198,41 @@ async function main() {
         );
       }
     }
+  }
+
+  // ---- what is already on the server -----------------------------------
+  if (flags.has("list")) {
+    const wanted = new Map();
+    for (const session of sheets.sessions) {
+      wanted.set(`${session.courseCode}::${session.date}`, session);
+    }
+    for (const course of sheets.courses) {
+      const live = courseByCode.get(course.courseCode);
+      const past = await api(`/api/attendance/past?courseId=${encodeURIComponent(live.id)}`, { token });
+      if (!past.ok) fail(`Could not read ${course.courseCode} registers (${past.status})`);
+      console.log(`${course.courseCode} — ${past.body.sessions.length} register(s) on the server`);
+      for (const filed of past.body.sessions.sort((a, b) => a.startedAt.localeCompare(b.startedAt))) {
+        const date = filed.startedAt.slice(0, 10);
+        const sheet = wanted.get(`${course.courseCode}::${date}`);
+        const share = filed.total ? Math.round((filed.present / filed.total) * 100) : 0;
+        // Where a sheet covers the same day, the two counts are shown side by
+        // side: a register taken on phones and one signed on paper rarely agree.
+        const against = sheet && (sheet.presentSerials?.length || sheet.presentRollNumbers?.length)
+          ? `   sheet says ${(sheet.presentSerials || sheet.presentRollNumbers).length}`
+          : "";
+        console.log(`  ${date}  ${String(filed.present).padStart(3)}/${filed.total}  ${String(share).padStart(3)}%${against}`);
+      }
+      const missing = sheets.sessions.filter(
+        (session) =>
+          session.courseCode === course.courseCode &&
+          !past.body.sessions.some((filed) => filed.startedAt.slice(0, 10) === session.date),
+      );
+      for (const session of missing) {
+        console.log(`  ${session.date}  not filed${session.needsReview ? " (sheet needs review)" : ""}`);
+      }
+      console.log("");
+    }
+    return;
   }
 
   // ---- timetable -------------------------------------------------------
@@ -264,8 +310,47 @@ async function main() {
       token,
       body: { courseId: course.id, startedAt: session.date, present },
     });
+    if (created.status === 409 && overwrite) {
+      // Saved before it is replaced, because the register on the server may be
+      // the one the class marked from their phones and there is no undo.
+      const past = await api(`/api/attendance/past?courseId=${encodeURIComponent(course.id)}`, { token });
+      const filed = (past.body?.sessions || []).find((item) => item.startedAt.slice(0, 10) === session.date);
+      let before = null;
+      if (filed) {
+        const full = await api(`/api/attendance/${encodeURIComponent(filed.id)}`, { token });
+        before = full.body?.attendance || null;
+      }
+      // Without a copy of what is there, an overwrite is unrecoverable, so it
+      // does not happen.
+      if (!before) {
+        fail(`${tag}: could not read the register already on the server, so it will not be overwritten`);
+      }
+      const had = before.records.filter((r) => r.present);
+      if (had.map((r) => r.rollNumber).sort().join() === [...present].sort().join()) {
+        console.log(`- ${tag}: already filed and identical, left alone`);
+        skipped += 1;
+        continue;
+      }
+      await mkdir(BACKUP_DIR, { recursive: true });
+      const file = path.join(BACKUP_DIR, `${session.courseCode}-${session.date}-${Date.now()}.json`);
+      await writeFile(file, JSON.stringify(before, null, 2), "utf8");
+      console.log(`  ${tag}: replacing ${had.length}/${before.records.length} with ${present.length}/${roster.students.length}`);
+      console.log(`  backed up to ${path.relative(root, file)}`);
+      const replaced = await api("/api/attendance/import", {
+        method: "POST",
+        token,
+        body: { courseId: course.id, startedAt: session.date, present, replace: true },
+      });
+      if (!replaced.ok) {
+        fail(`${tag} replace failed (${replaced.status}): ${replaced.body?.error || replaced.body}`);
+      }
+      const now = replaced.body.attendance.records.filter((r) => r.present).length;
+      console.log(`✓ ${tag}: overwritten, ${now}/${replaced.body.attendance.records.length} present`);
+      imported += 1;
+      continue;
+    }
     if (created.status === 409) {
-      console.log(`- ${tag}: already filed, left alone`);
+      console.log(`- ${tag}: already filed, left alone (--overwrite replaces it)`);
       skipped += 1;
       continue;
     }
