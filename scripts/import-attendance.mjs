@@ -15,6 +15,8 @@
  *   --dry-run               Print what would be sent and change nothing
  *   --skip-schedule         Leave the timetable alone, import registers only
  *   --skip-registers        Save the timetable only
+ *   --course <code>         Limit register listing/import to one course
+ *   --date <yyyy-mm-dd>     Limit register listing/import to one class date
  *   --overwrite             Replace a register already on the server with the
  *                           paper one. The existing register is written to
  *                           backend/data/attendance-backups first, because the
@@ -116,10 +118,28 @@ async function main() {
     await readFile(path.join(root, "backend/data/course-rosters.json"), "utf8"),
   );
   const rosterByCode = new Map(rosters.map((entry) => [entry.courseCode, entry]));
+  const courseFilter = String(values.get("course") || "").trim().toUpperCase();
+  const dateFilter = String(values.get("date") || "").trim();
+  const selectedSessions = sheets.sessions.filter(
+    (session) =>
+      (!courseFilter || session.courseCode === courseFilter) &&
+      (!dateFilter || session.date === dateFilter),
+  );
+  if (!selectedSessions.length) {
+    fail(
+      `No attendance sheet matches${courseFilter ? ` course ${courseFilter}` : ""}${
+        dateFilter ? ` date ${dateFilter}` : ""
+      }`,
+    );
+  }
+  const selectedCourseCodes = new Set(selectedSessions.map((session) => session.courseCode));
+  const selectedCourses = sheets.courses.filter((course) =>
+    selectedCourseCodes.has(course.courseCode),
+  );
 
   // Cross-check the transcription against the roll lists before anything is
   // sent, so a bad sheet fails here rather than half way through the import.
-  for (const session of sheets.sessions) {
+  for (const session of selectedSessions) {
     const roster = rosterByCode.get(session.courseCode);
     if (!roster) fail(`No roll list for ${session.courseCode} in course-rosters.json`);
     if (session.rosterSize && session.rosterSize !== roster.students.length) {
@@ -148,7 +168,7 @@ async function main() {
     sheets.courses.map((course) => [course.courseCode, new Set(course.classes.map((k) => k.day))]),
   );
   const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  for (const session of sheets.sessions) {
+  for (const session of selectedSessions) {
     const [y, m, d] = session.date.split("-").map(Number);
     const weekday = WEEKDAYS[new Date(y, m - 1, d).getDay()];
     if (weekday !== session.weekday) {
@@ -203,10 +223,10 @@ async function main() {
   // ---- what is already on the server -----------------------------------
   if (flags.has("list")) {
     const wanted = new Map();
-    for (const session of sheets.sessions) {
+    for (const session of selectedSessions) {
       wanted.set(`${session.courseCode}::${session.date}`, session);
     }
-    for (const course of sheets.courses) {
+    for (const course of selectedCourses) {
       const live = courseByCode.get(course.courseCode);
       const past = await api(`/api/attendance/past?courseId=${encodeURIComponent(live.id)}`, { token });
       if (!past.ok) fail(`Could not read ${course.courseCode} registers (${past.status})`);
@@ -222,7 +242,7 @@ async function main() {
           : "";
         console.log(`  ${date}  ${String(filed.present).padStart(3)}/${filed.total}  ${String(share).padStart(3)}%${against}`);
       }
-      const missing = sheets.sessions.filter(
+      const missing = selectedSessions.filter(
         (session) =>
           session.courseCode === course.courseCode &&
           !past.body.sessions.some((filed) => filed.startedAt.slice(0, 10) === session.date),
@@ -277,7 +297,7 @@ async function main() {
     return;
   }
 
-  const ordered = [...sheets.sessions].sort((a, b) => a.date.localeCompare(b.date));
+  const ordered = [...selectedSessions].sort((a, b) => a.date.localeCompare(b.date));
   let imported = 0;
   let skipped = 0;
   for (const session of ordered) {
