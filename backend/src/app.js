@@ -2248,6 +2248,7 @@ function createApp(options = {}) {
               id: session.id,
               startedAt: session.startedAt,
               closedAt: session.closedAt || null,
+              importedAt: session.importedAt || null,
               status: session.status,
               classLabel: classLabelFor(classById.get(session.scheduleId)),
               room: classById.get(session.scheduleId)?.room || course.room || "",
@@ -3240,6 +3241,10 @@ function createApp(options = {}) {
             // than deleting keeps the session's id, so anything already
             // pointing at this class still resolves.
             clash.records = records;
+            // A paper register can be filed before the timetable exists. When
+            // it is replaced later, attach the now-known class so the UI shows
+            // the scheduled time instead of the old phone-session timestamp.
+            if (scheduleId) clash.scheduleId = scheduleId;
             clash.status = "closed";
             clash.closedAt = clash.closedAt || filedAt;
             clash.closedBy = request.user.id;
@@ -3305,6 +3310,7 @@ function createApp(options = {}) {
             scheduleId: item.scheduleId,
             startedAt: item.startedAt,
             closedAt: item.closedAt,
+            importedAt: item.importedAt || null,
             present: item.records.filter((r) => r.present).length,
             total: item.records.length,
           }))
@@ -3411,6 +3417,7 @@ function createApp(options = {}) {
               courseName: course?.name || "",
               startedAt: session.startedAt,
               closedAt: session.closedAt || null,
+              importedAt: session.importedAt || null,
               status: session.status,
               room: scheduled?.room || course?.room || "",
               classLabel: scheduled

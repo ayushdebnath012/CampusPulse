@@ -577,6 +577,7 @@ function pastSessionLabel(session) {
   });
   const parts = [day];
   if (session.classLabel) parts.push(session.classLabel);
+  else if (session.importedAt) parts.push("Paper register");
   else parts.push(started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
   parts.push(`${session.present}/${session.total} present`);
   return parts.join(" · ");
@@ -636,7 +637,7 @@ function pastSessionsListCard() {
         const open = viewingPastAttendance?.id === session.id;
         return `<button class="class-row attendance-day" type="button" data-action="open-past-session" data-session-id="${escapeHtml(session.id)}"${open ? ' aria-current="true"' : ""}>
           <div class="time">${escapeHtml(started.toLocaleDateString([], { weekday: "short" }))}<small>${escapeHtml(started.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
-          <div class="course"><strong>${escapeHtml(session.classLabel || started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</strong><span>${session.present}/${session.total} present</span></div>
+          <div class="course"><strong>${escapeHtml(session.classLabel || (session.importedAt ? "Paper register" : started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })))}</strong><span>${session.present}/${session.total} present</span></div>
           <span class="badge ${open ? "purple" : turnoutTone(share)}">${open ? "Viewing" : `${share}%`}</span>
           <span class="chevron">${icon("i-arrow")}</span>
         </button>`;
@@ -736,7 +737,7 @@ function renderStudentRecord() {
             const when = new Date(session.startedAt);
             return `<div class="class-row">
               <div class="time">${escapeHtml(when.toLocaleDateString([], { weekday: "short" }))}<small>${escapeHtml(when.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
-              <div class="course"><strong>${escapeHtml(session.classLabel || when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}</strong><span>${escapeHtml(session.room || "Room TBA")}${session.present && session.markedVia === "student" ? " · marked over Bluetooth" : ""}</span></div>
+              <div class="course"><strong>${escapeHtml(session.classLabel || (session.importedAt ? "Paper register" : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })))}</strong><span>${escapeHtml(session.room || "Room TBA")}${session.present && session.markedVia === "student" ? " · marked over Bluetooth" : ""}</span></div>
               <span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span>
             </div>`;
           }).join("")}
@@ -2296,57 +2297,22 @@ function stamp(value) {
     : when.toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" });
 }
 
-// Every class day for this course up to today: the timetable supplies the days
-// and dates, and any attendance session held on one supplies the outcome.
-function studentClassDays(course, sessions, weeks = 12) {
-  const byDate = new Map();
-  for (const session of sessions) {
+// Only registers that actually exist belong in attendance history. The
+// timetable is a plan, not proof that attendance was taken on that date.
+function studentClassDays(course, sessions) {
+  return sessions.map(session => {
     const when = new Date(session.startedAt);
-    if (Number.isNaN(when.getTime())) continue;
-    byDate.set(isoDate(when), session);
-  }
-
-  const days = [];
-  const timetable = state.backendSchedule.filter(item => item.courseId === course.id);
-  const today = new Date();
-  today.setHours(12, 0, 0, 0);
-  for (let back = 0; back < weeks * 7; back += 1) {
-    const day = new Date(today);
-    day.setDate(today.getDate() - back);
-    const name = WEEKDAY_NAMES[(day.getDay() + 6) % 7];
-    for (const slot of timetable.filter(item => item.day === name)) {
-      const key = isoDate(day);
-      const session = byDate.get(key);
-      days.push({
-        key: `${key}-${slot.id}`,
-        date: day,
-        dayName: name,
-        classLabel: `${slot.day} · ${slot.start}${slot.end ? `–${slot.end}` : ""}`,
-        room: slot.room || course.room || "",
-        session: session || null,
-        held: Boolean(session),
-        present: Boolean(session?.present),
-      });
-      if (session) byDate.delete(key);
-    }
-  }
-
-  // Sessions held outside the timetable still belong in the record.
-  for (const session of byDate.values()) {
-    const when = new Date(session.startedAt);
-    days.push({
+    if (Number.isNaN(when.getTime())) return null;
+    return {
       key: session.id,
       date: when,
       dayName: WEEKDAY_NAMES[(when.getDay() + 6) % 7],
-      classLabel: session.classLabel || "Extra class",
+      classLabel: session.classLabel || (session.importedAt ? "Paper register" : "Extra class"),
       room: session.room || course.room || "",
       session,
-      held: true,
       present: Boolean(session.present),
-    });
-  }
-
-  return days.sort((left, right) => right.date - left.date);
+    };
+  }).filter(Boolean).sort((left, right) => right.date - left.date);
 }
 
 // The student's own record for the course in view.
@@ -2393,19 +2359,15 @@ function renderStudentAttendance() {
         </div>
       </article>` : ""}
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Every class</h2><p class="stat-label">Each class day so far. Open a recorded one to see its detail.</p></div><span class="badge gray">${classDays.length}</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Recorded classes</h2><p class="stat-label">Only classes where attendance was actually taken.</p></div><span class="badge gray">${classDays.length}</span></div>
         ${classDays.length ? `<div class="class-list">
-          ${classDays.map(day => day.held ? `<button class="class-row attendance-day" type="button" data-action="open-attendance-day" data-session-id="${escapeHtml(day.session.id)}">
+          ${classDays.map(day => `<button class="class-row attendance-day" type="button" data-action="open-attendance-day" data-session-id="${escapeHtml(day.session.id)}">
             <div class="time">${escapeHtml(day.dayName.slice(0, 3))}<small>${escapeHtml(day.date.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
             <div class="course"><strong>${escapeHtml(day.classLabel)}</strong><span>${escapeHtml(day.room || "Room TBA")}</span></div>
             <span class="badge ${day.present ? "green" : "gray"}">${day.present ? "Present" : "Absent"}</span>
             <span class="chevron">${icon("i-arrow")}</span>
-          </button>` : `<div class="class-row is-unrecorded">
-            <div class="time">${escapeHtml(day.dayName.slice(0, 3))}<small>${escapeHtml(day.date.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
-            <div class="course"><strong>${escapeHtml(day.classLabel)}</strong><span>${escapeHtml(day.room || "Room TBA")}</span></div>
-            <span class="badge gray">Not recorded</span>
-          </div>`).join("")}
-        </div>` : `<p class="stat-label">No class on the timetable yet. Your professor adds classes on the Schedule tab.</p>`}
+          </button>`).join("")}
+        </div>` : `<p class="stat-label">No attendance has been taken for this course yet.</p>`}
       </article>
     </div>`;
 }
@@ -2423,10 +2385,13 @@ function renderAttendanceDay() {
         <div class="summary-list" style="margin-top:18px">
           <div class="summary-item"><span>Course</span><strong>${escapeHtml(session.courseCode || "")} · ${escapeHtml(session.courseName || "")}</strong></div>
           <div class="summary-item"><span>Room</span><strong>${escapeHtml(session.room || "Room TBA")}</strong></div>
-          <div class="summary-item"><span>Session opened</span><strong>${escapeHtml(stamp(session.startedAt))}</strong></div>
-          <div class="summary-item"><span>Session closed</span><strong>${session.closedAt ? escapeHtml(stamp(session.closedAt)) : "Still open"}</strong></div>
-          <div class="summary-item"><span>You were marked</span><strong>${session.present ? escapeHtml(stamp(session.markedAt)) : "Not marked"}</strong></div>
-          ${session.present && session.markedVia ? `<div class="summary-item"><span>Marked by</span><strong>${session.markedVia === "student" ? "You, from your phone" : "The course team"}</strong></div>` : ""}
+          ${session.importedAt
+            ? `<div class="summary-item"><span>Source</span><strong>Paper register</strong></div>
+               <div class="summary-item"><span>Your record</span><strong>${session.present ? "Present" : "Absent"}</strong></div>`
+            : `<div class="summary-item"><span>Session opened</span><strong>${escapeHtml(stamp(session.startedAt))}</strong></div>
+               <div class="summary-item"><span>Session closed</span><strong>${session.closedAt ? escapeHtml(stamp(session.closedAt)) : "Still open"}</strong></div>
+               <div class="summary-item"><span>You were marked</span><strong>${session.present ? escapeHtml(stamp(session.markedAt)) : "Not marked"}</strong></div>
+               ${session.present && session.markedVia ? `<div class="summary-item"><span>Marked by</span><strong>${session.markedVia === "student" ? "You, from your phone" : "The course team"}</strong></div>` : ""}`}
         </div>
         ${session.present ? "" : `<div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Nothing was recorded for you in this class. Speak to your professor or TA if that looks wrong.</span></div>`}
       </article>
@@ -2544,7 +2509,9 @@ function attendanceSidePanel(records, sessionOverride) {
       <div class="summary-item"><span>Present</span><strong>${count}</strong></div>
       <div class="summary-item"><span>${missingLabel}</span><strong>${total - count}</strong></div>
       <div class="summary-item"><span>Flagged</span><strong>0</strong></div>
-      <div class="summary-item"><span>Started at</span><strong>${startedAt}</strong></div>
+      ${session?.importedAt
+        ? '<div class="summary-item"><span>Source</span><strong>Paper register</strong></div>'
+        : `<div class="summary-item"><span>Started at</span><strong>${startedAt}</strong></div>`}
     </div>
     <div class="security-note"><span class="lock">⌾</span><span>The course professor and enrolled TAs can mark and close attendance. Students cannot change attendance records.</span></div>
   </aside>`;
@@ -5069,7 +5036,7 @@ document.addEventListener("click", async event => {
     if (!course || !records.length) return toast("Nothing to export yet", "error");
     const started = session?.startedAt ? new Date(session.startedAt) : new Date();
     const stamp = started.toISOString().slice(0, 10);
-    const clock = started.toTimeString().slice(0, 5).replace(":", "");
+    const clock = session?.importedAt ? "paper" : started.toTimeString().slice(0, 5).replace(":", "");
     const present = records.filter(record => record.present).length;
     downloadXlsx(
       `CampusPulse-${course.courseCode}-attendance-${stamp}-${clock}.xlsx`,
@@ -5079,8 +5046,8 @@ document.addEventListener("click", async event => {
         record.rollNumber || "",
         record.name || "",
         record.present ? "Present" : "Absent",
-        record.markedAt ? new Date(record.markedAt).toLocaleString() : "",
-        record.markedVia === "student" ? "Student (Bluetooth)" : record.markedAt ? "Course team" : "",
+        record.markedAt && !session?.importedAt ? new Date(record.markedAt).toLocaleString() : "",
+        session?.importedAt && record.present ? "Paper register" : record.markedVia === "student" ? "Student (Bluetooth)" : record.markedAt ? "Course team" : "",
         record.proximity?.bluetoothMetres ?? "",
         record.proximity ? (record.proximity.locationVerified ? "Yes" : "No") : ""
       ]),
@@ -5208,11 +5175,11 @@ document.addEventListener("click", async event => {
       [
         ...sessions.map(session => [
           new Date(session.startedAt).toLocaleDateString(),
-          session.classLabel || new Date(session.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          session.classLabel || (session.importedAt ? "Paper register" : new Date(session.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
           session.room || "",
           session.present ? "Present" : "Absent",
-          session.markedAt ? new Date(session.markedAt).toLocaleString() : "",
-          session.markedVia === "student" ? "Student (Bluetooth)" : session.markedAt ? "Course team" : ""
+          session.markedAt && !session.importedAt ? new Date(session.markedAt).toLocaleString() : "",
+          session.importedAt && session.present ? "Paper register" : session.markedVia === "student" ? "Student (Bluetooth)" : session.markedAt ? "Course team" : ""
         ]),
         [],
         ["Held", summary.held, "Attended", summary.attended, "Missed", summary.missed],

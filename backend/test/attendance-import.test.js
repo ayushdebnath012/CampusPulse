@@ -170,7 +170,7 @@ test("adding a timetable between two runs does not duplicate a filed register", 
   assert.equal(first.response.status, 201);
   assert.equal(first.body.attendance.scheduleId, null);
 
-  await request(server.baseUrl, `/api/courses/${course.id}/schedule`, {
+  const saved = await request(server.baseUrl, `/api/courses/${course.id}/schedule`, {
     method: "PUT",
     token: professor.token,
     body: {
@@ -178,6 +178,7 @@ test("adding a timetable between two runs does not duplicate a filed register", 
       classes: [{ day: "Tuesday", start: "10:00 AM", end: "11:00 AM", topic: "Soft Computing" }],
     },
   });
+  const tuesday = saved.body.schedule.find((item) => item.day === "Tuesday");
 
   // The same sheet now resolves to a class, but it is still the same class day.
   const again = await request(server.baseUrl, "/api/attendance/import", {
@@ -186,8 +187,25 @@ test("adding a timetable between two runs does not duplicate a filed register", 
     body: { courseId: course.id, startedAt: "2026-08-04", present: ["23ME10094"] },
   });
   assert.equal(again.response.status, 409);
+
+  // An explicit replacement updates the existing register's class metadata,
+  // rather than leaving the UI to display its filing/session timestamp.
+  const replacement = await request(server.baseUrl, "/api/attendance/import", {
+    method: "POST",
+    token: professor.token,
+    body: {
+      courseId: course.id,
+      startedAt: "2026-08-04",
+      present: ["23ME10094"],
+      replace: true,
+    },
+  });
+  assert.equal(replacement.response.status, 201);
+  assert.equal(replacement.body.attendance.id, first.body.attendance.id);
+  assert.equal(replacement.body.attendance.scheduleId, tuesday.id);
   const data = await server.store.read();
   assert.equal(data.attendanceSessions.length, 1);
+  assert.equal(data.attendanceSessions[0].scheduleId, tuesday.id);
 });
 
 test("a register is only replaced when the caller asks for it", async (t) => {

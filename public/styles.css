@@ -807,9 +807,6 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 .review-option.is-wrong { color: #a33; border-color: #f0c9c9; background: var(--red-soft); }
 .review-option.is-wrong .review-mark svg { color: var(--red); }
 
-.class-row.is-unrecorded { opacity: .72; }
-.class-row.is-unrecorded .badge { font-weight: 700; }
-
 .attendance-call.is-idle { border-color: var(--line); box-shadow: none; }
 .attendance-call.is-idle .attendance-call-submit { opacity: .55; }
 
