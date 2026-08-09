@@ -346,7 +346,12 @@ async function main() {
         fail(`${tag}: could not read the register already on the server, so it will not be overwritten`);
       }
       const had = before.records.filter((r) => r.present);
-      if (had.map((r) => r.rollNumber).sort().join() === [...present].sort().join()) {
+      const presentMatches =
+        had.map((r) => r.rollNumber).sort().join() === [...present].sort().join();
+      const rosterMatches =
+        before.records.map((r) => r.rollNumber).sort().join() ===
+        roster.students.map((r) => r.rollNumber).sort().join();
+      if (presentMatches && rosterMatches) {
         console.log(`- ${tag}: already filed and identical, left alone`);
         skipped += 1;
         continue;
