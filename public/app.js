@@ -904,23 +904,63 @@ const loginProfiles = {
 // student as "the app is broken", not "the app is loading".
 let bootSplashTimer = null;
 
+function bindBootSplashMotion() {
+  const splash = authRoot.querySelector("[data-boot-splash]");
+  const visual = splash?.querySelector(".boot-visual");
+  if (
+    !splash ||
+    !visual ||
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+  ) return;
+  let frame = 0;
+
+  function move(event) {
+    const point = event.touches?.[0] || event;
+    const bounds = splash.getBoundingClientRect();
+    const x = Math.max(-1, Math.min(1, (point.clientX - bounds.left) / bounds.width * 2 - 1));
+    const y = Math.max(-1, Math.min(1, (point.clientY - bounds.top) / bounds.height * 2 - 1));
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => {
+      visual.style.setProperty("--boot-x", `${(x * 10).toFixed(2)}px`);
+      visual.style.setProperty("--boot-y", `${(y * 8).toFixed(2)}px`);
+      visual.style.setProperty("--boot-rotate-x", `${(-y * 7).toFixed(2)}deg`);
+      visual.style.setProperty("--boot-rotate-y", `${(x * 7).toFixed(2)}deg`);
+    });
+  }
+
+  function reset() {
+    visual.style.setProperty("--boot-x", "0px");
+    visual.style.setProperty("--boot-y", "0px");
+    visual.style.setProperty("--boot-rotate-x", "0deg");
+    visual.style.setProperty("--boot-rotate-y", "0deg");
+  }
+
+  splash.addEventListener("pointermove", move, { passive: true });
+  splash.addEventListener("pointerleave", reset, { passive: true });
+}
+
 function renderBootSplash() {
   appShell.hidden = true;
   authRoot.hidden = false;
   authRoot.innerHTML = `
-    <div class="boot-splash">
-      <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
-      <div class="boot-spinner" aria-hidden="true"></div>
+    <div class="boot-splash" data-boot-splash role="status" aria-label="CampusPulse is loading">
+      <div class="boot-visual" aria-hidden="true">
+        <span class="boot-orbit boot-orbit-outer"><i></i></span>
+        <span class="boot-orbit boot-orbit-inner"><i></i></span>
+        <span class="boot-pulse"></span>
+        <span class="boot-logo">C</span>
+      </div>
+      <div class="boot-wordmark">Campus<span>Pulse</span></div>
       <p class="boot-message" id="bootMessage">Signing you in…</p>
+      <div class="boot-progress" aria-hidden="true"><span></span></div>
     </div>`;
+  bindBootSplashMotion();
   clearTimeout(bootSplashTimer);
-  // The API sleeps when idle and takes the better part of a minute to wake.
-  // Saying so beats a spinner that looks stuck.
   bootSplashTimer = setTimeout(() => {
     const message = document.querySelector("#bootMessage");
     if (message) {
       message.textContent =
-        "Still connecting — the server may be waking up. This can take up to a minute.";
+        "Still syncing your latest campus data. A slow connection can take a little longer.";
     }
   }, 6000);
 }

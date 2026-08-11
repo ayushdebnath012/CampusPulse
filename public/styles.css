@@ -439,29 +439,130 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 
 /* First paint. Whatever else is slow, the app is never a blank page. */
 .boot-splash {
+  --boot-ink:#25255c;
   min-height:100vh;
+  position:relative;
+  isolation:isolate;
+  overflow:hidden;
   display:flex;
   flex-direction:column;
   align-items:center;
   justify-content:center;
-  gap:20px;
+  gap:14px;
   padding:32px 24px;
   text-align:center;
+  background:
+    radial-gradient(circle at 28% 22%, rgba(119,116,231,.16), transparent 32%),
+    radial-gradient(circle at 72% 76%, rgba(91,91,214,.12), transparent 35%),
+    linear-gradient(155deg, #fbfbff 0%, #f4f4fc 100%);
 }
-.boot-splash .auth-brand { justify-content:center; }
-.boot-spinner {
-  width:26px;
-  height:26px;
-  border:3px solid var(--line);
-  border-top-color:var(--primary);
+.boot-splash::before,
+.boot-splash::after {
+  content:"";
+  position:absolute;
+  z-index:-1;
+  width:42vmin;
+  height:42vmin;
+  border:1px solid rgba(91,91,214,.09);
   border-radius:50%;
-  animation:bootSpin .8s linear infinite;
+}
+.boot-splash::before { top:-18vmin; right:-13vmin; }
+.boot-splash::after { bottom:-20vmin; left:-11vmin; width:52vmin; height:52vmin; }
+.boot-visual {
+  --boot-x:0px;
+  --boot-y:0px;
+  --boot-rotate-x:0deg;
+  --boot-rotate-y:0deg;
+  position:relative;
+  width:148px;
+  height:148px;
+  display:grid;
+  place-items:center;
+  margin-bottom:4px;
+  transform:translate3d(var(--boot-x),var(--boot-y),0) rotateX(var(--boot-rotate-x)) rotateY(var(--boot-rotate-y));
+  transform-style:preserve-3d;
+  transition:transform .18s ease-out;
+  will-change:transform;
+}
+.boot-logo {
+  position:relative;
+  z-index:4;
+  display:grid;
+  place-items:center;
+  width:78px;
+  height:78px;
+  border:1px solid rgba(255,255,255,.55);
+  border-radius:25px;
+  color:white;
+  font-size:42px;
+  font-weight:850;
+  letter-spacing:-.06em;
+  background:linear-gradient(145deg,#7774e7 0%,#5b5bd6 52%,#3f3fa9 100%);
+  box-shadow:0 24px 50px rgba(65,65,170,.28),inset 0 1px 0 rgba(255,255,255,.28);
+  transform:translateZ(20px) rotate(-5deg);
+  animation:bootLogoBreathe 2.4s ease-in-out infinite;
+}
+.boot-logo::after {
+  content:"";
+  position:absolute;
+  inset:7px;
+  border:1px solid rgba(255,255,255,.18);
+  border-radius:19px;
+}
+.boot-orbit,
+.boot-pulse { position:absolute; border-radius:50%; }
+.boot-orbit { z-index:2; border:1px solid rgba(91,91,214,.2); }
+.boot-orbit i {
+  position:absolute;
+  top:50%;
+  right:-4px;
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:var(--primary);
+  box-shadow:0 0 0 5px rgba(91,91,214,.1),0 0 18px rgba(91,91,214,.38);
+}
+.boot-orbit-outer { inset:4px; animation:bootSpin 3.6s linear infinite; }
+.boot-orbit-inner { inset:20px; border-style:dashed; animation:bootSpinReverse 2.8s linear infinite; }
+.boot-orbit-inner i { top:auto; right:auto; bottom:-3px; left:50%; width:6px; height:6px; background:#9a97f0; }
+.boot-pulse {
+  z-index:1;
+  inset:35px;
+  border:1px solid rgba(91,91,214,.22);
+  animation:bootPulse 2.4s ease-out infinite;
+}
+.boot-wordmark { color:var(--boot-ink); font-size:22px; font-weight:780; letter-spacing:-.04em; }
+.boot-wordmark span { color:var(--primary); }
+.boot-message { min-height:21px; max-width:38ch; margin:0; color:var(--muted); font-size:14px; line-height:1.5; }
+.boot-progress {
+  width:112px;
+  height:3px;
+  margin-top:5px;
+  overflow:hidden;
+  border-radius:99px;
+  background:rgba(91,91,214,.12);
+}
+.boot-progress span {
+  display:block;
+  width:44%;
+  height:100%;
+  border-radius:inherit;
+  background:linear-gradient(90deg,#7774e7,var(--primary));
+  animation:bootProgress 1.35s ease-in-out infinite;
 }
 @keyframes bootSpin { to { transform:rotate(360deg); } }
-.boot-message { max-width:34ch; color:var(--muted); font-size:14px; line-height:1.5; }
+@keyframes bootSpinReverse { to { transform:rotate(-360deg); } }
+@keyframes bootLogoBreathe { 50% { transform:translateZ(24px) rotate(-2deg) scale(1.045); } }
+@keyframes bootPulse { 0% { opacity:.7; transform:scale(.82); } 80%,100% { opacity:0; transform:scale(1.75); } }
+@keyframes bootProgress { 0% { transform:translateX(-115%); } 55%,100% { transform:translateX(260%); } }
 .boot-actions { display:flex; flex-direction:column; align-items:center; gap:10px; }
 @media (prefers-reduced-motion: reduce) {
-  .boot-spinner { animation-duration:2.4s; }
+  .boot-logo,
+  .boot-orbit,
+  .boot-pulse,
+  .boot-progress span { animation:none; }
+  .boot-visual { transform:none; transition:none; }
+  .boot-progress span { width:100%; opacity:.55; }
 }
 .auth-layout { display:grid; grid-template-columns:minmax(360px,.92fr) minmax(480px,1.08fr); min-height:100vh; }
 .auth-story { position:relative; overflow:hidden; display:flex; flex-direction:column; justify-content:space-between; padding:50px clamp(34px,5vw,76px); color:white; background:linear-gradient(145deg,#34349a 0%,#5858d8 56%,#7774e7 100%); }
