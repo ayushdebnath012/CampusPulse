@@ -40,7 +40,10 @@ function createPostgresStore(connectionString, options = {}) {
   const pool = new Pool({
     connectionString,
     ssl: options.ssl ? { rejectUnauthorized: false } : undefined,
-    max: Number(options.maxConnections || 20),
+    // Five is enough for this single-document store: writes are serialized and
+    // concurrent reads already share one in-flight query. A pool of twenty only
+    // adds connection memory on the small production instance.
+    max: Number(options.maxConnections || 5),
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
   });

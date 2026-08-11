@@ -2,6 +2,14 @@
 const ACCOUNT_RESET_ID = "reset-to-empty-workspace-2026-08-02";
 
 async function deleteExistingAccountsOnce(store) {
+  // Once the migration marker exists, avoid opening a write transaction on
+  // every boot. PostgreSQL writes load and stringify the full shared document,
+  // including material blobs, which creates a large and needless memory spike
+  // while a small instance is recovering from a restart.
+  const snapshot = await store.read();
+  if (snapshot.maintenance.includes(ACCOUNT_RESET_ID)) {
+    return { applied: false, deletedAccounts: 0, deletedCourses: 0 };
+  }
   return store.update((database) => {
     if (database.maintenance.includes(ACCOUNT_RESET_ID)) {
       return { applied: false, deletedAccounts: 0, deletedCourses: 0 };
@@ -35,6 +43,10 @@ async function deleteExistingAccountsOnce(store) {
 const ATTENDANCE_QUIZ_RESET_ID = "clear-attendance-quiz-2026-08-02";
 
 async function clearAttendanceAndQuizzesOnce(store) {
+  const snapshot = await store.read();
+  if (snapshot.maintenance.includes(ATTENDANCE_QUIZ_RESET_ID)) {
+    return { applied: false };
+  }
   return store.update((database) => {
     if (database.maintenance.includes(ATTENDANCE_QUIZ_RESET_ID)) {
       return { applied: false };

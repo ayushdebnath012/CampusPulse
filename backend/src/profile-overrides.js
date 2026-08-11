@@ -36,6 +36,17 @@ function applyUserProfileOverride(user, env = process.env) {
 async function applyProfessorProfileOverrides(store, env = process.env) {
   const overrides = professorProfileOverrides(env);
   if (!overrides.size) return { updated: 0 };
+  const snapshot = await store.read();
+  const needsUpdate = snapshot.users.some((user) => {
+    if (user.role !== "faculty") return false;
+    const override = overrides.get(String(user.email || "").trim().toLowerCase());
+    return Boolean(
+      override &&
+        (override.phone !== undefined && override.phone !== user.phone ||
+          override.department !== undefined && override.department !== user.department),
+    );
+  });
+  if (!needsUpdate) return { updated: 0 };
   return store.update((database) => {
     let updated = 0;
     database.users = database.users.map((user) => {

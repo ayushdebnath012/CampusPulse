@@ -907,6 +907,7 @@ function createApp(options = {}) {
     (env.DATABASE_URL
       ? createPostgresStore(env.DATABASE_URL, {
           ssl: String(env.DATABASE_SSL || "").toLowerCase() === "true",
+          maxConnections: Number(env.DATABASE_POOL_MAX || 5),
           env,
         })
       : createStore(databasePath, { env }));

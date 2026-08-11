@@ -1,9 +1,9 @@
-// Password hashing runs on libuv's thread pool, which defaults to four threads.
-// A class signing in together queued behind those four and requests timed out,
-// so the pool is widened before anything touches it. This has to happen before
-// the first async crypto or fs call, which is why it leads the file.
+// Password hashing is deliberately limited to four concurrent libuv workers.
+// Each scrypt job reserves a sizeable native-memory buffer, so widening this
+// pool to sixteen can exhaust a small Render instance during a login burst.
+// Requests may queue briefly, but the process stays alive to serve them.
 if (!process.env.UV_THREADPOOL_SIZE) {
-  process.env.UV_THREADPOOL_SIZE = "16";
+  process.env.UV_THREADPOOL_SIZE = "4";
 }
 
 const path = require("node:path");
