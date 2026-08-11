@@ -902,10 +902,16 @@ function createApp(options = {}) {
     options.databasePath ||
     env.DATABASE_PATH ||
     path.resolve(__dirname, "../data/campuspulse.json");
+  // CockroachDB is the primary production target. Keep DATABASE_URL as a
+  // fallback so existing local, staging, and rollback configurations continue
+  // to work while the production secret moves to the clearer name.
+  const postgresUrl = String(
+    env.TARGET_DATABASE_URL || env.DATABASE_URL || "",
+  ).trim();
   const store =
     options.store ||
-    (env.DATABASE_URL
-      ? createPostgresStore(env.DATABASE_URL, {
+    (postgresUrl
+      ? createPostgresStore(postgresUrl, {
           ssl: String(env.DATABASE_SSL || "").toLowerCase() === "true",
           maxConnections: Number(env.DATABASE_POOL_MAX || 5),
           env,
