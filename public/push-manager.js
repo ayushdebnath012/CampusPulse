@@ -3,7 +3,7 @@
 
   const REGISTRATION_KEY = "campusPulsePushRegistration";
   const COURSE_EVENTS_CHANNEL_ID = "campuspulse_events";
-  const POLL_INTERVAL_MS = 30000;
+  const POLL_INTERVAL_MS = 60000;
   const MAX_INBOX_ITEMS = 50;
   const ROUTES = new Set([
     "dashboard",

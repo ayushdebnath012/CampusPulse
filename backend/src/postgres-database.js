@@ -37,6 +37,10 @@ function withoutMaterialBytes(data) {
 
 function createPostgresStore(connectionString, options = {}) {
   const env = options.env || process.env;
+  const cacheValidationTtlMs = Math.max(
+    0,
+    Number(options.cacheValidationTtlMs ?? env.DATABASE_CACHE_TTL_MS ?? 10000) || 0,
+  );
   const transactionAttempts = Math.max(
     1,
     Number(options.transactionAttempts || 5) || 5,
@@ -56,6 +60,7 @@ function createPostgresStore(connectionString, options = {}) {
   // The document last read from Postgres, reused until a write moves the
   // revision on. A sign-in storm then costs one load instead of one per user.
   let cache = null;
+  let cacheValidatedAt = 0;
   let inFlightRead = null;
 
   function ensureTable() {
@@ -125,10 +130,16 @@ function createPostgresStore(connectionString, options = {}) {
     await ensureTable();
     const cached = cache;
     if (cached) {
+      if (Date.now() - cacheValidatedAt < cacheValidationTtlMs) {
+        return cached.data;
+      }
       const revision = await currentRevision();
       // A writer may replace or clear the module-level cache while the query is
       // in flight. The local reference remains valid and must be the one read.
-      if (revision !== null && revision === cached.revision) return cached.data;
+      if (revision !== null && revision === cached.revision) {
+        cacheValidatedAt = Date.now();
+        return cached.data;
+      }
     }
     const fresh = await loadFresh();
     const latest = cache;
@@ -138,6 +149,7 @@ function createPostgresStore(connectionString, options = {}) {
       (fresh.revision !== null && fresh.revision >= latest.revision)
     ) {
       cache = fresh;
+      cacheValidatedAt = Date.now();
       return fresh.data;
     }
     // A concurrent writer installed a newer snapshot while this read was in
@@ -174,12 +186,14 @@ function createPostgresStore(connectionString, options = {}) {
           data: withoutMaterialBytes(data),
           revision: Number(saved.rows[0].revision),
         };
+        cacheValidatedAt = Date.now();
         return outcome;
       } catch (error) {
         await client.query("ROLLBACK").catch(() => {});
         const retryable = error?.code === "40001";
         if (!retryable || attempt + 1 >= transactionAttempts) {
           cache = null;
+          cacheValidatedAt = 0;
           throw error;
         }
       } finally {

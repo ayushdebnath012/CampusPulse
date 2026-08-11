@@ -36,7 +36,7 @@ async function start() {
   const server = app.listen(port, host, () => {
     console.log(`CampusPulse API listening on http://${host}:${port}`);
     console.log(
-      `CampusPulse database: ${process.env.TARGET_DATABASE_URL || process.env.DATABASE_URL ? "PostgreSQL" : databasePath}`,
+      `CampusPulse database: ${process.env.TARGET_DATABASE_URL ? "CockroachDB" : process.env.DATABASE_URL ? "PostgreSQL" : databasePath}`,
     );
   });
   server.headersTimeout = 65000;

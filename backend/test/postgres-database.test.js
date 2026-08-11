@@ -44,7 +44,11 @@ test("a failed write cannot null the cache underneath an in-flight read", async 
     },
   };
 
-  const store = createPostgresStore("postgres://test", { pool, env: {} });
+  const store = createPostgresStore("postgres://test", {
+    pool,
+    env: {},
+    cacheValidationTtlMs: 0,
+  });
   await store.read();
 
   delayRevision = true;
@@ -59,6 +63,34 @@ test("a failed write cannot null the cache underneath an in-flight read", async 
 
   const snapshot = await reading;
   assert.deepEqual(snapshot, document);
+});
+
+test("cached reads avoid repeated database revision traffic within the TTL", async () => {
+  const document = initialData({});
+  let loads = 0;
+  let revisionChecks = 0;
+  const pool = {
+    async query(sql) {
+      const text = String(sql);
+      if (text.includes("CASE") && text.includes("courseMaterials")) {
+        loads += 1;
+        return { rows: [{ data: document, revision: 1 }] };
+      }
+      if (text.includes("SELECT revision")) revisionChecks += 1;
+      return { rows: [] };
+    },
+  };
+  const store = createPostgresStore("postgres://test", {
+    pool,
+    env: {},
+    cacheValidationTtlMs: 10000,
+  });
+
+  await store.read();
+  await store.read();
+
+  assert.equal(loads, 1);
+  assert.equal(revisionChecks, 0);
 });
 
 test("CockroachDB serialization failures retry the complete transaction", async () => {

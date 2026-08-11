@@ -1,6 +1,6 @@
 (() => {
   const savedApiBase = localStorage.getItem("campusPulseApiBase") || "";
-  const defaultApiBase = "https://campuspulse-api-ayush.onrender.com";
+  const defaultApiBase = "https://campuspulse-api-ayush.vercel.app";
   const sameOriginApi =
     (location.hostname === "localhost" && location.port === "8787") ||
     location.hostname.endsWith(".onrender.com")
