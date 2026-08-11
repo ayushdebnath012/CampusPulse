@@ -115,7 +115,7 @@ test("a room signing in at once is served without failures", async (t) => {
   );
 });
 
-test("concurrent reads share one load instead of one per caller", async (t) => {
+test("liveness probes do not load the shared database document", async (t) => {
   const databasePath = await temporaryDatabasePath();
   let loads = 0;
   const { app, store } = createApp({
@@ -130,10 +130,11 @@ test("concurrent reads share one load instead of one per caller", async (t) => {
   const { server, origin } = await listen(app);
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  await Promise.all(
+  const probes = await Promise.all(
     Array.from({ length: 25 }, () => fetch(`${origin}/api/health`)),
   );
-  assert.equal(loads, 25, "each request still asks the store for a snapshot");
+  assert.ok(probes.every((response) => response.ok));
+  assert.equal(loads, 0, "liveness probes must not load the application document");
 });
 
 test("batched writes replay individually when one mutator throws", async () => {

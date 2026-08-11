@@ -1121,43 +1121,30 @@ function createApp(options = {}) {
     await Promise.race([delivery.finally(() => clearTimeout(release)), cap]);
   }
 
-  app.get("/api/health", async (_request, response, next) => {
-    try {
-      const production = String(env.NODE_ENV || "").toLowerCase() === "production";
-      const warnings = production
-        ? [
-            "FIREBASE_SERVICE_ACCOUNT_JSON",
-          ].filter((key) =>
-            key === "FIREBASE_SERVICE_ACCOUNT_JSON"
-              ? !pushNotifier.configured
-              : !String(env[key] || "").trim(),
-          )
-        : [];
-      const data = await store.read();
-      response.json({
-        ok: true,
-        service: "campuspulse-api",
-        version: "1.9.0",
-        // Sign-up needs an emailed code whenever one can be sent.
-        otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
-        emailDelivery:
-          mailer.provider || (mailer.configured ? "configured" : "disabled"),
-        // Makes "nobody got the code" answerable without server shell access.
-        ...(mailer.stats ? { emailRuntime: { ...mailer.stats } } : {}),
-        pushDelivery: pushNotifier.configured
-          ? pushNotifier.provider || "configured"
-          : pushNotifier.status || "disabled",
-        pushConfigured: Boolean(pushNotifier.configured),
-        pushRuntime: { ...pushDeliveryState },
-        courses: data.courses.length,
-        coursesAwaitingRollList: data.courses.filter(
-          (course) => !courseRoster(data, course.id).length,
-        ).length,
-        ...(warnings.length ? { configurationWarnings: warnings } : {}),
-      });
-    } catch (error) {
-      next(error);
-    }
+  app.get("/api/health", (_request, response) => {
+    const production = String(env.NODE_ENV || "").toLowerCase() === "production";
+    const warnings = production
+      ? ["FIREBASE_SERVICE_ACCOUNT_JSON"].filter(() => !pushNotifier.configured)
+      : [];
+    // This is Render's liveness probe, so it must answer without waiting for
+    // PostgreSQL or cloning the shared application document. Database-backed
+    // routes still report their own failures; tying liveness to them caused a
+    // slow database query to restart an otherwise healthy Node process.
+    response.json({
+      ok: true,
+      service: "campuspulse-api",
+      version: "1.9.0",
+      otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
+      emailDelivery:
+        mailer.provider || (mailer.configured ? "configured" : "disabled"),
+      ...(mailer.stats ? { emailRuntime: { ...mailer.stats } } : {}),
+      pushDelivery: pushNotifier.configured
+        ? pushNotifier.provider || "configured"
+        : pushNotifier.status || "disabled",
+      pushConfigured: Boolean(pushNotifier.configured),
+      pushRuntime: { ...pushDeliveryState },
+      ...(warnings.length ? { configurationWarnings: warnings } : {}),
+    });
   });
 
   app.post("/api/auth/signup", async (request, response, next) => {
