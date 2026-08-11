@@ -37,6 +37,10 @@ function withoutMaterialBytes(data) {
 
 function createPostgresStore(connectionString, options = {}) {
   const env = options.env || process.env;
+  const transactionAttempts = Math.max(
+    1,
+    Number(options.transactionAttempts || 5) || 5,
+  );
   const pool =
     options.pool ||
     new Pool({
@@ -143,41 +147,50 @@ function createPostgresStore(connectionString, options = {}) {
 
   const runUpdates = createBatchingUpdater(async (apply) => {
     await ensureTable();
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query(
-        `INSERT INTO campuspulse_store (id, data)
-         VALUES (1, $1::jsonb)
-         ON CONFLICT (id) DO NOTHING`,
-        [JSON.stringify(initialData(env))],
-      );
-      const result = await client.query(
-        "SELECT data FROM campuspulse_store WHERE id = 1 FOR UPDATE",
-      );
-      const data = normalizeData(result.rows[0].data, env);
-      const outcome = await apply(data);
-      const saved = await client.query(
-        `UPDATE campuspulse_store
-         SET data = $1::jsonb, revision = revision + 1, updated_at = NOW()
-         WHERE id = 1
-         RETURNING revision`,
-        [JSON.stringify(data)],
-      );
-      await client.query("COMMIT");
-      // Serve what was just written rather than reloading it.
-      cache = {
-        data: withoutMaterialBytes(data),
-        revision: Number(saved.rows[0].revision),
-      };
-      return outcome;
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => {});
-      cache = null;
-      throw error;
-    } finally {
-      client.release();
+    for (let attempt = 0; attempt < transactionAttempts; attempt += 1) {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          `INSERT INTO campuspulse_store (id, data)
+           VALUES (1, $1::jsonb)
+           ON CONFLICT (id) DO NOTHING`,
+          [JSON.stringify(initialData(env))],
+        );
+        const result = await client.query(
+          "SELECT data FROM campuspulse_store WHERE id = 1 FOR UPDATE",
+        );
+        const data = normalizeData(result.rows[0].data, env);
+        const outcome = await apply(data);
+        const saved = await client.query(
+          `UPDATE campuspulse_store
+           SET data = $1::jsonb, revision = revision + 1, updated_at = NOW()
+           WHERE id = 1
+           RETURNING revision`,
+          [JSON.stringify(data)],
+        );
+        await client.query("COMMIT");
+        cache = {
+          data: withoutMaterialBytes(data),
+          revision: Number(saved.rows[0].revision),
+        };
+        return outcome;
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        const retryable = error?.code === "40001";
+        if (!retryable || attempt + 1 >= transactionAttempts) {
+          cache = null;
+          throw error;
+        }
+      } finally {
+        client.release();
+      }
+      // CockroachDB uses SQLSTATE 40001 when a serializable transaction must
+      // restart. Jitter prevents two contenders from colliding again together.
+      const delay = 10 * 2 ** attempt + Math.floor(Math.random() * 10);
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
+    throw new Error("Database transaction retry limit reached");
   });
 
   return {
