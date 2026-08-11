@@ -18,8 +18,20 @@ android {
         applicationId "in.campuspulse.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 16
-        versionName "1.9.1"
+        // Every CI build gets its own versionCode, from the workflow run number.
+        // Hand-editing this was missed on five separate builds in one day, all
+        // of which shipped as "16": Android then refuses some sideload upgrades,
+        // and a phone cannot tell you which native build it is actually running.
+        // The fallbacks below are only for local builds.
+        //
+        // Resolved into locals first. Written inline, Groovy reads
+        // `versionCode (expr).toInteger()` as `versionCode(expr).toInteger()`
+        // and `versionName expr ?: "x"` as `versionName(expr) ?: "x"`, so both
+        // pass the wrong value to the setter.
+        def resolvedVersionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "17").toInteger()
+        def resolvedVersionName = System.getenv("ANDROID_VERSION_NAME") ?: "1.9.2"
+        versionCode resolvedVersionCode
+        versionName resolvedVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
