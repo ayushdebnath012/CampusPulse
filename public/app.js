@@ -231,6 +231,8 @@ let proximityTimer = null;
 // and whichever one is currently open for read-only review (null = today's).
 let pastAttendanceSessions = [];
 let pastSessionsLoadedFor = "";
+let pastSessionsStatus = "idle";
+let pastSessionsError = "";
 let viewingPastAttendance = null;
 // The student whose whole record the course team is looking at, if any, and
 // the screen it was opened from.
@@ -536,15 +538,27 @@ async function refreshPastSessions(courseId) {
   if (!backendConfigured() || !apiToken || !courseId) {
     pastAttendanceSessions = [];
     pastSessionsLoadedFor = "";
+    pastSessionsStatus = "idle";
+    pastSessionsError = "";
     return;
   }
+  // Clear another course's rows before painting this course. Apart from being
+  // misleading, briefly displaying them would leak course-scoped history.
+  if (pastSessionsLoadedFor !== courseId) pastAttendanceSessions = [];
   pastSessionsLoadedFor = courseId;
+  pastSessionsStatus = "loading";
+  pastSessionsError = "";
   try {
     const result = await apiRequest(`/api/attendance/past?courseId=${encodeURIComponent(courseId)}`);
+    // Course switching can finish a newer request before this one. Never let
+    // the older response overwrite the newly selected course.
+    if (pastSessionsLoadedFor !== courseId) return;
     pastAttendanceSessions = result.sessions || [];
-  } catch {
-    pastAttendanceSessions = [];
-    pastSessionsLoadedFor = "";
+    pastSessionsStatus = "ready";
+  } catch (error) {
+    if (pastSessionsLoadedFor !== courseId) return;
+    pastSessionsStatus = "error";
+    pastSessionsError = error?.message || "Could not load previous attendance.";
   }
 }
 
@@ -553,6 +567,18 @@ async function refreshPastSessions(courseId) {
 // on a quiet day is to look up what a past class recorded.
 function pastSessionsPicker() {
   const current = viewingPastAttendance?.id || "";
+  if (pastSessionsStatus === "loading") {
+    return `<label class="past-session-picker">
+      <span>Previous classes</span>
+      <select class="select" id="pastSessionSelect" disabled><option>Loading attendance history…</option></select>
+    </label>`;
+  }
+  if (pastSessionsStatus === "error") {
+    return `<div class="past-session-picker history-inline-error">
+      <span>Previous classes</span>
+      <button class="btn" type="button" data-action="retry-past-sessions">Retry history</button>
+    </div>`;
+  }
   if (!pastAttendanceSessions.length) {
     return `<label class="past-session-picker">
       <span>Previous classes</span>
@@ -623,7 +649,17 @@ function attendanceOverview() {
 // The dropdown is right for switching classes while a register is on screen,
 // but on the setup page the past classes are the reason to be there at all, so
 // they are listed instead of hidden inside a select.
-function pastSessionsListCard() {
+function pastSessionsListCard({ hideStatus = false } = {}) {
+  if (pastSessionsStatus === "loading") {
+    return hideStatus ? "" : `<article class="card page-card history-status-card" aria-live="polite">
+      <span class="history-spinner" aria-hidden="true"></span><div><h2>Loading previous classes</h2><p>Fetching the attendance registers saved for this course.</p></div>
+    </article>`;
+  }
+  if (pastSessionsStatus === "error") {
+    return hideStatus ? "" : `<article class="card page-card history-status-card history-error" role="alert">
+      <span class="empty-icon">${icon("i-cloud")}</span><div><h2>Attendance history unavailable</h2><p>${escapeHtml(pastSessionsError)}</p><button class="btn" type="button" data-action="retry-past-sessions">Try again</button></div>
+    </article>`;
+  }
   if (!pastAttendanceSessions.length) {
     return `<article class="card page-card">
       <div class="section-head"><div><h2 style="margin:0 0 5px">Previous classes</h2><p class="stat-label">Registers already taken for this course.</p></div><span class="badge gray">0</span></div>
@@ -1223,7 +1259,12 @@ async function refreshOpenAttendance({ rerender = true } = {}) {
 function startOpenAttendancePolling() {
   clearInterval(openAttendanceTimer);
   if (!canSelfMarkAttendance()) return;
-  openAttendanceTimer = setInterval(() => refreshOpenAttendance(), 15000);
+  // Push notifications and route changes provide the fast path. This fallback
+  // stays deliberately light so hundreds of idle phones do not continually
+  // wake the database and make real attendance requests time out.
+  openAttendanceTimer = setInterval(() => {
+    if (document.visibilityState === "visible") refreshOpenAttendance();
+  }, 60000);
 }
 
 async function syncBackendState() {
@@ -1517,6 +1558,154 @@ function render() {
   return renderPlaceholder(state.route);
 }
 
+function attendanceDays() {
+  const days = new Map();
+  [...pastAttendanceSessions]
+    .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt))
+    .forEach(session => {
+      const date = new Date(session.startedAt);
+      const total = Math.max(0, Number(session.total) || 0);
+      const present = Math.max(0, Math.min(total, Number(session.present) || 0));
+      if (!total || Number.isNaN(date.getTime())) return;
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      const day = days.get(key) || { key, date, present: 0, total: 0, classes: 0 };
+      day.present += present;
+      day.total += total;
+      day.classes += 1;
+      days.set(key, day);
+    });
+  return [...days.values()].map(day => ({
+    ...day,
+    percentage: Math.round((day.present / day.total) * 1000) / 10,
+  }));
+}
+
+function attendanceTrendPlot(days) {
+  const recent = days.slice(-10);
+  const width = 720;
+  const height = 260;
+  const left = 48;
+  const right = 18;
+  const top = 18;
+  const bottom = 48;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const x = index => recent.length === 1
+    ? left + plotWidth / 2
+    : left + (index / (recent.length - 1)) * plotWidth;
+  const y = percentage => top + ((100 - percentage) / 100) * plotHeight;
+  const points = recent.map((day, index) => ({
+    ...day,
+    x: x(index),
+    y: y(day.percentage),
+  }));
+  const line = points.map((point, index) =>
+    `${index ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`
+  ).join(" ");
+  const base = top + plotHeight;
+  const area = points.length
+    ? `${line} L ${points.at(-1).x.toFixed(2)} ${base} L ${points[0].x.toFixed(2)} ${base} Z`
+    : "";
+  const labelEvery = recent.length > 6 ? Math.ceil(recent.length / 6) : 1;
+
+  return `<svg class="attendance-trend-chart" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="attendanceTrendTitle attendanceTrendDescription">
+    <title id="attendanceTrendTitle">Percentage present by teaching day</title>
+    <desc id="attendanceTrendDescription">Attendance percentages for the latest ${recent.length} recorded teaching days.</desc>
+    ${[100, 75, 50, 25, 0].map(value => {
+      const rowY = y(value).toFixed(2);
+      return `<g class="attendance-grid-line"><line x1="${left}" y1="${rowY}" x2="${width - right}" y2="${rowY}"/><text x="${left - 10}" y="${Number(rowY) + 4}" text-anchor="end">${value}%</text></g>`;
+    }).join("")}
+    <path class="attendance-area" d="${area}"/>
+    <path class="attendance-line" d="${line}"/>
+    ${points.map((point, index) => {
+      const fullDate = point.date.toLocaleDateString([], { weekday: "long", day: "numeric", month: "long" });
+      const shortDate = point.date.toLocaleDateString([], { day: "numeric", month: "short" });
+      const showLabel = index % labelEvery === 0 || index === points.length - 1;
+      return `<g class="attendance-point" tabindex="0" aria-label="${escapeHtml(`${fullDate}: ${point.percentage}% present`)}">
+        <circle cx="${point.x.toFixed(2)}" cy="${point.y.toFixed(2)}" r="4.5"><title>${escapeHtml(`${fullDate}: ${point.present} of ${point.total} present (${point.percentage}%)`)}</title></circle>
+        ${showLabel ? `<text class="attendance-day-label" x="${point.x.toFixed(2)}" y="${height - 18}" text-anchor="middle">${escapeHtml(shortDate)}</text>` : ""}
+      </g>`;
+    }).join("")}
+  </svg>`;
+}
+
+function attendanceAnalytics() {
+  if (pastSessionsStatus === "loading") {
+    return `<article class="card card-pad attendance-analytics analytics-loading" aria-live="polite">
+      <div class="section-head"><div><h2>Attendance analytics</h2><p class="stat-label">Loading the saved attendance registers…</p></div></div>
+      <div class="analytics-loading-chart" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </article>`;
+  }
+  if (pastSessionsStatus === "error") {
+    return `<article class="card card-pad attendance-analytics analytics-error" role="alert">
+      <div class="section-head"><div><h2>Attendance analytics</h2><p class="stat-label">The saved registers are still in the database.</p></div></div>
+      <div class="analytics-empty"><span class="empty-icon">${icon("i-cloud")}</span><div><strong>Could not load attendance history</strong><p>${escapeHtml(pastSessionsError)}</p><button class="btn" type="button" data-action="retry-past-sessions">Try again</button></div></div>
+    </article>`;
+  }
+  const days = attendanceDays();
+  if (!days.length) {
+    return `<article class="card card-pad attendance-analytics empty-analytics">
+      <div class="section-head"><div><h2>Attendance analytics</h2><p class="stat-label">Daily turnout and participation patterns.</p></div></div>
+      <div class="analytics-empty"><span class="empty-icon">${icon("i-chart")}</span><div><strong>Your charts will appear after the first class</strong><p>Close an attendance register to start tracking percentage present by day.</p></div></div>
+    </article>`;
+  }
+
+  const present = days.reduce((sum, day) => sum + day.present, 0);
+  const possible = days.reduce((sum, day) => sum + day.total, 0);
+  const absent = Math.max(0, possible - present);
+  const average = possible ? Math.round((present / possible) * 1000) / 10 : 0;
+  const change = Math.round((days.at(-1).percentage - days[0].percentage) * 10) / 10;
+  const weekdayRows = Array.from({ length: 7 }, (_, index) => ({
+    index,
+    label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][index],
+    present: 0,
+    total: 0,
+  }));
+  days.forEach(day => {
+    const weekday = (day.date.getDay() + 6) % 7;
+    weekdayRows[weekday].present += day.present;
+    weekdayRows[weekday].total += day.total;
+  });
+  const latestLabel = days.at(-1).date.toLocaleDateString([], { day: "numeric", month: "short" });
+  const trendLabel = change === 0
+    ? "No change across the period"
+    : `${change > 0 ? "+" : ""}${change} points since ${days[0].date.toLocaleDateString([], { day: "numeric", month: "short" })}`;
+
+  return `<article class="card card-pad attendance-analytics">
+    <div class="section-head analytics-heading">
+      <div><h2>Attendance analytics</h2><p class="stat-label">Percentage present across ${days.length} teaching day${days.length === 1 ? "" : "s"}.</p></div>
+      <div class="analytics-head-metrics"><span><b>${days.at(-1).percentage}%</b> Latest · ${escapeHtml(latestLabel)}</span><span class="${change >= 0 ? "positive" : "negative"}">${escapeHtml(trendLabel)}</span></div>
+    </div>
+    <div class="attendance-analytics-grid">
+      <section class="attendance-trend-panel" aria-label="Daily attendance trend">
+        <div class="plot-title"><strong>Percentage present by day</strong><span>Latest ${Math.min(days.length, 10)} days</span></div>
+        ${attendanceTrendPlot(days)}
+      </section>
+      <aside class="attendance-supporting-plots">
+        <section class="mini-plot attendance-share-plot">
+          <div class="plot-title"><strong>Present vs absent</strong><span>${possible} student records</span></div>
+          <div class="attendance-share-content">
+            <div class="attendance-donut" role="img" aria-label="${average}% present overall">
+              <svg viewBox="0 0 42 42" aria-hidden="true"><circle class="donut-track" cx="21" cy="21" r="15.9"/><circle class="donut-value" cx="21" cy="21" r="15.9" pathLength="100" stroke-dasharray="${average} ${Math.max(0, 100 - average)}"/></svg>
+              <span><strong>${average}%</strong><small>present</small></span>
+            </div>
+            <div class="attendance-legend"><span class="present"><i></i><b>${present}</b> Present</span><span class="absent"><i></i><b>${absent}</b> Absent</span></div>
+          </div>
+        </section>
+        <section class="mini-plot weekday-plot">
+          <div class="plot-title"><strong>Attendance by weekday</strong><span>Term average</span></div>
+          <div class="weekday-bars" role="img" aria-label="Average attendance percentage by weekday">
+            ${weekdayRows.map(row => {
+              const percentage = row.total ? Math.round((row.present / row.total) * 100) : 0;
+              return `<div class="weekday-bar ${row.total ? "has-data" : ""}" title="${row.label}: ${row.total ? `${percentage}%` : "No classes"}"><span><i style="height:${row.total ? Math.max(5, percentage) : 3}%"></i></span><b>${row.label.slice(0, 1)}</b></div>`;
+            }).join("")}
+          </div>
+        </section>
+      </aside>
+    </div>
+  </article>`;
+}
+
 function renderDashboard() {
   if (state.userRole === "student") return renderStudentDashboard();
   const course = selectedCourse() || state.courses[0];
@@ -1571,6 +1760,8 @@ function renderDashboard() {
           </article>
         </div>
 
+        ${canRunAttendance(course) ? attendanceAnalytics() : ""}
+
         <article class="card card-pad">
           <div class="section-head"><h2>Today’s classes</h2><button class="text-btn" data-route-link="schedule">View schedule</button></div>
           <div class="class-list">
@@ -1580,7 +1771,7 @@ function renderDashboard() {
           </div>
         </article>
 
-        ${canRunAttendance(course) ? pastSessionsListCard() : ""}
+        ${canRunAttendance(course) ? pastSessionsListCard({ hideStatus: true }) : ""}
       </div>
 
       <div class="right-stack">
@@ -4924,6 +5115,15 @@ document.addEventListener("click", async event => {
     await bootstrapApp();
     return;
   }
+  if (action === "retry-past-sessions") {
+    const course = selectedCourse();
+    if (!course || !canRunAttendance(course)) return;
+    const refresh = refreshPastSessions(course.id);
+    render();
+    await refresh;
+    if (state.selectedCourseId === course.id) render();
+    return;
+  }
   if (action === "sign-out-stuck") {
     signOutLocally();
     authMode = "login";
@@ -6629,6 +6829,7 @@ document.addEventListener("submit", async event => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     syncClassReminders().catch(() => {});
+    if (state.authenticated) refreshOpenAttendance().catch(() => {});
     if (state.authenticated) pushManager?.refresh?.({ silent: true }).catch(() => {});
   }
 });
