@@ -15,3 +15,11 @@ artifacts/*.apk
 # transcribes them. The transcription itself lives in backend/data, which is
 # ignored for the same reason.
 Attendance/
+
+# Everything else that arrives as a roll of real students: exam marks, the
+# printed registers exported from ERP, and the registration list. Same rule as
+# the scans above — the repository is public and these are named individuals.
+Marks/
+rerollsheetsforsoftcomputingmf41601andkbseme603/
+student_registration_details_aug_2026.xlsx
+tmp/
