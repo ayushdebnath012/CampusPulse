@@ -125,4 +125,15 @@ New-CampusPulseIcon "public/icons/icon-192.png" 192 "full"
 New-CampusPulseIcon "public/apple-touch-icon.png" 180 "full"
 New-CampusPulseIcon "public/favicon.png" 64 "square"
 
+$adaptiveIcon = @'
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background"/>
+    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
+</adaptive-icon>
+'@
+$adaptiveIcon | Set-Content -Encoding UTF8 (Join-Path $projectRoot "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml")
+$adaptiveIcon | Set-Content -Encoding UTF8 (Join-Path $projectRoot "android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml")
+
 Write-Output "CampusPulse app icons generated."
