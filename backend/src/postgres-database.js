@@ -160,13 +160,15 @@ function createPostgresStore(connectionString, options = {}) {
   return {
     read() {
       // Callers arriving together share one load instead of queueing behind one
-      // another, which is what turned a burst of sign-ins into timeouts.
+      // another. The snapshot is read-only by contract and is safe to share;
+      // cloning the full document once per caller let a retrying classroom
+      // allocate hundreds of copies before garbage collection could catch up.
       if (!inFlightRead) {
         inFlightRead = readSnapshot().finally(() => {
           inFlightRead = null;
         });
       }
-      return inFlightRead.then(clone);
+      return inFlightRead;
     },
     update(mutator) {
       return runUpdates(mutator);

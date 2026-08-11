@@ -396,13 +396,15 @@ function createStore(filePath, options = {}) {
   return {
     read() {
       // Concurrent callers share one load instead of each re-reading and
-      // re-normalizing the whole file.
+      // re-normalizing the whole file. Reads receive this shared snapshot by
+      // reference: all writes load a separate document through `update`, and
+      // avoiding one full clone per request keeps traffic bursts bounded.
       if (!inFlightRead) {
         inFlightRead = readSnapshot().finally(() => {
           inFlightRead = null;
         });
       }
-      return inFlightRead.then(clone);
+      return inFlightRead;
     },
     update(mutator) {
       return runUpdates(mutator);
