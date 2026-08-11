@@ -33,12 +33,15 @@ async function start() {
       `CampusPulse professor profiles updated: ${profileOverrides.updated} account(s)`,
     );
   }
-  app.listen(port, host, () => {
+  const server = app.listen(port, host, () => {
     console.log(`CampusPulse API listening on http://${host}:${port}`);
     console.log(
       `CampusPulse database: ${process.env.DATABASE_URL ? "PostgreSQL" : databasePath}`,
     );
   });
+  server.headersTimeout = 65000;
+  server.requestTimeout = 60000;
+  server.keepAliveTimeout = 30000;
 }
 
 start().catch((error) => {

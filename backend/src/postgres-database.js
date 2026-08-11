@@ -40,7 +40,9 @@ function createPostgresStore(connectionString, options = {}) {
   const pool = new Pool({
     connectionString,
     ssl: options.ssl ? { rejectUnauthorized: false } : undefined,
-    max: Number(options.maxConnections || 10),
+    max: Number(options.maxConnections || 20),
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
   });
   let ready;
   // The document last read from Postgres, reused until a write moves the

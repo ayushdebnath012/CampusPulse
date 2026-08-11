@@ -512,7 +512,11 @@ function applyAttendanceSnapshot(attendance) {
 }
 
 async function selectAttendanceCourse(courseId) {
-  const course = state.courses.find(item => item.id === courseId);
+  let course = state.courses.find(item => item.id === courseId);
+  if (!course) {
+    try { await syncBackendState(); } catch { /* best effort */ }
+    course = state.courses.find(item => item.id === courseId);
+  }
   if (!course) throw new Error("Course not found");
   if (!canRunAttendance(course)) throw new Error("You cannot run attendance for this course");
   state.selectedCourseId = course.id;
@@ -778,7 +782,11 @@ function applyQuizSnapshot(quiz) {
 }
 
 async function selectQuizCourse(courseId) {
-  const course = state.courses.find(item => item.id === courseId);
+  let course = state.courses.find(item => item.id === courseId);
+  if (!course) {
+    try { await syncBackendState(); } catch { /* best effort */ }
+    course = state.courses.find(item => item.id === courseId);
+  }
   if (!course) throw new Error("Course not found");
   if (state.userRole !== "student" && !canPublishQuiz(course)) {
     throw new Error("You cannot publish quizzes for this course");
@@ -1160,7 +1168,9 @@ async function syncBackendState() {
   state.backendSchedule = payload.schedule || [];
   courseRosters = new Map();
   courseMaterials = new Map();
-  applyAttendanceSnapshot(null);
+  if (!activeAttendance || !state.courses.some(c => c.id === activeAttendance.courseId)) {
+    applyAttendanceSnapshot(null);
+  }
   state.attendanceCheckedIn = false;
   applyQuizSnapshot(null);
   const course = selectedCourse();
@@ -1325,7 +1335,6 @@ function navigate(route, { fromHistory = false } = {}) {
   if (route === "attendance" && state.userRole === "student") {
     Promise.all([
       refreshAttendanceHistory(state.selectedCourseId),
-      refreshMyMarks(state.selectedCourseId),
       refreshOpenAttendance({ rerender: false })
     ]).then(() => {
       if (state.route === "attendance") renderStudentAttendance();
@@ -2345,19 +2354,6 @@ function renderStudentAttendance() {
           <article class="card stat"><div class="stat-top"><span class="stat-icon">${icon("i-calendar")}</span><span class="trend">${summary?.held ?? 0} held</span></div><div class="stat-value">${percentage}%</div><div class="stat-label">Attendance</div></article>
         </div>
       </article>
-      ${myMarks?.exams?.length ? `<article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Exam marks</h2><p class="stat-label">As recorded by your course team.</p></div><span class="badge purple">${myMarks.exams.filter(exam => exam.score !== null).length} recorded</span></div>
-        <div class="roster-scroll">
-          <table class="roster-table">
-            <thead><tr><th>Exam</th><th>Marks</th><th>Out of</th></tr></thead>
-            <tbody>${myMarks.exams.map(exam => `<tr>
-              <td>${escapeHtml(exam.label)}</td>
-              <td class="roster-roll">${exam.score === null ? "—" : exam.score}</td>
-              <td>${exam.maxMarks ?? "—"}</td>
-            </tr>`).join("")}</tbody>
-          </table>
-        </div>
-      </article>` : ""}
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Recorded classes</h2><p class="stat-label">Only classes where attendance was actually taken.</p></div><span class="badge gray">${classDays.length}</span></div>
         ${classDays.length ? `<div class="class-list">
@@ -3348,11 +3344,18 @@ function facultyCourseCard(course, isOpen = false) {
   </article>`;
 }
 
-function rosterTableRow(student, index, editable = false) {
+function rosterTableRow(student, index, editable = false, exams = []) {
   return `<tr>
     <td class="roster-serial">${student.serial || index + 1}</td>
     <td class="roster-roll">${escapeHtml(student.rollNumber)}</td>
     <td>${escapeHtml(student.name)}</td>
+    ${exams.map(exam => {
+      const score = student.marks?.[exam.id];
+      const recorded = score !== null && score !== undefined;
+      return `<td class="roster-mark">${recorded
+        ? `<strong>${escapeHtml(String(score))}</strong>${exam.maxMarks ? `<span> / ${escapeHtml(String(exam.maxMarks))}</span>` : ""}`
+        : '<span class="roster-mark-empty">—</span>'}</td>`;
+    }).join("")}
     <td class="roster-actions">${editable ? `<button class="text-btn danger" type="button" data-action="remove-roster-student" data-roll-number="${escapeHtml(student.rollNumber)}">Remove</button>` : ""}</td>
   </tr>`;
 }
@@ -3365,6 +3368,22 @@ function renderCourseRoster(courseId) {
     return renderStudents();
   }
   const editable = canManageRoster(course);
+  const markStudents = courseMarks?.students || [];
+  const marksByRoll = new Map(
+    markStudents.map(student => [String(student.rollNumber || "").toUpperCase(), student.marks || {}])
+  );
+  // Empty future exams stay out of the roster. As soon as a total or a score
+  // exists, the exam becomes a real mark-book column beside every student.
+  const markedExams = (courseMarks?.exams || []).filter(exam =>
+    exam.maxMarks || markStudents.some(student => student.marks?.[exam.id] !== null && student.marks?.[exam.id] !== undefined)
+  );
+  const rosterWithMarks = roster.map(student => ({
+    ...student,
+    marks: marksByRoll.get(String(student.rollNumber || "").toUpperCase()) || {},
+  }));
+  const studentsWithMarks = rosterWithMarks.filter(student =>
+    markedExams.some(exam => student.marks?.[exam.id] !== null && student.marks?.[exam.id] !== undefined)
+  ).length;
   setHeader(
     `${course.name} roster`,
     state.userRole === "faculty" ? "PROFESSOR WORKSPACE" : "TEACHING ASSISTANT WORKSPACE",
@@ -3374,12 +3393,12 @@ function renderCourseRoster(courseId) {
     <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to students</button>
     <div class="page-grid roster-grid">
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)}${markedExams.length ? ` · ${studentsWithMarks} with recorded marks` : ""}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
         <div class="roster-scroll" id="professorRoster">
           ${roster.length ? `<table class="roster-table">
-            <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th><th></th></tr></thead>
-            <tbody>${roster.map((student, index) => rosterTableRow(student, index, editable)).join("")}</tbody>
+            <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th>${markedExams.map(exam => `<th class="roster-mark-header">${escapeHtml(exam.label)}${exam.maxMarks ? `<span> / ${escapeHtml(String(exam.maxMarks))}</span>` : ""}</th>`).join("")}<th></th></tr></thead>
+            <tbody>${rosterWithMarks.map((student, index) => rosterTableRow(student, index, editable, markedExams)).join("")}</tbody>
           </table>` : `<p class="stat-label" style="padding:14px 2px">No students yet. Upload the roll list, or add them one at a time.</p>`}
         </div>
       </article>
@@ -4887,7 +4906,7 @@ document.addEventListener("click", async event => {
     }
     await switchCourseContext(courseId, { renderView: false, notify: false });
     try {
-      await loadCourseRoster(courseId);
+      await Promise.all([loadCourseRoster(courseId), refreshCourseMarks(courseId)]);
     } catch (error) {
       return toast(error.message || "Could not load the course roster", "error");
     }
@@ -6051,7 +6070,7 @@ document.addEventListener("input", event => {
   // The roster-management screen filters its own rows in place.
   if (event.target.id === "rosterSearch") {
     const query = event.target.value.trim().toLowerCase();
-    document.querySelectorAll("#professorRoster .student-row").forEach(row => {
+    document.querySelectorAll("#professorRoster tbody tr").forEach(row => {
       row.hidden = Boolean(query) && !row.textContent.toLowerCase().includes(query);
     });
     return;
@@ -6496,7 +6515,7 @@ async function refreshEverything() {
       refreshes.push(selectAttendanceCourse(courseId), refreshPastSessions(courseId));
     }
     if (state.userRole === "student") {
-      refreshes.push(refreshAttendanceHistory(courseId), refreshMyQuizzes(courseId), refreshMyMarks(courseId));
+      refreshes.push(refreshAttendanceHistory(courseId), refreshMyQuizzes(courseId));
     }
     if (course && canPublishQuiz(course)) {
       refreshes.push(refreshQuizHistory(courseId), refreshQuizDrafts(courseId));

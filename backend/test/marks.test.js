@@ -264,7 +264,7 @@ test("marks for an exam this course does not record are refused", async (t) => {
   assert.match(refused.body.error, /not one this course records/i);
 });
 
-test("a student sees their own marks and nobody else's", async (t) => {
+test("students cannot access their own marks", async (t) => {
   const server = await startServer();
   t.after(() => server.close());
   const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
@@ -281,15 +281,11 @@ test("a student sees their own marks and nobody else's", async (t) => {
     },
   });
 
+  // Students are blocked from the marks endpoint entirely.
   const mine = await call(server.baseUrl, `/api/marks?courseId=${courseId}`, {
     token: studentToken,
   });
-  assert.equal(mine.status, 200, JSON.stringify(mine.body));
-  const endsem = mine.body.courses[0].exams.find((exam) => exam.id === "endsem");
-  assert.equal(endsem.score, 78);
-  assert.equal(endsem.maxMarks, 100);
-  // The other student's 91 must appear nowhere in the response.
-  assert.equal(JSON.stringify(mine.body).includes("91"), false);
+  assert.equal(mine.status, 403, JSON.stringify(mine.body));
 
   // And the whole-course grid stays closed to them.
   const grid = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {

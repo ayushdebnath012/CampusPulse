@@ -974,19 +974,41 @@ function createApp(options = {}) {
     next();
   });
 
+  // A lightweight cache so repeated requests from the same token do not each
+  // require a full document load. Entries expire after 30 seconds.
+  const SESSION_CACHE_TTL = 30000;
+  const sessionCache = new Map();
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of sessionCache) {
+      if (now - entry.at > SESSION_CACHE_TTL) sessionCache.delete(key);
+    }
+  }, SESSION_CACHE_TTL).unref();
+
   async function authenticate(request, response, next) {
     try {
       const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
       if (!token) return response.status(401).json({ error: "Authentication required" });
+      const tokenHash = sha256(token);
+      const cached = sessionCache.get(tokenHash);
+      if (cached && Date.now() - cached.at < SESSION_CACHE_TTL) {
+        request.user = cached.user;
+        request.sessionTokenHash = tokenHash;
+        return next();
+      }
       const data = await store.read();
       const now = Date.now();
       const session = data.sessions.find(
-        (item) => item.tokenHash === sha256(token) && Date.parse(item.expiresAt) > now,
+        (item) => item.tokenHash === tokenHash && Date.parse(item.expiresAt) > now,
       );
       const user = session && data.users.find((item) => item.id === session.userId);
-      if (!user) return response.status(401).json({ error: "Session expired" });
+      if (!user) {
+        sessionCache.delete(tokenHash);
+        return response.status(401).json({ error: "Session expired" });
+      }
+      sessionCache.set(tokenHash, { user, at: Date.now() });
       request.user = user;
-      request.sessionTokenHash = session.tokenHash;
+      request.sessionTokenHash = tokenHash;
       next();
     } catch (error) {
       next(error);
@@ -1474,6 +1496,7 @@ function createApp(options = {}) {
         );
         return null;
       });
+      sessionCache.clear();
       response.json({ updated: true });
     } catch (error) {
       next(error);
@@ -1561,6 +1584,7 @@ function createApp(options = {}) {
         );
         return { ok: true };
       });
+      sessionCache.clear();
       if (result.error) {
         return response.status(result.status).json({ error: result.error });
       }
@@ -1583,6 +1607,7 @@ function createApp(options = {}) {
         );
         return null;
       });
+      sessionCache.delete(request.sessionTokenHash);
       response.status(204).end();
     } catch (error) {
       next(error);
@@ -2160,6 +2185,9 @@ function createApp(options = {}) {
   // A student's own marks, which are theirs to see.
   app.get("/api/marks", authenticate, async (request, response, next) => {
     try {
+      if (request.user.role === "student") {
+        return response.status(403).json({ error: "Marks are not available" });
+      }
       const data = await store.read();
       const courseId = String(request.query.courseId || "").trim();
       const enrolments = data.enrollments.filter(
