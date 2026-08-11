@@ -1,6 +1,9 @@
 (() => {
   const savedApiBase = localStorage.getItem("campusPulseApiBase") || "";
   const defaultApiBase = "https://campuspulse-api-ayush.vercel.app";
+  const legacyApiBases = new Set([
+    "https://campuspulse-api-ayush.onrender.com",
+  ]);
   const sameOriginApi =
     (location.hostname === "localhost" && location.port === "8787") ||
     location.hostname.endsWith(".onrender.com")
@@ -10,6 +13,8 @@
     apiBase:
       savedApiBase === "offline"
         ? ""
-        : savedApiBase || sameOriginApi || defaultApiBase,
+        : legacyApiBases.has(savedApiBase)
+          ? defaultApiBase
+          : savedApiBase || sameOriginApi || defaultApiBase,
   };
 })();
