@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- New resource IDs prevent third-party launchers from reusing the old icon cache. -->
+    <item name="ic_campuspulse_v2" type="mipmap">@mipmap/ic_launcher</item>
+    <item name="ic_campuspulse_round_v2" type="mipmap">@mipmap/ic_launcher_round</item>
+</resources>

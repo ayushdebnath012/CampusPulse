@@ -68,7 +68,7 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           # Monotonic, and already well past the hand-maintained 16.
           ANDROID_VERSION_CODE: ${{ github.run_number }}
-          ANDROID_VERSION_NAME: 1.9.2+${{ github.run_number }}
+          ANDROID_VERSION_NAME: 1.9.3+${{ github.run_number }}
         run: |
           chmod +x android/gradlew
           cd android
@@ -106,6 +106,6 @@ jobs:
           body: |
             Automatically rebuilt from commit ${{ github.sha }}.
             Download `CampusPulse.apk` below and install it on your device to pick up native (Java/Bluetooth) changes.
-            Web-only (HTML/CSS/JS) changes reach installed apps automatically; native changes require reinstalling this APK.
+            Install this APK over the existing CampusPulse app to update it in place; uninstalling is not required.
           files: CampusPulse.apk
           make_latest: true

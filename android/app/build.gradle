@@ -29,7 +29,7 @@ android {
         // and `versionName expr ?: "x"` as `versionName(expr) ?: "x"`, so both
         // pass the wrong value to the setter.
         def resolvedVersionCode = (System.getenv("ANDROID_VERSION_CODE") ?: "17").toInteger()
-        def resolvedVersionName = System.getenv("ANDROID_VERSION_NAME") ?: "1.9.2"
+        def resolvedVersionName = System.getenv("ANDROID_VERSION_NAME") ?: "1.9.3"
         versionCode resolvedVersionCode
         versionName resolvedVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
