@@ -666,6 +666,12 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 .roster-serial { width:52px; color:var(--muted); }
 .roster-roll { width:120px; font-weight:750; letter-spacing:.02em; }
 .roster-actions { width:80px; text-align:right; }
+.roster-mark-header { min-width:92px; white-space:nowrap; }
+.roster-mark-header span { color:var(--muted); font-weight:650; letter-spacing:0; }
+.roster-mark { min-width:92px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.roster-mark strong { color:var(--primary); font-size:12px; }
+.roster-mark span { color:var(--muted); }
+.roster-mark-empty { color:#a4a3b3; }
 .text-btn.danger { color:var(--red); }
 @media (max-width: 1050px) { .roster-grid { grid-template-columns:1fr; } }
 
