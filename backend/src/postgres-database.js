@@ -37,16 +37,17 @@ function withoutMaterialBytes(data) {
 
 function createPostgresStore(connectionString, options = {}) {
   const env = options.env || process.env;
-  const pool = new Pool({
-    connectionString,
-    ssl: options.ssl ? { rejectUnauthorized: false } : undefined,
-    // Five is enough for this single-document store: writes are serialized and
-    // concurrent reads already share one in-flight query. A pool of twenty only
-    // adds connection memory on the small production instance.
-    max: Number(options.maxConnections || 5),
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
-  });
+  const pool =
+    options.pool ||
+    new Pool({
+      connectionString,
+      ssl: options.ssl ? { rejectUnauthorized: false } : undefined,
+      // Five is enough for this single-document store: writes are serialized
+      // and concurrent reads already share one in-flight query.
+      max: Number(options.maxConnections || 5),
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 10000,
+    });
   let ready;
   // The document last read from Postgres, reused until a write moves the
   // revision on. A sign-in storm then costs one load instead of one per user.
@@ -92,7 +93,7 @@ function createPostgresStore(connectionString, options = {}) {
       // Generated legacy TA codes must survive the response that first revealed
       // them. `data` has material bytes projected out, so the stored blobs are
       // carried across rather than overwritten with nothing.
-      await pool.query(
+      const migrated = await pool.query(
         `UPDATE campuspulse_store
          SET data = jsonb_set(
                $1::jsonb,
@@ -101,21 +102,43 @@ function createPostgresStore(connectionString, options = {}) {
              ),
              revision = revision + 1,
              updated_at = NOW()
-         WHERE id = 1`,
+         WHERE id = 1
+         RETURNING revision`,
         [JSON.stringify({ ...data, courseMaterials: [] })],
       );
+      return {
+        data,
+        revision: migrated.rows[0] ? Number(migrated.rows[0].revision) : null,
+      };
     }
-    return { data, revision: await currentRevision() };
+    // `data` and `revision` come from the same SELECT. Fetching the revision in
+    // a second query allowed a concurrent write to pair old data with its new
+    // revision and poison the cache.
+    return { data, revision: row ? Number(row.revision) : null };
   }
 
   async function readSnapshot() {
     await ensureTable();
-    if (cache) {
+    const cached = cache;
+    if (cached) {
       const revision = await currentRevision();
-      if (revision !== null && revision === cache.revision) return cache.data;
+      // A writer may replace or clear the module-level cache while the query is
+      // in flight. The local reference remains valid and must be the one read.
+      if (revision !== null && revision === cached.revision) return cached.data;
     }
-    cache = await loadFresh();
-    return cache.data;
+    const fresh = await loadFresh();
+    const latest = cache;
+    if (
+      !latest ||
+      latest.revision === null ||
+      (fresh.revision !== null && fresh.revision >= latest.revision)
+    ) {
+      cache = fresh;
+      return fresh.data;
+    }
+    // A concurrent writer installed a newer snapshot while this read was in
+    // flight. Return it instead of replacing it with stale data.
+    return latest.data;
   }
 
   const runUpdates = createBatchingUpdater(async (apply) => {
