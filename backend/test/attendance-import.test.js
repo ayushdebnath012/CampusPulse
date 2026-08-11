@@ -409,3 +409,31 @@ test("a filed register attaches to the class that runs on that weekday", async (
   assert.equal(first.body.attendance.scheduleId, monday.id);
   assert.equal(second.body.attendance.scheduleId, tuesday.id);
 });
+
+test("previous classes come back newest first, however out of order they were filed", async (t) => {
+  const server = await createTestServer();
+  t.after(() => server.close());
+  const { professor, course } = await professorWithCourse(server.baseUrl);
+
+  // Paper sheets get typed up whenever there is time, so the order registers
+  // are filed in says nothing about the order the classes ran in. Filing the
+  // newest class first is the case that used to come back wrong, because the
+  // route reversed the stored order instead of sorting on the class date.
+  for (const date of ["2026-08-10", "2026-07-20", "2026-08-04", "2026-07-28"]) {
+    const filed = await request(server.baseUrl, "/api/attendance/import", {
+      method: "POST",
+      token: professor.token,
+      body: { courseId: course.id, startedAt: date, present: ["23ME10094"] },
+    });
+    assert.equal(filed.response.status, 201, JSON.stringify(filed.body));
+  }
+
+  const past = await request(server.baseUrl, `/api/attendance/past?courseId=${course.id}`, {
+    token: professor.token,
+  });
+  assert.equal(past.response.status, 200);
+  assert.deepEqual(
+    past.body.sessions.map((item) => item.startedAt.slice(0, 10)),
+    ["2026-08-10", "2026-08-04", "2026-07-28", "2026-07-20"],
+  );
+});

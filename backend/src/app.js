@@ -3330,7 +3330,11 @@ function createApp(options = {}) {
             present: item.records.filter((r) => r.present).length,
             total: item.records.length,
           }))
-          .reverse();
+          // Newest class first. Reversing the stored order used to be enough,
+          // but a register filed from a paper sheet is appended on the day it
+          // is typed up, not the day the class ran, so it landed as if it were
+          // the most recent class.
+          .sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt));
         response.json({ sessions });
       } catch (error) {
         next(error);

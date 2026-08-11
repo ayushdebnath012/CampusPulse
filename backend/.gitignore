@@ -1,3 +1,9 @@
-data/*.json
+# Everything under data/ stays on the machine that produced it. This repository
+# is public, and data/ holds the scanned-register transcriptions, the marks and
+# attendance backups taken before an overwrite, and — when the file store is
+# used — the database itself. "data/*.json" only covered files sitting directly
+# in data/, so the backup subdirectories and the transcription notes, all of
+# which carry student names and roll numbers, were left exposed.
+data/
 node_modules/
 .env
