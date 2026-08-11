@@ -897,7 +897,61 @@ const loginProfiles = {
   }
 };
 
+// Shown from the moment the app starts until the saved session is either
+// restored or found to be gone. Restoring it is a chain of requests that each
+// retry for up to a minute, so without something painted here the app is a
+// blank white page for as long as the network is slow — which reads to a
+// student as "the app is broken", not "the app is loading".
+let bootSplashTimer = null;
+
+function renderBootSplash() {
+  appShell.hidden = true;
+  authRoot.hidden = false;
+  authRoot.innerHTML = `
+    <div class="boot-splash">
+      <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
+      <div class="boot-spinner" aria-hidden="true"></div>
+      <p class="boot-message" id="bootMessage">Signing you in…</p>
+    </div>`;
+  clearTimeout(bootSplashTimer);
+  // The API sleeps when idle and takes the better part of a minute to wake.
+  // Saying so beats a spinner that looks stuck.
+  bootSplashTimer = setTimeout(() => {
+    const message = document.querySelector("#bootMessage");
+    if (message) {
+      message.textContent =
+        "Still connecting — the server may be waking up. This can take up to a minute.";
+    }
+  }, 6000);
+}
+
+function clearBootSplash() {
+  clearTimeout(bootSplashTimer);
+  bootSplashTimer = null;
+}
+
+// The saved session is still believed good; we simply could not reach the
+// server. Signing the student out here would lose their session over a bad
+// signal, so offer a retry instead.
+function renderSessionRetry(error) {
+  clearBootSplash();
+  appShell.hidden = true;
+  authRoot.hidden = false;
+  authRoot.innerHTML = `
+    <div class="boot-splash">
+      <div class="auth-brand"><span class="brand-mark">C</span><span class="brand-name">Campus<span>Pulse</span></span></div>
+      <p class="boot-message">${escapeHtml(
+        error?.message || "Could not reach CampusPulse."
+      )}</p>
+      <div class="boot-actions">
+        <button class="btn btn-primary" type="button" data-action="retry-session">Try again</button>
+        <button class="text-btn" type="button" data-action="sign-out-stuck">Sign in with a different account</button>
+      </div>
+    </div>`;
+}
+
 function renderLogin(role = selectedLoginRole, mode = authMode) {
+  clearBootSplash();
   pendingSignup = null;
   courseRosters = new Map();
   courseMaterials = new Map();
@@ -1194,27 +1248,59 @@ async function syncBackendState() {
   startOpenAttendancePolling();
 }
 
+// Only the server saying "this token is no longer valid" should end a session.
+// A timeout, a DNS failure or a 502 from a waking instance says nothing about
+// the token, and treating those as a rejected login logged students out every
+// time their signal dropped.
+function isAuthFailure(error) {
+  return error?.status === 401 || error?.status === 403;
+}
+
+function signOutLocally() {
+  apiToken = "";
+  localStorage.removeItem("campusPulseApiToken");
+  clearSensitiveClientState({ clearImportedSchedule: true });
+  state.authenticated = false;
+  state.accountName = "";
+  state.authEmail = "";
+  persist();
+}
+
 async function restoreBackendSession() {
   if (!backendConfigured() || !apiToken) return false;
-  try {
-    const payload = await apiRequest("/api/me");
-    state.userRole = payload.user.role;
-    state.accountName = payload.user.name;
-    state.authEmail = payload.user.email;
-    state.authenticated = true;
-    await syncBackendState();
-    showApp();
-    return true;
-  } catch {
-    apiToken = "";
-    localStorage.removeItem("campusPulseApiToken");
-    clearSensitiveClientState({ clearImportedSchedule: true });
-    state.authenticated = false;
-    state.accountName = "";
-    state.authEmail = "";
-    persist();
+  const payload = await apiRequest("/api/me").catch((error) => {
+    if (!isAuthFailure(error)) throw error;
+    return null;
+  });
+  if (!payload) {
+    signOutLocally();
     return false;
   }
+  state.userRole = payload.user.role;
+  state.accountName = payload.user.name;
+  state.authEmail = payload.user.email;
+  state.authenticated = true;
+  try {
+    await syncBackendState();
+  } catch (error) {
+    if (isAuthFailure(error)) {
+      signOutLocally();
+      return false;
+    }
+    // Identity is confirmed and the shell can be drawn from what was persisted
+    // last time. Course data that failed to load is a toast, not a dead end —
+    // pull-to-refresh will fetch it again.
+    clearBootSplash();
+    showApp();
+    toast(
+      error?.message || "Could not load your latest course data. Pull down to refresh.",
+      "error"
+    );
+    return true;
+  }
+  clearBootSplash();
+  showApp();
+  return true;
 }
 
 function toast(message, type = "success") {
@@ -4794,6 +4880,16 @@ document.addEventListener("click", async event => {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!action) return;
 
+  if (action === "retry-session") {
+    await bootstrapApp();
+    return;
+  }
+  if (action === "sign-out-stuck") {
+    signOutLocally();
+    authMode = "login";
+    renderLogin(state.userRole);
+    return;
+  }
   if (action === "check-for-updates") {
     if (!updateManager?.state.supported) return toast("Updates are automatic on the web");
     const result = await updateManager.checkForUpdate({ manual: true });
@@ -6630,12 +6726,23 @@ async function refreshEverything() {
   document.addEventListener("touchcancel", reset, { passive: true });
 })();
 
-persist();
-if (backendConfigured() && apiToken) {
-  restoreBackendSession().then((restored) => {
+async function bootstrapApp() {
+  if (!backendConfigured() || !apiToken) {
+    render();
+    return;
+  }
+  // Paint before the first request, never after it.
+  renderBootSplash();
+  try {
+    const restored = await restoreBackendSession();
     if (!restored) render();
-  });
-} else {
-  render();
+  } catch (error) {
+    // Reaching here means the token was never rejected — only the network
+    // failed — so the session is kept and the student is offered a retry.
+    renderSessionRetry(error);
+  }
 }
+
+persist();
+bootstrapApp();
 refreshEmailDeliveryState();

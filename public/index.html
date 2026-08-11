@@ -12,7 +12,7 @@
       content="CampusPulse helps professors manage private courses and official rosters while teaching teams run attendance and quick quizzes."
     />
     <title>CampusPulse — Classroom operations, simplified</title>
-    <link rel="stylesheet" href="styles.css?v=58" />
+    <link rel="stylesheet" href="styles.css?v=59" />
   </head>
   <body>
     <svg class="svg-defs" aria-hidden="true">
@@ -38,6 +38,7 @@
       <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M5 20h14"/></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
       <symbol id="i-logout" viewBox="0 0 24 24"><path d="M15 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3M10 8l-4 4 4 4M6 12h11"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
     </svg>
 
     <section id="authRoot" class="auth-root" aria-live="polite"></section>
@@ -132,10 +133,58 @@
       </div>
       <button class="btn btn-primary" type="button" data-action="restart-to-update">Restart now</button>
     </aside>
+     <!--
+       Last resort. If a script below fails to parse or throws while it is
+       being evaluated, none of its own error handling ever runs and the page
+       stays blank. This listener is registered first so there is always
+       something on screen instead of a white rectangle.
+     -->
+     <script>
+       (function () {
+         var shown = false;
+         function reportBootFailure(detail) {
+           if (shown) return;
+           var authRoot = document.getElementById("authRoot");
+           // A screen already drawn by the app is not a boot failure.
+           if (!authRoot || authRoot.innerHTML.trim()) return;
+           var appShell = document.getElementById("appShell");
+           if (appShell && !appShell.hidden) return;
+           shown = true;
+           authRoot.hidden = false;
+           authRoot.innerHTML =
+             '<div class="boot-splash">' +
+             '<div class="auth-brand"><span class="brand-mark">C</span>' +
+             '<span class="brand-name">Campus<span>Pulse</span></span></div>' +
+             '<p class="boot-message">CampusPulse could not start on this device.' +
+             ' Close the app completely and open it again. If it keeps happening,' +
+             ' send this message to your course team.</p>' +
+             '<p class="boot-message"><code></code></p>' +
+             '<div class="boot-actions">' +
+             '<button class="btn btn-primary" type="button" onclick="location.reload()">Reload</button>' +
+             '</div></div>';
+           // textContent, so a message containing markup cannot be injected.
+           authRoot.querySelector("code").textContent = String(detail || "Unknown error");
+         }
+         window.addEventListener("error", function (event) {
+           reportBootFailure(event.message || (event.error && event.error.message));
+         });
+         window.addEventListener("unhandledrejection", function (event) {
+           var reason = event.reason;
+           reportBootFailure((reason && reason.message) || reason);
+         });
+         // Nothing painted a few seconds after load means boot stalled somewhere
+         // that threw no error at all.
+         window.addEventListener("load", function () {
+           setTimeout(function () {
+             reportBootFailure("Startup timed out before anything was drawn.");
+           }, 15000);
+         });
+       })();
+     </script>
      <script src="config.js?v=13"></script>
      <script src="update-manager.js?v=24"></script>
      <script src="reminder-manager.js?v=2"></script>
      <script src="push-manager.js?v=2"></script>
-     <script src="app.js?v=71"></script>
+     <script src="app.js?v=72"></script>
   </body>
 </html>
