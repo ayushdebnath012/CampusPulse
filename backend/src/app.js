@@ -1931,6 +1931,8 @@ function createApp(options = {}) {
   );
 
   // Every exam, what it is marked out of, and every rostered student's score.
+  // A TA is a student of this course themselves, so they get the grid to enter
+  // marks into but never the scores already in it.
   app.get(
     "/api/courses/:id/marks",
     authenticate,
@@ -1940,6 +1942,7 @@ function createApp(options = {}) {
         const data = await store.read();
         const course = requireCourse(data, request.user, request.params.id, "run");
         const exams = courseExams(course);
+        const scoresHidden = request.user.role !== "faculty";
         const scores = new Map(
           data.courseMarks
             .filter((mark) => mark.courseId === course.id)
@@ -1949,7 +1952,9 @@ function createApp(options = {}) {
           const rollNumber = String(student.rollNumber || "").toUpperCase();
           const marks = {};
           exams.forEach(({ id }) => {
-            marks[id] = scores.get(`${id}::${rollNumber}`)?.score ?? null;
+            marks[id] = scoresHidden
+              ? null
+              : scores.get(`${id}::${rollNumber}`)?.score ?? null;
           });
           return {
             serial: student.serial,
@@ -1958,7 +1963,7 @@ function createApp(options = {}) {
             marks,
           };
         });
-        response.json({ exams, students });
+        response.json({ exams, students, scoresHidden });
       } catch (error) {
         next(error);
       }
@@ -2023,8 +2028,12 @@ function createApp(options = {}) {
                 mark.courseId === course.id && mark.exam === id && mark.score > maxMarks,
             );
             if (tooHigh) {
+              // Naming the student and their score here would hand a TA a way to
+              // read marks back one guess at a time, so only faculty see it.
               const error = new Error(
-                `${tooHigh.rollNumber} already has ${tooHigh.score} for ${label}, so it cannot be out of ${maxMarks}`,
+                request.user.role === "faculty"
+                  ? `${tooHigh.rollNumber} already has ${tooHigh.score} for ${label}, so it cannot be out of ${maxMarks}`
+                  : `A mark already recorded for ${label} is higher than ${maxMarks}, so it cannot be out of that`,
               );
               error.status = 409;
               throw error;
@@ -2176,48 +2185,9 @@ function createApp(options = {}) {
     },
   );
 
-  // A student's own marks, which are theirs to see.
-  app.get("/api/marks", authenticate, async (request, response, next) => {
-    try {
-      if (request.user.role === "student") {
-        return response.status(403).json({ error: "Marks are not available" });
-      }
-      const data = await store.read();
-      const courseId = String(request.query.courseId || "").trim();
-      const enrolments = data.enrollments.filter(
-        (item) => item.userId === request.user.id && (!courseId || item.courseId === courseId),
-      );
-      const courses = enrolments
-        .map((enrolment) => {
-          const course = data.courses.find((item) => item.id === enrolment.courseId);
-          if (!course) return null;
-          const rollNumber = String(
-            enrolment.rollNumber || request.user.rollNumber || "",
-          ).toUpperCase();
-          const exams = courseExams(course);
-          const mine = new Map(
-            data.courseMarks
-              .filter(
-                (mark) => mark.courseId === course.id && mark.rollNumber === rollNumber,
-              )
-              .map((mark) => [mark.exam, mark.score]),
-          );
-          return {
-            courseId: course.id,
-            courseCode: course.courseCode,
-            courseName: course.name,
-            // Only exams the course has actually set up are worth showing.
-            exams: exams
-              .filter((exam) => exam.maxMarks || mine.has(exam.id))
-              .map((exam) => ({ ...exam, score: mine.get(exam.id) ?? null })),
-          };
-        })
-        .filter(Boolean);
-      response.json({ courses });
-    } catch (error) {
-      next(error);
-    }
-  });
+  // Marks are not served to students. There is deliberately no route here that
+  // returns a score to the person it belongs to: results reach students through
+  // the department, not through this app.
 
   // One student's whole record in a course: who they are, and every class the
   // course has held with whether they were there. The course team needs this to
@@ -2286,6 +2256,10 @@ function createApp(options = {}) {
         const held = sessions.length;
         const attended = sessions.filter((session) => session.present).length;
 
+        // The attendance side of this record is the TA's job; the marks side is
+        // not. They keep the exam rows so they can still enter a score, with
+        // whatever is already recorded withheld.
+        const scoresHidden = request.user.role !== "faculty";
         const scored = new Map(
           data.courseMarks
             .filter(
@@ -2295,11 +2269,12 @@ function createApp(options = {}) {
         );
         const marks = courseExams(course).map((exam) => ({
           ...exam,
-          score: scored.get(exam.id) ?? null,
+          score: scoresHidden ? null : scored.get(exam.id) ?? null,
         }));
 
         response.json({
           marks,
+          scoresHidden,
           student: {
             rollNumber,
             serial: rosterEntry?.serial ?? null,

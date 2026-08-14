@@ -85,7 +85,15 @@ async function classroom(baseUrl) {
   });
   assert.equal(joined.status, 201, JSON.stringify(joined.body));
 
-  return { professorToken, studentToken, courseId };
+  const taToken = await signUp(baseUrl, "ta", 2, "24MRK002");
+  const taJoined = await call(baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: taToken,
+    body: { code: course.body.course.taCode, rollNumber: "24MRK002" },
+  });
+  assert.equal(taJoined.status, 201, JSON.stringify(taJoined.body));
+
+  return { professorToken, studentToken, taToken, courseId };
 }
 
 test("marks for a whole exam are recorded and read back", async (t) => {
@@ -281,17 +289,111 @@ test("students cannot access their own marks", async (t) => {
     },
   });
 
-  // Students are blocked from the marks endpoint entirely.
+  // There is no route that hands a student their own marks. It was removed
+  // rather than guarded, so that no later change can quietly re-open it.
   const mine = await call(server.baseUrl, `/api/marks?courseId=${courseId}`, {
     token: studentToken,
   });
-  assert.equal(mine.status, 403, JSON.stringify(mine.body));
+  assert.equal(mine.status, 404, JSON.stringify(mine.body));
 
   // And the whole-course grid stays closed to them.
   const grid = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {
     token: studentToken,
   });
   assert.equal(grid.status, 403);
+});
+
+test("a TA can record marks but never read one back", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, taToken, courseId } = await classroom(server.baseUrl);
+
+  await call(server.baseUrl, `/api/courses/${courseId}/marks/endsem`, {
+    method: "PUT",
+    token: professorToken,
+    body: {
+      maxMarks: 100,
+      entries: [
+        { rollNumber: "24MRK001", score: 78 },
+        { rollNumber: "24MRK003", score: 64 },
+      ],
+    },
+  });
+
+  // The grid still arrives, because a TA needs the roster and the exam columns
+  // to enter marks into. Every score in it is blank.
+  const grid = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {
+    token: taToken,
+  });
+  assert.equal(grid.status, 200, JSON.stringify(grid.body));
+  assert.equal(grid.body.scoresHidden, true);
+  assert.ok(grid.body.students.length >= 3, "the roster still comes through");
+  for (const student of grid.body.students) {
+    for (const [exam, score] of Object.entries(student.marks)) {
+      assert.equal(score, null, `${student.rollNumber} ${exam} leaked to a TA`);
+    }
+  }
+
+  // Nor through a single student's record, which a TA opens for attendance.
+  const record = await call(
+    server.baseUrl,
+    `/api/courses/${courseId}/students/24MRK001`,
+    { token: taToken },
+  );
+  assert.equal(record.status, 200, JSON.stringify(record.body));
+  assert.equal(record.body.scoresHidden, true);
+  assert.ok(record.body.sessions, "attendance is still theirs to see");
+  for (const exam of record.body.marks) {
+    assert.equal(exam.score, null, `${exam.id} leaked through a student record`);
+  }
+
+  // Writing still works, and the receipt counts marks without echoing them.
+  const saved = await call(server.baseUrl, `/api/courses/${courseId}/marks/test1`, {
+    method: "PUT",
+    token: taToken,
+    body: { maxMarks: 20, entries: [{ rollNumber: "24MRK001", score: 15 }] },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.saved, 1);
+
+  const professorView = await call(server.baseUrl, `/api/courses/${courseId}/marks`, {
+    token: professorToken,
+  });
+  const first = professorView.body.students.find(
+    (student) => student.rollNumber === "24MRK001",
+  );
+  assert.equal(first.marks.test1, 15, "the TA's entry reached the professor");
+  assert.equal(professorView.body.scoresHidden, false);
+});
+
+test("lowering an exam total does not name a score to a TA", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, taToken, courseId } = await classroom(server.baseUrl);
+
+  await call(server.baseUrl, `/api/courses/${courseId}/marks/test1`, {
+    method: "PUT",
+    token: professorToken,
+    body: { maxMarks: 50, entries: [{ rollNumber: "24MRK001", score: 47 }] },
+  });
+
+  const exams = [{ id: "test1", label: "Test 1", maxMarks: 10 }];
+  const asTa = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: taToken,
+    body: { exams },
+  });
+  assert.equal(asTa.status, 409);
+  assert.doesNotMatch(asTa.body.error, /24MRK001|47/, "the refusal named a mark");
+
+  // The professor still gets the specific reason, which is what makes it fixable.
+  const asProfessor = await call(server.baseUrl, `/api/courses/${courseId}/exams`, {
+    method: "PUT",
+    token: professorToken,
+    body: { exams },
+  });
+  assert.equal(asProfessor.status, 409);
+  assert.match(asProfessor.body.error, /24MRK001/);
 });
 
 test("a student's record carries their marks alongside their attendance", async (t) => {

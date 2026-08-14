@@ -748,7 +748,9 @@ function renderStudentRecord() {
         </div>
       </article>
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Exam marks</h2><p class="stat-label">Type a mark and press Enter, or leave it blank if they did not sit the exam.</p></div><span class="badge ${marksTotal.outOf ? "purple" : "gray"}">${marksTotal.outOf ? `${marksTotal.scored}/${marksTotal.outOf}` : "Not set up"}</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Exam marks</h2><p class="stat-label">${studentRecord.scoresHidden
+          ? "You can record a mark here, but marks already recorded are visible to the professor only."
+          : "Type a mark and press Enter, or leave it blank if they did not sit the exam."}</p></div><span class="badge ${studentRecord.scoresHidden ? "gray" : marksTotal.outOf ? "purple" : "gray"}">${studentRecord.scoresHidden ? "Hidden" : marksTotal.outOf ? `${marksTotal.scored}/${marksTotal.outOf}` : "Not set up"}</span></div>
         <div class="roster-scroll">
           <table class="roster-table marks-table">
             <thead><tr><th>Exam</th><th>Out of</th><th>Marks</th></tr></thead>
@@ -2572,22 +2574,6 @@ function classRow(time, suffix, title, meta, badge, color, route, courseId = "")
   </div>`;
 }
 
-// A student's own marks, which are theirs to see.
-let myMarks = null;
-
-async function refreshMyMarks(courseId) {
-  if (!backendConfigured() || !apiToken || !courseId) {
-    myMarks = null;
-    return;
-  }
-  try {
-    const payload = await apiRequest(`/api/marks?courseId=${encodeURIComponent(courseId)}`);
-    myMarks = payload.courses?.[0] || null;
-  } catch {
-    myMarks = null;
-  }
-}
-
 async function refreshAttendanceHistory(courseId) {
   if (!backendConfigured() || !apiToken) {
     attendanceHistory = null;
@@ -3710,7 +3696,7 @@ function renderCourseRoster(courseId) {
     <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to students</button>
     <div class="page-grid roster-grid">
       <article class="card page-card">
-        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)}${markedExams.length ? ` · ${studentsWithMarks} with recorded marks` : ""}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
+        <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)}${courseMarks?.scoresHidden ? " · marks visible to the professor only" : markedExams.length ? ` · ${studentsWithMarks} with recorded marks` : ""}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
         <div class="roster-scroll" id="professorRoster">
           ${roster.length ? `<table class="roster-table">
