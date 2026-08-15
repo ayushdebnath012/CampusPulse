@@ -4611,21 +4611,19 @@ const MAX_ROSTER_EXTRA_FIELDS = 12;
 const MAX_EXTRA_LABEL = 60;
 const MAX_EXTRA_VALUE = 200;
 
-// Shared by CSV and Excel: rows are arrays of cell strings, first row the header.
-//
-// A departmental roll list is whatever that department exports — roll, email,
-// phone, hall, year, section, in any combination. Only the name is required;
-// every other column is carried through under the student instead of being
-// dropped, so the professor keeps the contact details they were sent.
-function rosterFromRows(rows, label) {
-  const cleaned = rows.filter(row => row.some(cell => String(cell || "").trim()));
-  if (cleaned.length < 2) throw new Error(`Roster ${label} must include a header and at least one student`);
-  const rawHeaders = cleaned[0].map(header => String(header || "").trim());
+// How far down a sheet the real header row is looked for.
+const MAX_HEADER_SEARCH_ROWS = 10;
+
+// Reads one candidate row as a set of headings, or returns null when it holds
+// no name column and therefore is not the header.
+function rosterColumnsFrom(candidate) {
+  const rawHeaders = candidate.map(header => String(header || "").trim());
   const headers = rawHeaders.map(header => header.toLowerCase().replace(/[^a-z0-9]/g, ""));
   const claimed = new Set();
-  const take = (exact, tokens, exclusions = []) => {
+  const take = (exactList, tokens, exclusions = []) => {
     const free = (index) => !claimed.has(index);
-    let found = headers.findIndex((header, index) => free(index) && exact.includes(header));
+    let found = headers.findIndex((header, index) => free(index) && exactList.includes(header));
+    const exact = found >= 0;
     if (found < 0) {
       found = headers.findIndex((header, index) =>
         free(index)
@@ -4634,15 +4632,23 @@ function rosterFromRows(rows, label) {
       );
     }
     if (found >= 0) claimed.add(found);
-    return found;
+    return { index: found, exact };
   };
   // The unambiguous columns are claimed first so the looser name match cannot
   // wander into one of them.
-  const rollIndex = take(ROLL_HEADERS, ROLL_TOKENS);
-  const emailIndex = take(EMAIL_HEADERS, EMAIL_TOKENS);
-  const phoneIndex = take(PHONE_HEADERS, PHONE_TOKENS);
-  const nameIndex = take(NAME_HEADERS, NAME_TOKENS, NAME_EXCLUSIONS);
-  if (nameIndex < 0) throw new Error(`Roster ${label} needs a name column`);
+  const roll = take(ROLL_HEADERS, ROLL_TOKENS);
+  const email = take(EMAIL_HEADERS, EMAIL_TOKENS);
+  const phone = take(PHONE_HEADERS, PHONE_TOKENS);
+  const name = take(NAME_HEADERS, NAME_TOKENS, NAME_EXCLUSIONS);
+  const { index: rollIndex } = roll;
+  const { index: emailIndex } = email;
+  const { index: phoneIndex } = phone;
+  const nameIndex = name.index;
+  if (nameIndex < 0) return null;
+  // A row filling one cell is a banner rather than a header — unless that cell
+  // is exactly a known heading, since a sheet of nothing but names is real.
+  // "Student Name List 2026" is a title; "Name" is a column.
+  if (rawHeaders.filter(Boolean).length < 2 && !name.exact) return null;
   // Whatever the app has no column of its own for still belongs to the student,
   // kept under the heading the sheet gave it.
   const extraColumns = rawHeaders
@@ -4653,9 +4659,41 @@ function rosterFromRows(rows, label) {
       && !SERIAL_HEADERS.includes(headers[column.index])
     )
     .slice(0, MAX_ROSTER_EXTRA_FIELDS);
+  return {
+    rollIndex, emailIndex, phoneIndex, nameIndex, extraColumns,
+    // How much of the row was recognised, so the real header beats a title
+    // that happens to contain one of the words.
+    score: [rollIndex, emailIndex, phoneIndex, nameIndex].filter(index => index >= 0).length,
+  };
+}
+
+// Shared by CSV and Excel: rows are arrays of cell strings.
+//
+// A departmental roll list is whatever that department exports — roll, email,
+// phone, hall, year, section, in any combination. Only the name is required;
+// every other column is carried through under the student instead of being
+// dropped, so the professor keeps the contact details they were sent.
+//
+// The header is searched for rather than assumed to be the first row: these
+// exports routinely open with a title and a subtitle above the real headings.
+function rosterFromRows(rows, label) {
+  const cleaned = rows.filter(row => row.some(cell => String(cell || "").trim()));
+  if (cleaned.length < 2) throw new Error(`Roster ${label} must include a header and at least one student`);
+  let headerRow = -1;
+  let columns = null;
+  const limit = Math.min(cleaned.length - 1, MAX_HEADER_SEARCH_ROWS);
+  for (let index = 0; index < limit; index += 1) {
+    const candidate = rosterColumnsFrom(cleaned[index]);
+    if (candidate && (!columns || candidate.score > columns.score)) {
+      headerRow = index;
+      columns = candidate;
+    }
+  }
+  if (!columns) throw new Error(`Roster ${label} needs a name column`);
+  const { rollIndex, emailIndex, phoneIndex, nameIndex, extraColumns } = columns;
 
   return cleaned
-    .slice(1)
+    .slice(headerRow + 1)
     .map(row => {
       const cell = index => (index >= 0 ? String(row[index] ?? "").trim() : "");
       const extra = {};
