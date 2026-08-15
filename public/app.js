@@ -2248,6 +2248,10 @@ async function readTimetableFile(file) {
   let rows;
   if (name.endsWith(".xlsx")) {
     rows = await xlsxRows(await file.arrayBuffer());
+  } else if (!/\.(csv|txt)$/.test(name)) {
+    // The picker no longer filters by type, so the wrong file is named as
+    // such rather than failing later as an unreadable sheet.
+    throw new Error("Upload the timetable as .xlsx or .csv");
   } else {
     rows = (await file.text())
       .split(/\r?\n/)
@@ -2324,7 +2328,7 @@ function renderSchedule() {
       <div><strong>Weekly timetable</strong><span>Upload one grid covering every course you teach. Each class is filed under the course code in its cell; anything unlabelled goes to ${escapeHtml(course.courseCode)}. Courses named in the file have their classes replaced.</span></div>
       <div class="setup-actions">
         <button class="btn btn-primary" data-action="choose-timetable-upload">${icon("i-upload")} Upload timetable</button>
-        <input id="timetableFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
+        <input id="timetableFile" type="file" hidden />
       </div>
     </div>` : ""}
     <article class="card page-card calendar-page schedule-calendar-card">
@@ -2343,7 +2347,7 @@ function renderSchedule() {
       </div>
     </article>
     <article class="card page-card weekly-agenda-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Entire week</h2><p class="stat-label">Previous days remain visible, followed by today and upcoming classes.</p></div><div class="setup-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span>${isStudent ? `<button class="btn" data-action="import-schedule">${icon("i-upload")} Import CSV / ICS</button><input id="scheduleFile" type="file" accept=".csv,.ics,text/csv,text/calendar" hidden />` : ""}</div></div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Entire week</h2><p class="stat-label">Previous days remain visible, followed by today and upcoming classes.</p></div><div class="setup-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span>${isStudent ? `<button class="btn" data-action="import-schedule">${icon("i-upload")} Import CSV / ICS</button><input id="scheduleFile" type="file" hidden />` : ""}</div></div>
       <div class="weekly-agenda">
         ${weekDays.map((day, dayIndex) => weeklyAgendaDay({
           day,
@@ -3775,7 +3779,7 @@ function renderCourseRoster(courseId) {
         </form>
         <div class="setup-actions" style="margin-top:16px">
           <button class="btn" data-action="choose-roster-upload">${icon("i-upload")} Upload roll list</button>
-          <input id="rosterUploadFile" type="file" accept=".xlsx,.pdf,.csv,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/pdf,text/csv,application/json" hidden />
+          <input id="rosterUploadFile" type="file" hidden />
         </div>
         <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Uploading a file replaces the whole list. Removing a student also withdraws their enrolment from this course. Students never receive this list.</span></div>
       </aside>` : `<aside class="card page-card"><div class="section-head"><h3>Official roll list</h3></div><div class="security-note"><span class="lock">⌾</span><span>This roster is read-only for your account.</span></div></aside>`}
@@ -4380,7 +4384,7 @@ function renderStudents() {
           value="${courseMarks?.exams?.[0]?.maxMarks ?? ""}" />
         <div class="setup-actions" style="margin-top:14px">
           <button class="btn btn-soft" type="button" data-action="upload-exam-marks" data-course-id="${escapeHtml(course.id)}">${icon("i-upload")} Upload marks sheet</button>
-          <input id="examMarksFile" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden />
+          <input id="examMarksFile" type="file" hidden />
         </div>
         <div class="security-note" style="margin-top:14px"><span class="lock">⌾</span><span>The sheet needs a roll number column and a marks column. Anyone left out keeps the mark they already have, so a partial sheet is fine.</span></div>
       </aside>` : ""}
@@ -5196,6 +5200,11 @@ async function readRosterFile(file) {
   if (name.endsWith(".pdf")) return parseRosterPdf(await file.arrayBuffer());
   if (name.endsWith(".xls")) {
     throw new Error("Save the sheet as .xlsx or CSV — the old .xls format is not supported");
+  }
+  // The picker no longer filters by type, so an unreadable choice is named as
+  // such rather than failing further in as a malformed CSV.
+  if (!/\.(csv|json|txt)$/.test(name)) {
+    throw new Error("Upload the roll list as .xlsx, .pdf, .csv or .json");
   }
   return parseRosterUpload(await file.text(), file.name);
 }
