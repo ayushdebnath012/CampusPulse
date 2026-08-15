@@ -633,6 +633,76 @@ function createJoinCode(database, reserved = new Set()) {
   return code;
 }
 
+const MAX_ROSTER_EXTRA_FIELDS = 12;
+
+/**
+ * Keeps the columns a roll list carried beyond the ones the app models itself.
+ *
+ * Departments export whatever their office holds — hall, year, section,
+ * guardian contact — and that detail is the professor's copy of the list, so it
+ * is stored under the student rather than discarded at the door. Values are
+ * flattened to bounded strings: this is record-keeping, not a nested document.
+ */
+function sanitizeRosterExtra(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const extra = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (Object.keys(extra).length >= MAX_ROSTER_EXTRA_FIELDS) break;
+    if (raw === null || raw === undefined || typeof raw === "object") continue;
+    const label = String(key).trim().slice(0, 60);
+    const text = String(raw).trim().slice(0, 200);
+    if (label && text) extra[label] = text;
+  }
+  return Object.keys(extra).length ? extra : null;
+}
+
+/**
+ * Takes one entry off a roll list and settles what followed from it.
+ *
+ * Shared by both removal routes: an entry is identified by roll number when it
+ * has one and by its printed serial when it does not, since a name-only entry
+ * would otherwise be impossible to remove.
+ */
+function removeRosterEntry(database, course, matches) {
+  const target = courseRoster(database, course.id).find(matches);
+  if (!target) {
+    const error = new Error("That student is not on this roll list");
+    error.status = 404;
+    throw error;
+  }
+  database.courseStudents = database.courseStudents.filter(
+    (student) => student !== target,
+  );
+  // Keep the printed order contiguous after the gap.
+  courseRoster(database, course.id).forEach((student, index) => {
+    student.serial = index + 1;
+  });
+  // Enrolment and open sessions are keyed by roll number, so an entry that
+  // never had one has nothing else hanging off it.
+  if (target.rollNumber) {
+    // Removing a student withdraws their admission to the course.
+    database.enrollments = database.enrollments.filter(
+      (item) =>
+        !(item.courseId === course.id && item.rollNumber === target.rollNumber),
+    );
+    // Closed sessions stay as they were recorded on the day.
+    database.attendanceSessions.forEach((session) => {
+      if (session.courseId === course.id && session.status === "open") {
+        session.records = session.records.filter(
+          (record) => record.rollNumber !== target.rollNumber,
+        );
+      }
+    });
+  }
+  const students = courseRoster(database, course.id);
+  course.students = students.length;
+  course.rosterUpdatedAt = new Date().toISOString();
+  return students;
+}
+
+// Only the name is required. An entry without a roll number is still a student
+// on the list; it simply cannot be matched to attendance or marks, both of
+// which key on the roll number.
 function normalizeRosterUpload(students, courseId) {
   if (!Array.isArray(students) || !students.length || students.length > 500) {
     const error = new Error("Upload a roster containing 1–500 students");
@@ -645,22 +715,30 @@ function normalizeRosterUpload(students, courseId) {
       .trim()
       .toUpperCase();
     const name = String(student.name || "").trim().replace(/\s+/g, " ");
-    if (!rollNumber || rollNumber.length > 40 || name.length < 2 || name.length > 120) {
+    if (name.length < 2 || name.length > 120 || rollNumber.length > 40) {
       const error = new Error(`Invalid roster entry at row ${index + 1}`);
       error.status = 400;
       throw error;
     }
-    if (seen.has(rollNumber)) {
-      const error = new Error(`Duplicate roll number at row ${index + 1}`);
-      error.status = 400;
-      throw error;
+    if (rollNumber) {
+      if (seen.has(rollNumber)) {
+        const error = new Error(`Duplicate roll number at row ${index + 1}`);
+        error.status = 400;
+        throw error;
+      }
+      seen.add(rollNumber);
     }
-    seen.add(rollNumber);
+    const email = String(student.email || "").trim().slice(0, 160);
+    const phone = String(student.phone || "").trim().slice(0, 32);
+    const extra = sanitizeRosterExtra(student.extra);
     return {
       courseId,
       serial: index + 1,
       rollNumber,
       name,
+      ...(email ? { email } : {}),
+      ...(phone ? { phone } : {}),
+      ...(extra ? { extra } : {}),
     };
   });
 }
@@ -2610,22 +2688,29 @@ function createApp(options = {}) {
             .trim()
             .toUpperCase();
           const name = String(request.body.name || "").trim().replace(/\s+/g, " ");
-          if (!rollNumber || rollNumber.length > 40 || name.length < 2 || name.length > 120) {
-            const error = new Error("Enter a valid roll number and name");
+          if (name.length < 2 || name.length > 120 || rollNumber.length > 40) {
+            const error = new Error("Enter a valid student name");
             error.status = 400;
             throw error;
           }
           const roster = courseRoster(database, course.id);
-          if (roster.some((student) => student.rollNumber === rollNumber)) {
+          // Blank rolls do not collide with each other, only real ones do.
+          if (rollNumber && roster.some((student) => student.rollNumber === rollNumber)) {
             const error = new Error("That roll number is already on this roll list");
             error.status = 409;
             throw error;
           }
+          const email = String(request.body.email || "").trim().slice(0, 160);
+          const phone = String(request.body.phone || "").trim().slice(0, 32);
+          const extra = sanitizeRosterExtra(request.body.extra);
           const added = {
             courseId: course.id,
             serial: roster.length + 1,
             rollNumber,
             name,
+            ...(email ? { email } : {}),
+            ...(phone ? { phone } : {}),
+            ...(extra ? { extra } : {}),
           };
           database.courseStudents.push(added);
           // An open session was snapshotted before this student existed.
@@ -2648,6 +2733,45 @@ function createApp(options = {}) {
     },
   );
 
+  // A name-only entry has no roll number to address it by, so it is removed by
+  // the serial the roll list prints against it. Registered before the roll
+  // number route only for readability; the two never match the same path.
+  app.delete(
+    "/api/courses/:id/roster/entry/:serial",
+    authenticate,
+    requireRoles("faculty", "ta"),
+    async (request, response, next) => {
+      try {
+        const result = await store.update((database) => {
+          const course = requireCourse(
+            database,
+            request.user,
+            request.params.id,
+            "run",
+          );
+          const serial = Number(request.params.serial);
+          if (!Number.isInteger(serial) || serial < 1) {
+            const error = new Error("That student is not on this roll list");
+            error.status = 404;
+            throw error;
+          }
+          const students = removeRosterEntry(
+            database,
+            course,
+            (student) => student.serial === serial,
+          );
+          return {
+            course: publicCourse(database, request.user, course),
+            students,
+          };
+        });
+        response.json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   app.delete(
     "/api/courses/:id/roster/:rollNumber",
     authenticate,
@@ -2664,39 +2788,11 @@ function createApp(options = {}) {
           const rollNumber = String(request.params.rollNumber || "")
             .trim()
             .toUpperCase();
-          const present = database.courseStudents.some(
-            (student) =>
-              student.courseId === course.id && student.rollNumber === rollNumber,
+          const students = removeRosterEntry(
+            database,
+            course,
+            (student) => student.rollNumber === rollNumber,
           );
-          if (!present) {
-            const error = new Error("That roll number is not on this roll list");
-            error.status = 404;
-            throw error;
-          }
-          database.courseStudents = database.courseStudents.filter(
-            (student) =>
-              !(student.courseId === course.id && student.rollNumber === rollNumber),
-          );
-          // Keep the printed order contiguous after the gap.
-          courseRoster(database, course.id).forEach((student, index) => {
-            student.serial = index + 1;
-          });
-          // Removing a student withdraws their admission to the course.
-          database.enrollments = database.enrollments.filter(
-            (item) =>
-              !(item.courseId === course.id && item.rollNumber === rollNumber),
-          );
-          // Closed sessions stay as they were recorded on the day.
-          database.attendanceSessions.forEach((session) => {
-            if (session.courseId === course.id && session.status === "open") {
-              session.records = session.records.filter(
-                (record) => record.rollNumber !== rollNumber,
-              );
-            }
-          });
-          const students = courseRoster(database, course.id);
-          course.students = students.length;
-          course.rosterUpdatedAt = new Date().toISOString();
           return {
             course: publicCourse(database, request.user, course),
             students,

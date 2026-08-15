@@ -873,6 +873,11 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 .roster-mark strong { color:var(--primary); font-size:12px; }
 .roster-mark span { color:var(--muted); }
 .roster-mark-empty { color:#a4a3b3; }
+.roster-contact { max-width:210px; overflow-wrap:anywhere; color:var(--muted); }
+/* Columns the roll list carried that have no column of their own: kept under
+   the name so a wide sheet does not push the table off a phone. */
+.roster-extra { display:flex; flex-wrap:wrap; gap:2px 10px; margin-top:3px; color:var(--muted); font-size:10px; }
+.roster-extra b { font-weight:650; text-transform:uppercase; letter-spacing:.04em; font-size:9px; }
 .text-btn.danger { color:var(--red); }
 @media (max-width: 1050px) { .roster-grid { grid-template-columns:1fr; } }
 

@@ -2979,3 +2979,89 @@ test("faculty and TA signup no longer require invitation codes", async (t) => {
 
 
 
+// A departmental roll list is whatever that office exported. Only the name is
+// load-bearing; every other column is carried through under the student.
+test("a roll list keeps the columns it came with, and a name is all an entry needs", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Columns Professor",
+    email: "columns-professor@mech.iitkgp.ac.in",
+    password: "professor-password",
+  });
+  const course = await createCourse(testServer.baseUrl, professor.token, {
+    students: [
+      {
+        rollNumber: "23me10001",
+        name: "Detailed  Student",
+        email: "detailed@kgpian.iitkgp.ac.in",
+        phone: "+91 90000 00001",
+        extra: { Hall: "Azad", Year: "2", Section: "A" },
+      },
+      { name: "Nameless Roll Student" },
+      { rollNumber: "23ME10003", name: "Plain Student" },
+    ],
+  });
+
+  const roster = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
+    token: professor.token,
+  });
+  assert.equal(roster.response.status, 200);
+  const [detailed, nameOnly, plain] = roster.body.students;
+
+  assert.equal(detailed.rollNumber, "23ME10001");
+  assert.equal(detailed.name, "Detailed Student");
+  assert.equal(detailed.email, "detailed@kgpian.iitkgp.ac.in");
+  assert.equal(detailed.phone, "+91 90000 00001");
+  assert.deepEqual(detailed.extra, { Hall: "Azad", Year: "2", Section: "A" });
+
+  // An entry with no roll number is still on the list.
+  assert.equal(nameOnly.name, "Nameless Roll Student");
+  assert.equal(nameOnly.rollNumber, "");
+  assert.equal(nameOnly.serial, 2);
+  // Nothing is invented for the columns the sheet did not carry.
+  assert.equal(plain.email, undefined);
+  assert.equal(plain.extra, undefined);
+
+  // A row with no name is the one thing the upload refuses.
+  const nameless = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
+    method: "PUT",
+    token: professor.token,
+    body: { students: [{ rollNumber: "23ME10009" }] },
+  });
+  assert.equal(nameless.response.status, 400);
+
+  // Blank roll numbers do not collide with each other the way real ones do.
+  const added = await request(testServer.baseUrl, `/api/courses/${course.id}/roster`, {
+    method: "POST",
+    token: professor.token,
+    body: { name: "Second Nameless", email: "second@kgpian.iitkgp.ac.in" },
+  });
+  assert.equal(added.response.status, 201);
+  assert.equal(added.body.students.length, 4);
+  assert.equal(added.body.students.at(-1).email, "second@kgpian.iitkgp.ac.in");
+
+  // With no roll number to address it by, an entry is removed by its serial.
+  const removed = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/roster/entry/2`,
+    { method: "DELETE", token: professor.token },
+  );
+  assert.equal(removed.response.status, 200);
+  assert.deepEqual(
+    removed.body.students.map((student) => [student.serial, student.name]),
+    [[1, "Detailed Student"], [2, "Plain Student"], [3, "Second Nameless"]],
+  );
+
+  const missing = await request(
+    testServer.baseUrl,
+    `/api/courses/${course.id}/roster/entry/99`,
+    { method: "DELETE", token: professor.token },
+  );
+  assert.equal(missing.response.status, 404);
+});

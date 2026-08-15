@@ -255,6 +255,10 @@ function matchesSearch(student, query) {
   const name = String(student?.name || "").toLowerCase();
   const roll = String(student?.rollNumber || "").toLowerCase();
   if (name.includes(needle) || roll.includes(needle)) return true;
+  // Whatever else the roll list carried is searchable too, so a professor can
+  // find someone by the email or hall the sheet listed against them.
+  const details = [student?.email, student?.phone, ...Object.values(student?.extra || {})];
+  if (details.some((value) => String(value || "").toLowerCase().includes(needle))) return true;
   const loose = (value) => value.replace(/[^a-z0-9]/g, "");
   return loose(roll).includes(loose(needle));
 }
@@ -1459,11 +1463,17 @@ backNav?.addEventListener("click", goBack);
 window.addEventListener("popstate", event => {
   if (!state.authenticated) return;
   const route = event.state?.campusRoute || "dashboard";
+  // Entries pushed before courses were recorded carry none, and the first entry
+  // of the session has no state at all, so an absent value closes the course.
+  managedCourseId = event.state?.campusManagedCourseId || "";
+  materialsCourseId = event.state?.campusMaterialsCourseId || "";
   if (route === state.route) {
+    // Same screen, different course: only a repaint separates the two entries.
+    render();
     syncBackButton();
     return;
   }
-  navigate(route, { fromHistory: true });
+  navigate(route, { fromHistory: true, keepCourseContext: true });
 });
 
 function setNavigationState(route) {
@@ -1477,10 +1487,24 @@ function setNavigationState(route) {
 
 // Browser history drives Back, so the Android hardware button and the topbar
 // arrow both retrace the same trail.
-function navigate(route, { fromHistory = false } = {}) {
+function navigate(route, { fromHistory = false, keepCourseContext = false } = {}) {
+  // Opening one course's roster is a route change that carries its course with
+  // it, so that caller keeps the context a plain nav entry clears. Settled
+  // before the entry is pushed, so the entry records the screen actually shown.
+  if (route === "students" && !keepCourseContext) managedCourseId = "";
   if (!fromHistory && state.route !== route) {
     try {
-      history.pushState({ campusRoute: route }, "");
+      // The open course rides along in the entry: stepping back onto this
+      // screen then restores that roster or material list rather than dropping
+      // the user on the bare course list.
+      history.pushState(
+        {
+          campusRoute: route,
+          campusManagedCourseId: managedCourseId,
+          campusMaterialsCourseId: materialsCourseId,
+        },
+        "",
+      );
     } catch {
       // A blocked history API must never stop navigation.
     }
@@ -1490,7 +1514,6 @@ function navigate(route, { fromHistory = false } = {}) {
   // Leaving the attendance screen closes whichever student's record was open,
   // so coming back lands on the register rather than on someone's history.
   if (route !== "attendance") studentRecord = null;
-  if (route === "students") managedCourseId = "";
   state.route = route;
   setNavigationState(route);
   render();
@@ -2766,7 +2789,7 @@ function renderAttendanceSetup() {
           </div>
           ${ready
             ? `<div class="security-note"><span class="lock">⌾</span><span>This list is visible only to the course-owning professor and enrolled teaching assistants. Each session stores a roster snapshot so marks stay linked to roll numbers.</span></div>`
-            : `<div class="security-note"><span class="lock">⌾</span><span>Attendance runs against your official roll list. Upload it as Excel (.xlsx), PDF, CSV, or JSON — it needs a roll number column and a name column. Students can only mark themselves once a roll list exists.</span></div>`}
+            : `<div class="security-note"><span class="lock">⌾</span><span>Attendance runs against your official roll list. Upload it as Excel (.xlsx), PDF, CSV, or JSON — only a name column is required, and roll number, email, phone and any other columns are kept against each student. Students can only mark themselves once a roll list exists.</span></div>`}
           <div class="setup-actions">
             <button class="btn" data-route-link="dashboard">Cancel</button>
             ${ready
@@ -3647,11 +3670,35 @@ function facultyCourseCard(course, isOpen = false) {
   </article>`;
 }
 
-function rosterTableRow(student, index, editable = false, exams = []) {
+const NO_VALUE = '<span class="roster-mark-empty">—</span>';
+
+// Columns the roll list brought that the app has no column of its own for.
+// Shown under the name so a sheet with eight headings does not push the table
+// sideways off a phone.
+function rosterExtraLine(student) {
+  const entries = Object.entries(student.extra || {});
+  if (!entries.length) return "";
+  return `<div class="roster-extra">${entries
+    .map(([label, value]) =>
+      `<span><b>${escapeHtml(label)}:</b> ${escapeHtml(String(value))}</span>`
+    )
+    .join("")}</div>`;
+}
+
+function rosterTableRow(student, index, editable = false, exams = [], columns = {}) {
+  const roll = String(student.rollNumber || "");
+  const serial = student.serial || index + 1;
+  // Roll number addresses an entry when it has one; a name-only entry is
+  // addressed by the serial printed beside it.
+  const target = roll
+    ? `data-roll-number="${escapeHtml(roll)}"`
+    : `data-roster-serial="${escapeHtml(String(serial))}"`;
   return `<tr>
-    <td class="roster-serial">${student.serial || index + 1}</td>
-    <td class="roster-roll">${escapeHtml(student.rollNumber)}</td>
-    <td>${escapeHtml(student.name)}</td>
+    <td class="roster-serial">${serial}</td>
+    <td class="roster-roll">${roll ? escapeHtml(roll) : NO_VALUE}</td>
+    <td>${escapeHtml(student.name)}${rosterExtraLine(student)}</td>
+    ${columns.email ? `<td class="roster-contact">${student.email ? escapeHtml(student.email) : NO_VALUE}</td>` : ""}
+    ${columns.phone ? `<td class="roster-contact">${student.phone ? escapeHtml(student.phone) : NO_VALUE}</td>` : ""}
     ${exams.map(exam => {
       const score = student.marks?.[exam.id];
       const recorded = score !== null && score !== undefined;
@@ -3671,6 +3718,12 @@ function renderCourseRoster(courseId) {
     return renderStudents();
   }
   const editable = canManageRoster(course);
+  // Contact columns appear only when the uploaded list actually carried them,
+  // so a bare name-and-roll sheet still reads as a bare name-and-roll table.
+  const columns = {
+    email: roster.some(student => student.email),
+    phone: roster.some(student => student.phone),
+  };
   const markStudents = courseMarks?.students || [];
   const marksByRoll = new Map(
     markStudents.map(student => [String(student.rollNumber || "").toUpperCase(), student.marks || {}])
@@ -3700,8 +3753,8 @@ function renderCourseRoster(courseId) {
         <label class="roster-search">${icon("i-users")}<input id="rosterSearch" type="search" placeholder="Search name or roll number" autocomplete="off" /></label>
         <div class="roster-scroll" id="professorRoster">
           ${roster.length ? `<table class="roster-table">
-            <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th>${markedExams.map(exam => `<th class="roster-mark-header">${escapeHtml(exam.label)}${exam.maxMarks ? `<span> / ${escapeHtml(String(exam.maxMarks))}</span>` : ""}</th>`).join("")}<th></th></tr></thead>
-            <tbody>${rosterWithMarks.map((student, index) => rosterTableRow(student, index, editable, markedExams)).join("")}</tbody>
+            <thead><tr><th>Sl.No.</th><th>Roll No</th><th>Name</th>${columns.email ? "<th>Email</th>" : ""}${columns.phone ? "<th>Phone</th>" : ""}${markedExams.map(exam => `<th class="roster-mark-header">${escapeHtml(exam.label)}${exam.maxMarks ? `<span> / ${escapeHtml(String(exam.maxMarks))}</span>` : ""}</th>`).join("")}<th></th></tr></thead>
+            <tbody>${rosterWithMarks.map((student, index) => rosterTableRow(student, index, editable, markedExams, columns)).join("")}</tbody>
           </table>` : `<p class="stat-label" style="padding:14px 2px">No students yet. Upload the roll list, or add them one at a time.</p>`}
         </div>
       </article>
@@ -3709,10 +3762,15 @@ function renderCourseRoster(courseId) {
       ${editable ? `<aside class="card page-card">
         <div class="section-head"><h3>Manage roll list</h3></div>
         <form id="addStudentForm" class="login-form">
-          <label for="addRollNumber">Roll number</label>
-          <input id="addRollNumber" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" required />
           <label for="addStudentName">Full name</label>
           <input id="addStudentName" name="name" type="text" placeholder="Student name" autocomplete="off" maxlength="120" required />
+          <label for="addRollNumber">Roll number <span class="field-optional">(optional)</span></label>
+          <input id="addRollNumber" name="rollNumber" type="text" placeholder="e.g. 23ME10001" autocomplete="off" maxlength="40" aria-describedby="addRollHelp" />
+          <p class="auth-field-help" id="addRollHelp">Attendance and marks are matched on the roll number. Without one the student stays on the list but cannot be marked.</p>
+          <label for="addStudentEmail">Email <span class="field-optional">(optional)</span></label>
+          <input id="addStudentEmail" name="email" type="email" placeholder="Student email" autocomplete="off" maxlength="160" />
+          <label for="addStudentPhone">Contact number <span class="field-optional">(optional)</span></label>
+          <input id="addStudentPhone" name="phone" type="tel" placeholder="Mobile number" autocomplete="off" maxlength="32" />
           <button class="btn btn-primary" type="submit">${icon("i-plus")} Add student</button>
         </form>
         <div class="setup-actions" style="margin-top:16px">
@@ -4533,26 +4591,87 @@ function parseCSVRow(line) {
 
 const ROLL_HEADERS = ["roll", "rollno", "rollnumber", "studentroll", "rollno.", "regno", "registrationno"];
 const NAME_HEADERS = ["name", "studentname", "fullname", "student"];
+const EMAIL_HEADERS = ["email", "emailid", "emailaddress", "mail", "mailid", "instituteemail"];
+const PHONE_HEADERS = [
+  "phone", "phoneno", "phonenumber", "mobile", "mobileno", "mobilenumber",
+  "contact", "contactno", "contactnumber", "whatsapp"
+];
+// The roster table numbers its own rows, so a serial column out of the sheet is
+// recognised and dropped rather than kept as one more detail to scroll past.
+const SERIAL_HEADERS = ["sl", "slno", "sno", "serial", "serialno", "srno", "sr", "no", "index"];
+// Real sheets write "Name of Student" or "Student's Roll No.", so an exact
+// heading match is tried first and a word match second.
+const ROLL_TOKENS = ["roll", "regn", "registration", "enrol", "admission"];
+const NAME_TOKENS = ["name"];
+const EMAIL_TOKENS = ["email", "mail"];
+const PHONE_TOKENS = ["phone", "mobile", "contact", "whatsapp"];
+// Someone else's name on the row is not the student's.
+const NAME_EXCLUSIONS = ["father", "mother", "guardian", "parent", "username", "filename", "course", "subject", "hall", "college"];
+const MAX_ROSTER_EXTRA_FIELDS = 12;
+const MAX_EXTRA_LABEL = 60;
+const MAX_EXTRA_VALUE = 200;
 
 // Shared by CSV and Excel: rows are arrays of cell strings, first row the header.
+//
+// A departmental roll list is whatever that department exports — roll, email,
+// phone, hall, year, section, in any combination. Only the name is required;
+// every other column is carried through under the student instead of being
+// dropped, so the professor keeps the contact details they were sent.
 function rosterFromRows(rows, label) {
   const cleaned = rows.filter(row => row.some(cell => String(cell || "").trim()));
   if (cleaned.length < 2) throw new Error(`Roster ${label} must include a header and at least one student`);
-  const headers = cleaned[0].map(header =>
-    String(header || "").toLowerCase().replace(/[^a-z0-9]/g, "")
-  );
-  const rollIndex = headers.findIndex(header => ROLL_HEADERS.includes(header));
-  const nameIndex = headers.findIndex(header => NAME_HEADERS.includes(header));
-  if (rollIndex < 0 || nameIndex < 0) {
-    throw new Error(`Roster ${label} needs a roll number column and a name column`);
-  }
+  const rawHeaders = cleaned[0].map(header => String(header || "").trim());
+  const headers = rawHeaders.map(header => header.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const claimed = new Set();
+  const take = (exact, tokens, exclusions = []) => {
+    const free = (index) => !claimed.has(index);
+    let found = headers.findIndex((header, index) => free(index) && exact.includes(header));
+    if (found < 0) {
+      found = headers.findIndex((header, index) =>
+        free(index)
+        && tokens.some(token => header.includes(token))
+        && !exclusions.some(token => header.includes(token))
+      );
+    }
+    if (found >= 0) claimed.add(found);
+    return found;
+  };
+  // The unambiguous columns are claimed first so the looser name match cannot
+  // wander into one of them.
+  const rollIndex = take(ROLL_HEADERS, ROLL_TOKENS);
+  const emailIndex = take(EMAIL_HEADERS, EMAIL_TOKENS);
+  const phoneIndex = take(PHONE_HEADERS, PHONE_TOKENS);
+  const nameIndex = take(NAME_HEADERS, NAME_TOKENS, NAME_EXCLUSIONS);
+  if (nameIndex < 0) throw new Error(`Roster ${label} needs a name column`);
+  // Whatever the app has no column of its own for still belongs to the student,
+  // kept under the heading the sheet gave it.
+  const extraColumns = rawHeaders
+    .map((header, index) => ({ header, index }))
+    .filter(column =>
+      column.header
+      && !claimed.has(column.index)
+      && !SERIAL_HEADERS.includes(headers[column.index])
+    )
+    .slice(0, MAX_ROSTER_EXTRA_FIELDS);
+
   return cleaned
     .slice(1)
-    .map(row => ({
-      rollNumber: String(row[rollIndex] ?? "").trim(),
-      name: String(row[nameIndex] ?? "").trim()
-    }))
-    .filter(student => student.rollNumber || student.name);
+    .map(row => {
+      const cell = index => (index >= 0 ? String(row[index] ?? "").trim() : "");
+      const extra = {};
+      extraColumns.forEach(column => {
+        const value = String(row[column.index] ?? "").trim();
+        if (value) extra[column.header.slice(0, MAX_EXTRA_LABEL)] = value.slice(0, MAX_EXTRA_VALUE);
+      });
+      return {
+        rollNumber: cell(rollIndex),
+        name: cell(nameIndex),
+        email: cell(emailIndex),
+        phone: cell(phoneIndex),
+        ...(Object.keys(extra).length ? { extra } : {})
+      };
+    })
+    .filter(student => student.name);
 }
 
 const MARK_HEADERS = [
@@ -4991,15 +5110,43 @@ async function parseRosterPdf(buffer) {
   return students;
 }
 
+// Keys the roster already has a home for; anything else in a JSON entry is kept
+// as an extra detail rather than silently discarded.
+const JSON_ROSTER_KNOWN_KEYS = new Set([
+  "rollNumber", "roll", "roll_no", "rollno",
+  "name", "studentName", "student_name",
+  "email", "emailId", "email_id",
+  "phone", "mobile", "phoneNumber", "phone_number",
+  "serial", "sl", "slNo", "sl_no", "courseId", "extra",
+]);
+
 function parseRosterUpload(text, filename = "") {
   if (filename.toLowerCase().endsWith(".json")) {
     const parsed = JSON.parse(text);
     const students = Array.isArray(parsed) ? parsed : parsed.students;
     if (!Array.isArray(students)) throw new Error("JSON roster must be an array or contain a students array");
-    return students.map(student => ({
-      rollNumber: student.rollNumber || student.roll || student.roll_no,
-      name: student.name || student.studentName || student.student_name
-    }));
+    return students.map(student => {
+      const extra = {};
+      Object.entries(student || {}).forEach(([key, value]) => {
+        if (JSON_ROSTER_KNOWN_KEYS.has(key)) return;
+        if (value === null || value === undefined || typeof value === "object") return;
+        const text = String(value).trim();
+        if (text) extra[key.slice(0, MAX_EXTRA_LABEL)] = text.slice(0, MAX_EXTRA_VALUE);
+      });
+      // A caller that already grouped its own fields under `extra` keeps them.
+      Object.entries(student?.extra && typeof student.extra === "object" ? student.extra : {})
+        .forEach(([key, value]) => {
+          const text = String(value ?? "").trim();
+          if (text) extra[key.slice(0, MAX_EXTRA_LABEL)] = text.slice(0, MAX_EXTRA_VALUE);
+        });
+      return {
+        rollNumber: student.rollNumber || student.roll || student.roll_no || "",
+        name: student.name || student.studentName || student.student_name || "",
+        email: student.email || student.emailId || student.email_id || "",
+        phone: student.phone || student.mobile || student.phoneNumber || student.phone_number || "",
+        ...(Object.keys(extra).length ? { extra } : {})
+      };
+    });
   }
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   return rosterFromRows(lines.map(parseCSVRow), "CSV");
@@ -5233,10 +5380,10 @@ document.addEventListener("click", async event => {
       return toast(error.message || "Could not load the course roster", "error");
     }
     managedCourseId = courseId;
-    state.route = "students";
-    setNavigationState("students");
-    persist();
-    return renderStudents();
+    // Routed rather than assigned: a direct state.route change leaves no
+    // history entry, so Back had nothing to step onto and the topbar arrow
+    // stayed hidden on a screen that is not the root.
+    return navigate("students", { keepCourseContext: true });
   }
   if (action === "close-course-roster") {
     managedCourseId = "";
@@ -5255,10 +5402,7 @@ document.addEventListener("click", async event => {
     }
     managedCourseId = "";
     materialsCourseId = courseId;
-    state.route = "materials";
-    setNavigationState("materials");
-    persist();
-    return renderMaterials();
+    return navigate("materials");
   }
   if (action === "close-course-materials") {
     materialsCourseId = selectedCourse()?.id || "";
@@ -5784,21 +5928,26 @@ document.addEventListener("click", async event => {
   }
   if (action === "remove-roster-student") {
     const course = state.courses.find(item => item.id === managedCourseId);
-    const rollNumber = event.target.closest("[data-roll-number]")?.dataset.rollNumber || "";
+    const button = event.target.closest("[data-action]");
+    const rollNumber = button?.dataset.rollNumber || "";
+    const serial = button?.dataset.rosterSerial || "";
     if (!course || !canManageRoster(course)) {
       return toast("Course-team roster access required", "error");
     }
-    if (!window.confirm(`Remove ${rollNumber} from the ${course.courseCode} roll list? They lose access to this course.`)) return;
+    if (!rollNumber && !serial) return toast("Could not identify that student", "error");
+    // A name-only entry has no roll number to name it by, on screen or in the URL.
+    const label = rollNumber || `entry ${serial}`;
+    if (!window.confirm(`Remove ${label} from the ${course.courseCode} roll list? They lose access to this course.`)) return;
     try {
-      const result = await apiRequest(
-        `/api/courses/${encodeURIComponent(course.id)}/roster/${encodeURIComponent(rollNumber)}`,
-        { method: "DELETE" }
-      );
+      const path = rollNumber
+        ? `/api/courses/${encodeURIComponent(course.id)}/roster/${encodeURIComponent(rollNumber)}`
+        : `/api/courses/${encodeURIComponent(course.id)}/roster/entry/${encodeURIComponent(serial)}`;
+      const result = await apiRequest(path, { method: "DELETE" });
       courseRosters.set(course.id, result.students || []);
       state.courses = state.courses.map(item => item.id === course.id ? { ...item, ...result.course } : item);
       persist();
       renderCourseRoster(course.id);
-      return toast(`${rollNumber} removed`);
+      return toast(`${label} removed`);
     } catch (error) {
       return toast(error.message || "Could not remove that student", "error");
     }
@@ -6339,7 +6488,13 @@ document.addEventListener("change", async event => {
       // replaces the official roster.
       const preview = students
         .slice(0, 3)
-        .map(student => `  ${student.rollNumber} — ${student.name}`)
+        .map(student => {
+          const details = [student.rollNumber, student.email, student.phone]
+            .concat(Object.values(student.extra || {}))
+            .filter(Boolean)
+            .join(" · ");
+          return `  ${student.name}${details ? ` — ${details}` : ""}`;
+        })
         .join("\n");
       const confirmed = window.confirm(
         `Replace the official ${course.courseCode} roster with ${students.length} students read from ${file.name}?\n\n`
@@ -6680,7 +6835,9 @@ document.addEventListener("submit", async event => {
         method: "POST",
         body: {
           rollNumber: String(data.get("rollNumber") || "").trim().toUpperCase(),
-          name: String(data.get("name") || "").trim()
+          name: String(data.get("name") || "").trim(),
+          email: String(data.get("email") || "").trim(),
+          phone: String(data.get("phone") || "").trim()
         }
       });
       courseRosters.set(course.id, result.students || []);
