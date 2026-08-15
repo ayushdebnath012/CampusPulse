@@ -2327,8 +2327,8 @@ function renderSchedule() {
     ${state.courses.some(canManageSchedule) ? `<div class="schedule-toolbar">
       <div><strong>Weekly timetable</strong><span>Upload one grid covering every course you teach. Each class is filed under the course code in its cell; anything unlabelled goes to ${escapeHtml(course.courseCode)}. Courses named in the file have their classes replaced.</span></div>
       <div class="setup-actions">
-        <button class="btn btn-primary" data-action="choose-timetable-upload">${icon("i-upload")} Upload timetable</button>
-        <input id="timetableFile" type="file" hidden />
+        <label class="btn btn-primary" for="timetableFile">${icon("i-upload")} Upload timetable</label>
+        <input id="timetableFile" class="visually-hidden" type="file" />
       </div>
     </div>` : ""}
     <article class="card page-card calendar-page schedule-calendar-card">
@@ -2347,7 +2347,7 @@ function renderSchedule() {
       </div>
     </article>
     <article class="card page-card weekly-agenda-card">
-      <div class="section-head"><div><h2 style="margin:0 0 5px">Entire week</h2><p class="stat-label">Previous days remain visible, followed by today and upcoming classes.</p></div><div class="setup-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span>${isStudent ? `<button class="btn" data-action="import-schedule">${icon("i-upload")} Import CSV / ICS</button><input id="scheduleFile" type="file" hidden />` : ""}</div></div>
+      <div class="section-head"><div><h2 style="margin:0 0 5px">Entire week</h2><p class="stat-label">Previous days remain visible, followed by today and upcoming classes.</p></div><div class="setup-actions"><span class="badge ${imported ? "green" : "purple"}">${imported ? "Local timetable" : `${events.length} sessions`}</span>${isStudent ? `<label class="btn" for="scheduleFile">${icon("i-upload")} Import CSV / ICS</label><input id="scheduleFile" class="visually-hidden" type="file" />` : ""}</div></div>
       <div class="weekly-agenda">
         ${weekDays.map((day, dayIndex) => weeklyAgendaDay({
           day,
@@ -3778,8 +3778,11 @@ function renderCourseRoster(courseId) {
           <button class="btn btn-primary" type="submit">${icon("i-plus")} Add student</button>
         </form>
         <div class="setup-actions" style="margin-top:16px">
-          <button class="btn" data-action="choose-roster-upload">${icon("i-upload")} Upload roll list</button>
-          <input id="rosterUploadFile" type="file" hidden />
+          <!-- A label opens the picker natively. A scripted .click() on a
+               hidden input is the thing Android's WebView declines to act on,
+               and it fails silently when it does. -->
+          <label class="btn" for="rosterUploadFile">${icon("i-upload")} Upload roll list</label>
+          <input id="rosterUploadFile" class="visually-hidden" type="file" />
         </div>
         <div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Uploading a file replaces the whole list. Removing a student also withdraws their enrolment from this course. Students never receive this list.</span></div>
       </aside>` : `<aside class="card page-card"><div class="section-head"><h3>Official roll list</h3></div><div class="security-note"><span class="lock">⌾</span><span>This roster is read-only for your account.</span></div></aside>`}
@@ -3874,7 +3877,7 @@ function renderCourseMaterials(courseId) {
     <article class="card page-card">
       <div class="section-head">
         <div><h2 style="margin:0 0 5px">Course materials</h2><p class="stat-label">Files here are private to this course's professor, teaching assistants, and enrolled students.</p></div>
-        <div class="setup-actions"><span class="badge ${materials.length ? "green" : "gray"}">${materials.length} files</span>${uploader ? `<button class="btn btn-primary" type="button" data-action="choose-material-upload">${icon("i-upload")} Upload material</button><input id="materialUploadFile" type="file" hidden />` : ""}</div>
+        <div class="setup-actions"><span class="badge ${materials.length ? "green" : "gray"}">${materials.length} files</span>${uploader ? `<label class="btn btn-primary" for="materialUploadFile">${icon("i-upload")} Upload material</label><input id="materialUploadFile" class="visually-hidden" type="file" />` : ""}</div>
       </div>
       ${materials.length ? `<div class="roster-scroll"><table class="roster-table">
         <thead><tr><th>File</th><th>Size</th><th>Uploaded</th><th></th></tr></thead>
@@ -5455,13 +5458,6 @@ document.addEventListener("click", async event => {
     materialsCourseId = selectedCourse()?.id || "";
     return renderMaterials();
   }
-  if (action === "choose-material-upload") {
-    const course = state.courses.find(item => item.id === materialsCourseId);
-    if (!canUploadMaterials(course)) {
-      return toast("Course-team material access required", "error");
-    }
-    return document.querySelector("#materialUploadFile")?.click();
-  }
   if (action === "view-material" || action === "download-material") {
     const button = event.target.closest("[data-material-id]");
     const materialId = button?.dataset.materialId || "";
@@ -5514,11 +5510,6 @@ document.addEventListener("click", async event => {
     } catch (error) {
       return toast(error.message || "Could not remove that material", "error");
     }
-  }
-  if (action === "choose-roster-upload") {
-    const course = state.courses.find(item => item.id === managedCourseId);
-    if (!canManageRoster(course)) return toast("Course-team roster access required", "error");
-    return document.querySelector("#rosterUploadFile")?.click();
   }
   if (action === "open-course-quiz") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
@@ -5883,7 +5874,6 @@ document.addEventListener("click", async event => {
       return toast(error.message || "Could not delete the account", "error");
     }
   }
-  if (action === "import-schedule") document.querySelector("#scheduleFile")?.click();
   if (action === "clear-imported-schedule") {
     const course = selectedCourse();
     state.importedSchedule = state.importedSchedule.filter(
@@ -5954,9 +5944,6 @@ document.addEventListener("click", async event => {
     }
     syncCourseSwitcher();
     return;
-  }
-  if (action === "choose-timetable-upload") {
-    return document.querySelector("#timetableFile")?.click();
   }
   if (action === "edit-class-topics") {
     const index = Number(event.target.closest("[data-index]")?.dataset.index);
