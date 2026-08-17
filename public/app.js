@@ -234,10 +234,9 @@ let pastSessionsLoadedFor = "";
 let pastSessionsStatus = "idle";
 let pastSessionsError = "";
 let viewingPastAttendance = null;
-// The student whose whole record the course team is looking at, if any, and
-// the screen it was opened from.
+let viewingPastAttendanceOriginRoute = "attendance";
+// The student whose whole record the course team is looking at, if any.
 let studentRecord = null;
-let studentRecordRoute = "attendance";
 // Which exam a marks spreadsheet is about to be recorded against.
 let pendingMarksUpload = null;
 // What is typed into the search box on the register and the student list.
@@ -697,9 +696,6 @@ async function openStudentRecord(courseId, rollNumber) {
     studentRecord = await apiRequest(
       `/api/courses/${encodeURIComponent(courseId)}/students/${encodeURIComponent(rollNumber)}`
     );
-    // Remembered so closing the record returns to wherever it was opened from,
-    // whether that was the register or the student list.
-    studentRecordRoute = state.route;
   } catch (error) {
     studentRecord = null;
     return toast(error.message || "Could not open that student's record", "error");
@@ -723,7 +719,7 @@ function renderStudentRecord() {
     value ? `<div class="summary-item"><span>${label}</span><strong>${escapeHtml(value)}</strong></div>` : "";
   setHeader(student.name || student.rollNumber, `${student.courseCode} · STUDENT RECORD`, false);
   view.innerHTML = `
-    <button class="back-btn" type="button" data-action="close-student-record">${icon("i-back")} Back to attendance</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <article class="card page-card">
         <div class="section-head">
@@ -794,19 +790,29 @@ function renderStudentRecord() {
 
 // Loads a past (closed) session's full roster for read-only review, or clears
 // back to today's session when the dropdown is reset to its default option.
-async function openPastAttendanceSession(sessionId) {
+async function openPastAttendanceSession(
+  sessionId,
+  {
+    originRoute = viewingPastAttendance
+      ? viewingPastAttendanceOriginRoute
+      : state.route,
+  } = {}
+) {
   // Clearing the picker returns to whatever the page would otherwise show:
   // today's session if one exists, the setup screen if not. Going straight to
   // the live view would leave an empty roster on a day with no session.
   if (!sessionId) {
     viewingPastAttendance = null;
+    viewingPastAttendanceOriginRoute = "attendance";
     return renderAttendance();
   }
   try {
     const result = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}`);
     viewingPastAttendance = result.attendance;
+    viewingPastAttendanceOriginRoute = originRoute;
   } catch (error) {
     viewingPastAttendance = null;
+    viewingPastAttendanceOriginRoute = "attendance";
     return toast(error.message || "Could not load that session", "error");
   }
   renderAttendance();
@@ -1113,6 +1119,8 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
           <div class="verification-actions"><button type="button" class="text-btn" data-auth-mode="login">Back to sign in</button><button type="button" class="text-btn" data-auth-mode="reset">I already have a code</button></div>
           <div class="auth-demo-note"><span>Registered address only</span><p>The code goes to the email your account was created with. Nothing is shown on this page.</p></div>` : authMode === "reset" ? `
           <form id="resetPasswordForm" class="login-form">
+            <label for="resetEmail">Registered email</label>
+            <input id="resetEmail" name="email" type="email" placeholder="${profile.placeholder}" autocomplete="username" value="${passwordResetEmail}" required />
             <label for="resetCode">Reset code</label>
             <input id="resetCode" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="000000" autocomplete="one-time-code" required />
             <div class="auth-field-pair">
@@ -1137,7 +1145,7 @@ function renderLogin(role = selectedLoginRole, mode = authMode) {
         </div>
       </section>
     </div>`;
-  const firstField = { signup: "#signupName", forgot: "#forgotEmail", reset: "#resetCode" }[authMode] || "#loginEmail";
+  const firstField = { signup: "#signupName", forgot: "#forgotEmail", reset: passwordResetEmail ? "#resetCode" : "#resetEmail" }[authMode] || "#loginEmail";
   setTimeout(() => document.querySelector(firstField)?.focus(), 0);
 }
 
@@ -1217,6 +1225,7 @@ function roleDisplayName(role = state.userRole, name = state.accountName) {
 }
 
 function showApp() {
+  startNavigationHistory();
   syncBackButton();
   authRoot.hidden = true;
   authRoot.innerHTML = "";
@@ -1350,6 +1359,7 @@ function signOutLocally() {
   state.authenticated = false;
   state.accountName = "";
   state.authEmail = "";
+  state.route = "dashboard";
   persist();
 }
 
@@ -1398,6 +1408,27 @@ function toast(message, type = "success") {
   setTimeout(() => el.remove(), 3200);
 }
 
+/**
+ * Makes a failure visible instead of leaving the screen unchanged.
+ *
+ * Every click and submit handler is async, so anything thrown inside one
+ * becomes an unhandled rejection: nothing renders, nothing is reported, and the
+ * button reads as dead. On a phone there is no console to check afterwards, so
+ * the error is put on screen where it happened.
+ */
+function reportFailure(detail) {
+  const message = String(detail?.message || detail || "Unknown error").slice(0, 160);
+  try {
+    toast(message, "error");
+  } catch {
+    // The toast region may not exist yet; the console is the only fallback.
+  }
+  console.error("[CampusPulse]", detail);
+}
+
+window.addEventListener("unhandledrejection", event => reportFailure(event.reason));
+window.addEventListener("error", event => reportFailure(event.error || event.message));
+
 function setHeader(title, eyebrow, showQuick = true) {
   pageTitle.textContent = title;
   pageEyebrow.textContent = eyebrow;
@@ -1419,6 +1450,102 @@ function setHeader(title, eyebrow, showQuick = true) {
 }
 
 const backNav = document.querySelector("#backNav");
+let navigationSessionId = "";
+
+function createNavigationSessionId() {
+  try {
+    if (crypto.randomUUID) return crypto.randomUUID();
+  } catch {
+    // Older Android webviews may not expose randomUUID.
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// Each entry describes the screen that was actually drawn. Course drill-downs
+// can share a route, so their context is part of the entry too.
+function navigationEntry(route, depth) {
+  return {
+    campusNavigationSession: navigationSessionId,
+    campusNavigationDepth: depth,
+    campusRoute: route,
+    campusSelectedCourseId: state.selectedCourseId || "",
+    campusManagedCourseId: route === "students" ? managedCourseId : "",
+    campusMaterialsCourseId: route === "materials" ? materialsCourseId : "",
+  };
+}
+
+function navigationEntryMatches(entry, route) {
+  const expected = navigationEntry(route, Number(entry?.campusNavigationDepth) || 0);
+  return entry?.campusNavigationSession === expected.campusNavigationSession
+    && entry?.campusRoute === expected.campusRoute
+    && (entry?.campusSelectedCourseId || "") === expected.campusSelectedCourseId
+    && (entry?.campusManagedCourseId || "") === expected.campusManagedCourseId
+    && (entry?.campusMaterialsCourseId || "") === expected.campusMaterialsCourseId;
+}
+
+function replaceCurrentNavigationEntry() {
+  const current = history.state;
+  if (current?.campusNavigationSession !== navigationSessionId) return;
+  try {
+    history.replaceState(
+      navigationEntry(state.route, Number(current.campusNavigationDepth) || 0),
+      "",
+    );
+  } catch {
+    // Course switching still succeeds when history is unavailable.
+  }
+}
+
+function clearCourseScopedNavigationState() {
+  courseMarks = null;
+  courseMarksLoadedFor = "";
+  examDraft = null;
+  applyAttendanceSnapshot(null);
+  applyQuizSnapshot(null);
+  editingDraftId = "";
+  quizResults = null;
+  quizDrafts = [];
+  quizHistory = [];
+  myQuizzes = [];
+  attendanceHistory = null;
+  courseNotices = [];
+  pastAttendanceSessions = [];
+  pastSessionsLoadedFor = "";
+  pastSessionsStatus = "idle";
+  pastSessionsError = "";
+}
+
+// Overview is a sentinel at depth zero. A restored non-root screen is placed
+// one step above it, so Back always reaches Overview before Android exits.
+function startNavigationHistory() {
+  navigationSessionId = createNavigationSessionId();
+  // Detail routes depend on objects held only for the current page lifetime.
+  // After a restart, resume at their stable parent instead of creating a Back
+  // loop between a missing detail and its fallback screen.
+  const restoredParent = {
+    attendanceday: "attendance",
+    myquiz: "quizzes",
+    quizquestions: "quizmarks",
+  }[state.route];
+  const restorableRoutes = new Set([
+    "dashboard", "schedule", "attendance", "quizzes", "students",
+    "notices", "quizmarks", "materials", "classes", "settings",
+  ]);
+  const initialRoute = restoredParent
+    || (restorableRoutes.has(state.route) ? state.route : "dashboard");
+  if (state.route !== initialRoute) {
+    state.route = initialRoute;
+    persist();
+  }
+  try {
+    history.replaceState(navigationEntry("dashboard", 0), "");
+    if (initialRoute !== "dashboard") {
+      history.pushState(navigationEntry(initialRoute, 1), "");
+    }
+  } catch {
+    // A blocked history API falls back to the explicit Overview step below.
+  }
+}
 
 // One rule for every nav item, so the sidebar and the phone drawer agree and
 // nobody is offered a screen their role cannot use.
@@ -1449,27 +1576,99 @@ function syncBackButton() {
 }
 
 function goBack() {
-  if (state.route === "dashboard") return;
-  const stepped = history.state?.campusRoute;
-  if (stepped) {
-    history.back();
-    return;
+  const dialog = document.querySelector("#modalRoot [role='dialog']");
+  if (dialog) {
+    closeModal();
+    return true;
   }
-  navigate("dashboard");
+  if (appMenu?.classList.contains("open")) {
+    closeMenu();
+    return true;
+  }
+  // Student records replace their parent register/list without changing route.
+  if (studentRecord) {
+    studentRecord = null;
+    render();
+    syncBackButton();
+    return true;
+  }
+  // A past register opened from Attendance closes back to today's register.
+  // When it came from another route, the real history entry remains the origin.
+  if (
+    viewingPastAttendance
+    && state.route === "attendance"
+    && viewingPastAttendanceOriginRoute === "attendance"
+  ) {
+    viewingPastAttendance = null;
+    renderAttendance();
+    syncBackButton();
+    return true;
+  }
+  if (state.route === "dashboard") return false;
+  const entry = history.state;
+  if (
+    entry?.campusNavigationSession === navigationSessionId
+    && Number(entry.campusNavigationDepth) > 0
+  ) {
+    history.back();
+    return true;
+  }
+  // A deep screen restored without usable history still gets Overview as its
+  // final in-app stop. Replace instead of push, otherwise Back would loop.
+  managedCourseId = "";
+  materialsCourseId = "";
+  viewingPastAttendance = null;
+  navigate("dashboard", { fromHistory: true, keepCourseContext: true });
+  try {
+    history.replaceState(navigationEntry("dashboard", 0), "");
+  } catch {
+    // Rendering Overview is sufficient when history is unavailable.
+  }
+  return true;
 }
 
 backNav?.addEventListener("click", goBack);
+// MainActivity calls this instead of WebView.goBack(), allowing the web app to
+// close an in-page detail first and to tell Android when Overview may exit.
+window.campusPulseHandleBack = goBack;
 
 window.addEventListener("popstate", event => {
   if (!state.authenticated) return;
-  const route = event.state?.campusRoute || "dashboard";
+  const entry = event.state;
+  if (entry?.campusNavigationSession !== navigationSessionId) {
+    managedCourseId = "";
+    materialsCourseId = "";
+    viewingPastAttendance = null;
+    navigate("dashboard", { fromHistory: true, keepCourseContext: true });
+    try {
+      history.replaceState(navigationEntry("dashboard", 0), "");
+    } catch {
+      // The screen is already safely back at Overview.
+    }
+    return;
+  }
+  const route = entry.campusRoute || "dashboard";
+  const selectedCourseId = entry.campusSelectedCourseId || "";
+  const canRestoreCourse = !selectedCourseId
+    || state.courses.some(course => course.id === selectedCourseId);
+  const courseChanged = canRestoreCourse && selectedCourseId !== state.selectedCourseId;
+  if (canRestoreCourse) {
+    state.selectedCourseId = selectedCourseId;
+  }
+  if (courseChanged) clearCourseScopedNavigationState();
   // Entries pushed before courses were recorded carry none, and the first entry
   // of the session has no state at all, so an absent value closes the course.
-  managedCourseId = event.state?.campusManagedCourseId || "";
-  materialsCourseId = event.state?.campusMaterialsCourseId || "";
+  managedCourseId = entry.campusManagedCourseId || "";
+  materialsCourseId = entry.campusMaterialsCourseId || "";
+  if (route !== "attendance") {
+    viewingPastAttendance = null;
+    viewingPastAttendanceOriginRoute = "attendance";
+  }
   if (route === state.route) {
     // Same screen, different course: only a repaint separates the two entries.
     render();
+    persist();
+    syncCourseSwitcher();
     syncBackButton();
     return;
   }
@@ -1488,23 +1687,34 @@ function setNavigationState(route) {
 // Browser history drives Back, so the Android hardware button and the topbar
 // arrow both retrace the same trail.
 function navigate(route, { fromHistory = false, keepCourseContext = false } = {}) {
+  if (!fromHistory && state.authenticated && !navigationSessionId) {
+    startNavigationHistory();
+  }
   // Opening one course's roster is a route change that carries its course with
   // it, so that caller keeps the context a plain nav entry clears. Settled
   // before the entry is pushed, so the entry records the screen actually shown.
   if (route === "students" && !keepCourseContext) managedCourseId = "";
-  if (!fromHistory && state.route !== route) {
+  if (!fromHistory && route === "dashboard") {
+    // Choosing Overview starts a fresh root. Older entries may remain inside
+    // WebView, but their session tag prevents Back from reopening them.
+    navigationSessionId = createNavigationSessionId();
+    managedCourseId = "";
+    materialsCourseId = "";
+    viewingPastAttendance = null;
+    try {
+      history.replaceState(navigationEntry("dashboard", 0), "");
+    } catch {
+      // Navigation itself must still work when history is unavailable.
+    }
+  } else if (!fromHistory && !navigationEntryMatches(history.state, route)) {
     try {
       // The open course rides along in the entry: stepping back onto this
       // screen then restores that roster or material list rather than dropping
       // the user on the bare course list.
-      history.pushState(
-        {
-          campusRoute: route,
-          campusManagedCourseId: managedCourseId,
-          campusMaterialsCourseId: materialsCourseId,
-        },
-        "",
-      );
+      const depth = history.state?.campusNavigationSession === navigationSessionId
+        ? (Number(history.state.campusNavigationDepth) || 0) + 1
+        : 1;
+      history.pushState(navigationEntry(route, depth), "");
     } catch {
       // A blocked history API must never stop navigation.
     }
@@ -1514,6 +1724,10 @@ function navigate(route, { fromHistory = false, keepCourseContext = false } = {}
   // Leaving the attendance screen closes whichever student's record was open,
   // so coming back lands on the register rather than on someone's history.
   if (route !== "attendance") studentRecord = null;
+  if (route !== "attendance") {
+    viewingPastAttendance = null;
+    viewingPastAttendanceOriginRoute = "attendance";
+  }
   state.route = route;
   setNavigationState(route);
   render();
@@ -1884,7 +2098,7 @@ function syncCourseSwitcher() {
 
 async function switchCourseContext(
   courseId,
-  { renderView = true, notify = true } = {}
+  { renderView = true, notify = true, updateHistory = renderView } = {}
 ) {
   const course = state.courses.find(item => item.id === courseId);
   if (!course) return toast("Course not found", "error");
@@ -1928,6 +2142,7 @@ async function switchCourseContext(
   }
 
   persist();
+  if (updateHistory) replaceCurrentNavigationEntry();
   if (renderView) render();
   if (failed && notify) {
     toast(failed.reason?.message || "Some course data could not be refreshed", "error");
@@ -2701,10 +2916,10 @@ function renderStudentAttendance() {
 function renderAttendanceDay() {
   const course = selectedCourse();
   const session = (attendanceHistory?.sessions || []).find(item => item.id === attendanceDayId);
-  if (!session) return navigate("attendance");
+  if (!session) return goBack();
   setHeader(attendanceDayLabel(session), `${session.courseCode || course?.courseCode || ""} · CLASS DETAIL`, false);
   view.innerHTML = `
-    <button class="back-btn" data-route-link="attendance">${icon("i-back")} Back to my attendance</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">${escapeHtml(session.classLabel || session.courseName || "Class")}</h2><p class="stat-label">${escapeHtml(attendanceDayLabel(session))}</p></div><span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span></div>
@@ -2767,14 +2982,14 @@ function renderAttendanceSetup() {
         }
       })
       .catch((error) => {
-        view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Roster unavailable</h2><p>${escapeHtml(error.message || "Could not load this roster")}</p><button class="btn" data-route-link="classes">Back to courses</button></div></article>`;
+        view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon("i-users")}</span><h2>Roster unavailable</h2><p>${escapeHtml(error.message || "Could not load this roster")}</p><button class="btn" type="button" data-action="go-back">Back</button></div></article>`;
       });
     return;
   }
   const roster = courseRosters.get(course.id) || [];
   const ready = roster.length > 0;
   view.innerHTML = `
-    <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <div class="left-stack">
         <article class="card page-card">
@@ -2856,7 +3071,7 @@ function renderLiveAttendance() {
   const shown = records.filter(record => matchesSearch(record, rosterSearch));
   const reopenTargetId = viewingPast ? viewingPastAttendance.id : state.backendAttendanceId;
   view.innerHTML = `
-    <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <div class="left-stack">
         <article class="card page-card">
@@ -2999,7 +3214,7 @@ function renderQuiz() {
   if (state.quizPublished && state.backendQuizCourseId === course.id) return renderLiveQuiz();
   setTimeout(() => snapQuizDateToClassDay(), 0);
   view.innerHTML = `
-    <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${openDraft ? `${escapeHtml(openDraft.title || "Untitled quiz")} · ${escapeHtml(course.courseCode)}` : `New quiz for ${escapeHtml(course.courseCode)}`}</h2><p>${openDraft
@@ -3104,10 +3319,10 @@ function myQuizzesPanel() {
 
 function renderMyQuiz() {
   const quiz = myQuizzes.find(item => item.id === myQuizId);
-  if (!quiz) return navigate("quizzes");
+  if (!quiz) return goBack();
   setHeader(quiz.title || "Your quiz", `${quiz.courseCode || ""} · YOUR ANSWERS`, false);
   view.innerHTML = `
-    <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <article class="card page-card">
       <div class="section-head">
         <div><h2 style="margin:0 0 5px">${escapeHtml(quiz.title || "Quiz")}</h2><p class="stat-label">${[
@@ -3153,7 +3368,7 @@ function renderStudentQuizAccess() {
   const quizPublished = quizMatchesCourse && state.quizPublished;
   const quizResponded = quizMatchesCourse && state.quizResponded;
   view.innerHTML = hasAccess ? `
-    <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to dashboard</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${escapeHtml(course.name)}</h2><p>${escapeHtml(course.courseCode)}</p></div><span class="badge green">Enrolled</span></div>
@@ -3248,7 +3463,7 @@ function quizResultsPicker(selectedId = "") {
 
 function renderQuizMarks() {
   const course = selectedCourse();
-  if (!course) return navigate("quizzes");
+  if (!course) return goBack();
   const roster = courseRosters.get(course.id) || [];
   const quiz = quizResults?.quiz || null;
   const summary = quizResults?.summary || null;
@@ -3272,7 +3487,7 @@ function renderQuizMarks() {
     false
   );
   view.innerHTML = `
-    <button class="back-btn" data-route-link="quizzes">${icon("i-back")} Back to quizzes</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <article class="card page-card" style="margin-bottom:22px">
       <div class="section-head">
         <div><h2 style="margin:0 0 5px">${quiz ? `${escapeHtml(quiz.title || "Past quiz")} · marks` : "Class marks"}</h2><p class="stat-label">${quiz && summary
@@ -3329,7 +3544,7 @@ function renderQuizMarks() {
 function renderQuizQuestions() {
   const course = selectedCourse();
   const quiz = quizResults?.quiz;
-  if (!course || !quiz) return navigate("quizmarks");
+  if (!course || !quiz) return goBack();
   const questions = quiz.questions || [];
   setHeader(
     `${quiz.title || "Past quiz"} · questions`,
@@ -3337,7 +3552,7 @@ function renderQuizQuestions() {
     false
   );
   view.innerHTML = `
-    <button class="back-btn" data-action="back-to-marks">${icon("i-back")} Back to marks</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <article class="card page-card">
       <div class="section-head"><div><h2 style="margin:0 0 5px">Questions</h2><p class="stat-label">${[
         quiz.classLabel || quiz.day,
@@ -3573,7 +3788,7 @@ function renderLiveQuiz() {
   const percentage = totalStudents ? Math.round((responses / totalStudents) * 100) : 0;
   const questionCount = state.backendQuizQuestions.length;
   view.innerHTML = `
-    <button class="back-btn" data-route-link="dashboard">${icon("i-back")} Back to overview</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid">
       <article class="card page-card">
         <div class="session-title"><div><h2>${escapeHtml(state.backendQuizTitle || "Class quiz")}</h2><p>${questionCount} ${questionCount === 1 ? "question" : "questions"}${state.backendQuizClassLabel ? ` · for ${escapeHtml(state.backendQuizClassLabel)}` : ""}</p></div><span class="badge green">Live now</span></div>
@@ -3750,7 +3965,7 @@ function renderCourseRoster(courseId) {
     false
   );
   view.innerHTML = `
-    <button class="back-btn" data-action="close-course-roster">${icon("i-back")} Back to students</button>
+    <button class="back-btn" type="button" data-action="go-back">${icon("i-back")} Back</button>
     <div class="page-grid roster-grid">
       <article class="card page-card">
         <div class="section-head"><div><h2 style="margin:0 0 5px">Official student list</h2><p class="stat-label">${escapeHtml(course.courseCode)}${courseMarks?.scoresHidden ? " · marks visible to the professor only" : markedExams.length ? ` · ${studentsWithMarks} with recorded marks` : ""}</p></div><span class="badge ${roster.length ? "green" : "amber"}">${roster.length} students</span></div>
@@ -4280,7 +4495,7 @@ function renderPlaceholder(route) {
     settings: ["Settings", "Configure the secure API connection, privacy, and account access.", "i-settings"]
   }[route] || ["Coming soon", "This workspace is ready for its next module.", "i-grid"];
   setHeader(config[0], "CAMPUSPULSE");
-  view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon(config[2])}</span><h2>${config[0]}</h2><p>${config[1]}</p><button class="btn btn-primary" data-route-link="dashboard">Back to overview</button></div></article>`;
+  view.innerHTML = `<article class="card empty-state"><div><span class="empty-icon">${icon(config[2])}</span><h2>${config[0]}</h2><p>${config[1]}</p><button class="btn btn-primary" type="button" data-action="go-back">Back</button></div></article>`;
 }
 
 // Everyone who signed up and joined, as opposed to the uploaded roll list.
@@ -5294,6 +5509,8 @@ document.addEventListener("click", async event => {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!action) return;
 
+  if (action === "go-back") return goBack();
+
   if (action === "retry-session") {
     await bootstrapApp();
     return;
@@ -5436,8 +5653,7 @@ document.addEventListener("click", async event => {
     return navigate("students", { keepCourseContext: true });
   }
   if (action === "close-course-roster") {
-    managedCourseId = "";
-    return renderStudents();
+    return goBack();
   }
   if (action === "open-course-materials") {
     const courseId = event.target.closest("[data-course-id]")?.dataset.courseId || "";
@@ -5455,8 +5671,7 @@ document.addEventListener("click", async event => {
     return navigate("materials");
   }
   if (action === "close-course-materials") {
-    materialsCourseId = selectedCourse()?.id || "";
-    return renderMaterials();
+    return goBack();
   }
   if (action === "view-material" || action === "download-material") {
     const button = event.target.closest("[data-material-id]");
@@ -5685,8 +5900,7 @@ document.addEventListener("click", async event => {
     return view.querySelector("#examMarksFile")?.click();
   }
   if (action === "close-student-record") {
-    studentRecord = null;
-    return studentRecordRoute === "students" ? renderStudents() : renderAttendance();
+    return goBack();
   }
   if (action === "export-student-record") {
     if (!studentRecord) return toast("Open a student first", "error");
@@ -6129,17 +6343,18 @@ document.addEventListener("click", async event => {
   if (action === "open-past-session") {
     const sessionId = event.target.closest("[data-session-id]")?.dataset.sessionId || "";
     if (!sessionId) return;
+    const originRoute = state.route;
     // The list also sits on the dashboard, so the route has to move with the
     // click or the register would render underneath the wrong tab.
     if (state.route !== "attendance") navigate("attendance");
-    return openPastAttendanceSession(sessionId);
+    return openPastAttendanceSession(sessionId, { originRoute });
   }
   if (action === "open-quiz-questions") {
     if (!quizResults) return toast("Choose a quiz first", "error");
     return navigate("quizquestions");
   }
   if (action === "back-to-marks") {
-    return navigate("quizmarks");
+    return goBack();
   }
   if (action === "open-past-quizzes") {
     quizResults = null;
@@ -6781,6 +6996,7 @@ document.addEventListener("submit", async event => {
       await switchCourseContext(result.course.id, {
         renderView: false,
         notify: false,
+        updateHistory: true,
       });
     } catch (error) {
       return toast(
@@ -6938,6 +7154,7 @@ document.addEventListener("submit", async event => {
   }
   if (event.target.id === "resetPasswordForm") {
     const data = new FormData(event.target);
+    const email = String(data.get("email") || "").trim().toLowerCase();
     const newPassword = String(data.get("newPassword") || "");
     if (newPassword !== String(data.get("confirmNewPassword") || "")) {
       return toast("The new passwords do not match", "error");
@@ -6946,7 +7163,7 @@ document.addEventListener("submit", async event => {
       await apiRequest("/api/auth/password/reset", {
         method: "POST",
         auth: false,
-        body: { email: passwordResetEmail, code: String(data.get("code") || ""), newPassword }
+        body: { email, code: String(data.get("code") || ""), newPassword }
       });
     } catch (error) {
       return toast(error.message || "Could not reset the password", "error");
@@ -6968,6 +7185,7 @@ document.addEventListener("submit", async event => {
       await switchCourseContext(result.course.id, {
         renderView: false,
         notify: false,
+        updateHistory: true,
       });
       persist();
       renderClasses();
@@ -7146,6 +7364,7 @@ async function refreshEverything() {
 
 async function bootstrapApp() {
   if (!backendConfigured() || !apiToken) {
+    if (state.authenticated) startNavigationHistory();
     render();
     return;
   }
