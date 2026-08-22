@@ -374,12 +374,17 @@ function addCourseNotifications(
 }
 
 const PROXIMITY_WINDOW_MS = 30000;
+// How much of the digest makes a code. The teaching device derives the same
+// token natively while the app is backgrounded, so this is part of a contract
+// with the client rather than a free choice.
+const PROXIMITY_CODE_LENGTH = 6;
 
 // The code changes every 30 seconds and is derived from a secret held only by
-// the server, so a student has to read it from the room to submit it.
+// the server and the course team, so a student has to be in the room — where
+// the team's device is broadcasting it — to submit it.
 function proximityCodeFor(secret, offset = 0) {
   const window = Math.floor(Date.now() / PROXIMITY_WINDOW_MS) + offset;
-  return sha256(`${secret}:${window}`).slice(0, 6).toUpperCase();
+  return sha256(`${secret}:${window}`).slice(0, PROXIMITY_CODE_LENGTH).toUpperCase();
 }
 
 function attendanceRecord(student) {
@@ -3476,6 +3481,20 @@ function createApp(options = {}) {
           code: proximityCodeFor(session.proximitySecret),
           expiresInMs: PROXIMITY_WINDOW_MS - (Date.now() % PROXIMITY_WINDOW_MS),
           supported: true,
+          // The teaching device derives the token itself while the app is
+          // backgrounded, so it is given the secret and the shape of the
+          // window the codes are cut from. This route is already restricted
+          // to the course team, who can mark any student present from the
+          // register regardless, so computing a code grants them nothing
+          // they did not already have. Everywhere else the secret is
+          // stripped by publicAttendance and never leaves the server.
+          secret: session.proximitySecret,
+          windowMs: PROXIMITY_WINDOW_MS,
+          digits: PROXIMITY_CODE_LENGTH,
+          // Both sides cut windows from wall-clock time, so a device whose
+          // clock is out would broadcast a token this server has already
+          // retired. Sending our own time lets it correct for the drift.
+          serverTime: Date.now(),
         });
       } catch (error) {
         next(error);

@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const os = require("node:os");
 const path = require("node:path");
@@ -273,4 +274,64 @@ test("a wrong beacon token is refused even from inside the room", async (t) => {
   const spoofed = await checkIn(server.baseUrl, studentToken, sessionId, "ZZZZZZ", BACK_ROW);
   assert.equal(spoofed.status, 403);
   assert.match(spoofed.body.error, /code/i);
+});
+
+// The teaching device goes on broadcasting while the app is backgrounded, which
+// it can only do by deriving each window's token for itself. That derivation
+// lives in AttendanceBeaconService.java and has to match this server exactly, so
+// the material behind it — and who is allowed to see it — is pinned here.
+test("the course team is given what it needs to derive the token itself", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+
+  const opened = await openAttendance(server.baseUrl, professorToken, courseId);
+  assert.equal(opened.status, 201);
+  const sessionId = opened.body.attendance.id;
+
+  // The secret rides on exactly one route. A session read back anywhere else
+  // must not carry it, however privileged the reader.
+  assert.equal(opened.body.attendance.proximitySecret, undefined);
+  const session = await call(server.baseUrl, `/api/attendance/${sessionId}`, {
+    token: professorToken,
+  });
+  assert.equal(session.status, 200);
+  assert.equal(session.body.attendance.proximitySecret, undefined);
+
+  const shown = await call(server.baseUrl, `/api/attendance/${sessionId}/code`, {
+    token: professorToken,
+  });
+  assert.equal(shown.status, 200);
+  const { secret, windowMs, digits, serverTime, code } = shown.body;
+  assert.equal(typeof secret, "string");
+  assert.ok(secret.length > 0);
+  assert.equal(windowMs, 30000);
+  assert.equal(digits, 6);
+  assert.equal(typeof serverTime, "number");
+
+  // Character for character, the derivation the native beacon performs.
+  const derived = crypto
+    .createHash("sha256")
+    .update(`${secret}:${Math.floor(serverTime / windowMs)}`)
+    .digest("hex")
+    .slice(0, digits)
+    .toUpperCase();
+  assert.equal(derived, code);
+
+  // And a token derived that way marks a student present, which is the whole
+  // point: a locked phone in a pocket keeps the register working.
+  const marked = await checkIn(
+    server.baseUrl,
+    studentToken,
+    sessionId,
+    derived,
+    CLASSROOM,
+  );
+  assert.equal(marked.status, 201, JSON.stringify(marked.body));
+
+  // None of it is readable by the people it is meant to keep honest.
+  const peeked = await call(server.baseUrl, `/api/attendance/${sessionId}/code`, {
+    token: studentToken,
+  });
+  assert.equal(peeked.status, 403);
 });

@@ -3,10 +3,6 @@ package in.campuspulse.app;
 import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
-import android.bluetooth.le.AdvertiseCallback;
-import android.bluetooth.le.AdvertiseData;
-import android.bluetooth.le.AdvertiseSettings;
-import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
@@ -22,6 +18,7 @@ import android.os.Looper;
 import android.os.ParcelUuid;
 
 import androidx.activity.result.ActivityResult;
+import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.PermissionState;
@@ -110,8 +107,6 @@ public class ProximityPlugin extends Plugin {
     /** Keep listening at least this long so samples can accumulate. */
     private static final int DEFAULT_DWELL_MS = 2500;
 
-    private BluetoothLeAdvertiser advertiser;
-    private AdvertiseCallback advertiseCallback;
     private BluetoothLeScanner scanner;
     private ScanCallback scanCallback;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -250,6 +245,18 @@ public class ProximityPlugin extends Plugin {
     }
 
     // MARK: - Advertising (teaching device)
+    //
+    // The radio is driven by AttendanceBeaconService rather than from here. A
+    // register stays open for a whole class, while this plugin lives only as
+    // long as the WebView: lock the phone and everything the web layer had
+    // scheduled stops, and a beacon that cannot rotate its token is one the
+    // server stops accepting within the minute. The service holds the session
+    // secret and derives each window's token itself, so a phone in a pocket
+    // keeps a valid beacon in the air.
+    //
+    // Everything that needs the activity — permissions, and the system prompt
+    // to switch Bluetooth on — is still settled here first, so the web app gets
+    // a real reason back rather than a service that quietly failed to start.
 
     @PluginMethod
     public void startBeacon(PluginCall call) {
@@ -271,113 +278,117 @@ public class ProximityPlugin extends Plugin {
 
     private void beginAdvertising(PluginCall call) {
         String token = call.getString("token", "");
-        if (token == null || token.isEmpty()) {
+        String secret = call.getString("secret", "");
+        // Either is enough: a secret lets the service rotate on its own, and a
+        // bare token still covers a server that has not sent one.
+        if ((token == null || token.isEmpty()) && (secret == null || secret.isEmpty())) {
             call.reject("A session token is required");
             return;
         }
-        BluetoothAdapter adapter = adapter();
-        if (adapter == null) {
+        if (adapter() == null) {
             call.reject("This device cannot broadcast over Bluetooth LE");
             return;
         }
         if (!bluetoothOn()) {
-            ensureBluetoothOn(call, () -> continueAdvertising(call, token));
+            ensureBluetoothOn(call, () -> continueAdvertising(call));
             return;
         }
-        continueAdvertising(call, token);
+        continueAdvertising(call);
     }
 
-    private void continueAdvertising(PluginCall call, String token) {
+    private void continueAdvertising(PluginCall call) {
         BluetoothAdapter adapter = adapter();
         if (adapter == null || !bluetoothOn()) {
             call.reject("Turn Bluetooth on to broadcast attendance");
             return;
         }
-        BluetoothLeAdvertiser next = adapter.getBluetoothLeAdvertiser();
-        if (next == null) {
+        if (adapter.getBluetoothLeAdvertiser() == null) {
             call.reject("This device cannot broadcast over Bluetooth LE");
             return;
         }
 
-        stopAdvertising();
-        advertiser = next;
+        String secret = call.getString("secret", "");
+        boolean rotating = secret != null && !secret.isEmpty();
 
-        byte[] payload = token.getBytes(StandardCharsets.UTF_8);
-        if (payload.length > 20) {
-            call.reject("That session token is too long to broadcast");
-            return;
-        }
+        Intent intent = new Intent(getContext(), AttendanceBeaconService.class);
+        intent.setAction(AttendanceBeaconService.ACTION_START);
+        intent.putExtra(AttendanceBeaconService.EXTRA_TOKEN, call.getString("token", ""));
+        intent.putExtra(AttendanceBeaconService.EXTRA_SECRET, secret);
+        intent.putExtra(AttendanceBeaconService.EXTRA_LABEL, call.getString("label", ""));
+        intent.putExtra(
+            AttendanceBeaconService.EXTRA_WINDOW_MS, millis(call, "windowMs", 30000)
+        );
+        intent.putExtra(
+            AttendanceBeaconService.EXTRA_SKEW_MS, millis(call, "clockSkewMs", 0)
+        );
+        intent.putExtra(
+            AttendanceBeaconService.EXTRA_DIGITS, clamp(call.getInt("digits", 6), 4, 20)
+        );
 
-        AdvertiseSettings settings = new AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-            .setConnectable(false)
-            .build();
-        AdvertiseData data = new AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            // Lets a scanner calibrate against this radio instead of assuming a
-            // typical one, which tightens the distance estimate.
-            .setIncludeTxPowerLevel(true)
-            .addServiceUuid(SERVICE_UUID)
-            .addServiceData(SERVICE_UUID, payload)
-            .build();
+        // The service answers once, either way, and whichever comes first
+        // settles this call.
+        AttendanceBeaconService.setListener(new AttendanceBeaconService.Listener() {
+            private boolean settled = false;
 
-        advertiseCallback = new AdvertiseCallback() {
             @Override
-            public void onStartSuccess(AdvertiseSettings settingsInEffect) {
+            public void onAdvertising(int txPower, String token) {
+                if (settled) return;
+                settled = true;
                 JSObject result = new JSObject();
                 result.put("advertising", true);
-                result.put("txPower", settingsInEffect.getTxPowerLevel());
+                // Tells the web app it can stop pushing a fresh token every few
+                // seconds: this device now rotates its own.
+                result.put("rotating", rotating);
+                result.put("txPower", txPower);
+                result.put("token", token);
                 call.resolve(result);
             }
 
             @Override
-            public void onStartFailure(int errorCode) {
-                advertiseCallback = null;
-                call.reject(advertiseFailureMessage(errorCode));
+            public void onFailure(String message) {
+                if (settled) return;
+                settled = true;
+                call.reject(message);
             }
-        };
+        });
 
         try {
-            advertiser.startAdvertising(settings, data, advertiseCallback);
-        } catch (SecurityException error) {
-            advertiseCallback = null;
-            call.reject("Nearby devices permission is required to broadcast attendance");
+            ContextCompat.startForegroundService(getContext(), intent);
+        } catch (RuntimeException error) {
+            AttendanceBeaconService.setListener(null);
+            call.reject(
+                "Could not start the attendance broadcast. Open CampusPulse and try again."
+            );
         }
     }
 
-    private String advertiseFailureMessage(int errorCode) {
-        switch (errorCode) {
-            case AdvertiseCallback.ADVERTISE_FAILED_DATA_TOO_LARGE:
-                return "The attendance broadcast did not fit in a Bluetooth advertisement";
-            case AdvertiseCallback.ADVERTISE_FAILED_TOO_MANY_ADVERTISERS:
-                return "Bluetooth is busy broadcasting for other apps. Close one and try again";
-            case AdvertiseCallback.ADVERTISE_FAILED_ALREADY_STARTED:
-                return "Attendance is already being broadcast";
-            case AdvertiseCallback.ADVERTISE_FAILED_FEATURE_UNSUPPORTED:
-                return "This phone cannot broadcast over Bluetooth LE. Read the code out instead";
-            default:
-                return "Could not start the Bluetooth beacon (" + errorCode + ")";
-        }
+    /** Reads a millisecond option that may arrive as any JavaScript number. */
+    private static long millis(PluginCall call, String key, long fallback) {
+        Double value = call.getDouble(key, (double) fallback);
+        return value == null ? fallback : value.longValue();
     }
 
     @PluginMethod
     public void stopBeacon(PluginCall call) {
-        stopAdvertising();
+        AttendanceBeaconService.setListener(null);
+        AttendanceBeaconService.stop(getContext());
         JSObject result = new JSObject();
         result.put("advertising", false);
         call.resolve(result);
     }
 
-    private void stopAdvertising() {
-        if (advertiser != null && advertiseCallback != null) {
-            try {
-                advertiser.stopAdvertising(advertiseCallback);
-            } catch (SecurityException ignored) {
-                // Losing the permission mid-session is not worth crashing over.
-            }
-        }
-        advertiseCallback = null;
+    /**
+     * What is actually on the air. The web app compares this against the code
+     * the server hands out, so a phone whose clock has drifted far enough to
+     * derive the wrong token is caught rather than silently failing a room full
+     * of check-ins.
+     */
+    @PluginMethod
+    public void beaconStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("advertising", AttendanceBeaconService.isRunning());
+        result.put("token", AttendanceBeaconService.currentToken());
+        call.resolve(result);
     }
 
     // MARK: - Scanning (student device)
@@ -691,7 +702,10 @@ public class ProximityPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         handler.removeCallbacksAndMessages(null);
-        stopAdvertising();
+        // The beacon outliving this plugin is the whole point of running it
+        // in a service, so only the callback into a dying WebView is dropped
+        // here. Closing attendance is what stops the broadcast.
+        AttendanceBeaconService.setListener(null);
         stopScanning();
     }
 }

@@ -12,16 +12,35 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ProximityPlugin.class);
         super.onCreate(savedInstanceState);
 
-        // The web app tracks its own route history via pushState; step back through
-        // that instead of letting the system close the app on the first back press.
+        // Let the web app close an in-page detail or step through its own route
+        // trail. It returns false only on Overview, where Android may exit.
         getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
             @Override
             public void handleOnBackPressed() {
                 WebView webView = getBridge().getWebView();
-                if (webView != null && webView.canGoBack()) {
-                    webView.goBack();
+                if (webView == null) {
+                    exitApp();
                     return;
                 }
+
+                webView.evaluateJavascript(
+                    "typeof window.campusPulseHandleBack === 'function'"
+                        + " ? window.campusPulseHandleBack() : null",
+                    handled -> {
+                        if ("true".equals(handled)) return;
+                        if ("false".equals(handled)) {
+                            exitApp();
+                            return;
+                        }
+                        // A cached bundle from before campusPulseHandleBack was
+                        // added still gets the legacy WebView behavior.
+                        if (webView.canGoBack()) webView.goBack();
+                        else exitApp();
+                    }
+                );
+            }
+
+            private void exitApp() {
                 setEnabled(false);
                 getOnBackPressedDispatcher().onBackPressed();
             }

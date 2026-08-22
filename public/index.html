@@ -87,11 +87,13 @@
             </div>
           </div>
           <div class="top-actions">
-            <label class="course-switcher" id="courseSwitcherWrap" hidden>
+            <div class="course-switcher" id="courseSwitcherWrap" hidden>
               <svg aria-hidden="true"><use href="#i-users"/></svg>
               <span>Course</span>
-              <select id="courseSwitcher" aria-label="Active course"></select>
-            </label>
+              <button type="button" class="course-switcher-trigger" id="courseSwitcher" aria-haspopup="listbox" aria-expanded="false" aria-label="Active course"></button>
+              <svg class="course-switcher-chevron" aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <ul class="course-switcher-dropdown" id="courseSwitcherDropdown" role="listbox" hidden></ul>
+            </div>
             <button class="btn btn-primary" id="quickAction"><svg><use href="#i-clock"/></svg>Class reminders</button>
             <button class="icon-btn notification-btn" id="notificationButton" type="button" data-action="open-notification-inbox" aria-label="Notifications" aria-haspopup="dialog">
               <svg aria-hidden="true"><use href="#i-bell"/></svg>
@@ -100,6 +102,12 @@
             <button class="icon-btn settings-btn" data-route-link="settings" aria-label="Settings"><svg><use href="#i-settings"/></svg></button>
           </div>
         </header>
+
+        <button class="attendance-live-bar" id="attendanceLiveBar" type="button" hidden>
+          <span class="attendance-live-dot" aria-hidden="true"></span>
+          <span class="attendance-live-text" id="attendanceLiveText">Attendance is live</span>
+          <span class="attendance-live-cta">Open register</span>
+        </button>
 
         <section id="view" class="view"></section>
       </main>

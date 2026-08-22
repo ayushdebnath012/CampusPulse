@@ -37,6 +37,15 @@
             </intent-filter>
         </activity-alias>
 
+        <!-- Keeps the attendance beacon rotating its token while the app is
+             backgrounded or the phone is locked. Without this the register on a
+             professor's pocketed phone goes on advertising a token the server
+             stopped accepting, and every check-in in the room fails. -->
+        <service
+            android:name=".AttendanceBeaconService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -59,6 +68,12 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!-- Proximity attendance: the class device advertises, students scan. -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- The advertising outlives the screen it was started from, so it runs in a
+         foreground service. "connectedDevice" is the type Android 14 requires
+         for work driving an external radio, and BLUETOOTH_ADVERTISE above is
+         what qualifies the app to use it. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
