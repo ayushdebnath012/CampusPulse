@@ -25,6 +25,11 @@ import androidx.core.app.ServiceCompat;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 /**
  * Keeps the attendance beacon on the air while the app is not.
@@ -66,6 +71,7 @@ public class AttendanceBeaconService extends Service {
     static final String EXTRA_SKEW_MS = "clockSkewMs";
     static final String EXTRA_LABEL = "label";
     static final String EXTRA_MAX_MS = "maxDurationMs";
+    static final String EXTRA_SESSIONS_JSON = "sessionsJson";
 
     private static final ParcelUuid SERVICE_UUID =
         ParcelUuid.fromString("0000c9a1-0000-1000-8000-00805f9b34fb");
@@ -86,22 +92,52 @@ public class AttendanceBeaconService extends Service {
      * arriving a fraction late is free: the previous window stays valid.
      */
     private static final long ROTATION_GUARD_MS = 200;
+    // Long enough for several packets from a slot, short enough that a normal
+    // twelve-second student scan hears every one of a handful of live courses.
+    private static final long SESSION_SLOT_MS = 1500;
+    private static final int MAX_SIMULTANEOUS_SESSIONS = 8;
 
     private static volatile Listener listener;
     private static volatile boolean running;
     private static volatile String currentToken = "";
+    private static volatile int activeSessionCount = 0;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private BluetoothLeAdvertiser advertiser;
     private AdvertiseCallback advertiseCallback;
 
-    private String secret = "";
-    private String fixedToken = "";
     private String label = "";
-    private long windowMs = 30000;
-    private int digits = 6;
-    private long skewMs = 0;
     private long endsAt = 0;
+    private final List<BeaconSession> sessions = new ArrayList<>();
+    private int sessionIndex = 0;
+
+    private static final class BeaconSession {
+        final String id;
+        final String secret;
+        final String fixedToken;
+        final String label;
+        final long windowMs;
+        final int digits;
+        final long skewMs;
+
+        BeaconSession(
+            String id,
+            String secret,
+            String fixedToken,
+            String label,
+            long windowMs,
+            int digits,
+            long skewMs
+        ) {
+            this.id = id;
+            this.secret = secret;
+            this.fixedToken = fixedToken;
+            this.label = label;
+            this.windowMs = Math.max(1000, windowMs);
+            this.digits = Math.max(4, Math.min(20, digits));
+            this.skewMs = skewMs;
+        }
+    }
 
     // MARK: - What the plugin can see from outside
 
@@ -115,6 +151,10 @@ public class AttendanceBeaconService extends Service {
 
     static String currentToken() {
         return currentToken;
+    }
+
+    static int sessionCount() {
+        return activeSessionCount;
     }
 
     static void stop(Context context) {
@@ -142,12 +182,23 @@ public class AttendanceBeaconService extends Service {
             return START_NOT_STICKY;
         }
 
-        secret = valueOrEmpty(intent.getStringExtra(EXTRA_SECRET));
-        fixedToken = valueOrEmpty(intent.getStringExtra(EXTRA_TOKEN));
-        label = valueOrEmpty(intent.getStringExtra(EXTRA_LABEL));
-        windowMs = Math.max(1000, intent.getLongExtra(EXTRA_WINDOW_MS, 30000));
-        digits = Math.max(4, Math.min(20, intent.getIntExtra(EXTRA_DIGITS, 6)));
-        skewMs = intent.getLongExtra(EXTRA_SKEW_MS, 0);
+        sessions.clear();
+        sessionIndex = 0;
+        String sessionsJson = valueOrEmpty(intent.getStringExtra(EXTRA_SESSIONS_JSON));
+        if (!sessionsJson.isEmpty()) parseSessions(sessionsJson);
+        if (sessions.isEmpty()) {
+            addSession(
+                "",
+                valueOrEmpty(intent.getStringExtra(EXTRA_SECRET)),
+                valueOrEmpty(intent.getStringExtra(EXTRA_TOKEN)),
+                valueOrEmpty(intent.getStringExtra(EXTRA_LABEL)),
+                intent.getLongExtra(EXTRA_WINDOW_MS, 30000),
+                intent.getIntExtra(EXTRA_DIGITS, 6),
+                intent.getLongExtra(EXTRA_SKEW_MS, 0)
+            );
+        }
+        activeSessionCount = sessions.size();
+        label = joinedLabels();
         long maxMs = intent.getLongExtra(EXTRA_MAX_MS, DEFAULT_MAX_DURATION_MS);
         endsAt = System.currentTimeMillis() + Math.max(60000, maxMs);
 
@@ -155,7 +206,7 @@ public class AttendanceBeaconService extends Service {
         // so the notification goes up before anything that can fail is tried.
         startInForeground();
 
-        if (secret.isEmpty() && fixedToken.isEmpty()) {
+        if (sessions.isEmpty()) {
             report("No attendance token to broadcast");
             stopSelf();
             return START_NOT_STICKY;
@@ -173,12 +224,63 @@ public class AttendanceBeaconService extends Service {
     public void onDestroy() {
         running = false;
         currentToken = "";
+        activeSessionCount = 0;
+        sessions.clear();
         handler.removeCallbacksAndMessages(null);
         stopAdvertising();
         super.onDestroy();
     }
 
     // MARK: - Token rotation
+
+    private void parseSessions(String json) {
+        try {
+            JSONArray array = new JSONArray(json);
+            int count = Math.min(array.length(), MAX_SIMULTANEOUS_SESSIONS);
+            for (int index = 0; index < count; index += 1) {
+                JSONObject item = array.optJSONObject(index);
+                if (item == null) continue;
+                addSession(
+                    item.optString("id", ""),
+                    item.optString("secret", ""),
+                    item.optString("token", ""),
+                    item.optString("label", ""),
+                    item.optLong("windowMs", 30000),
+                    item.optInt("digits", 6),
+                    item.optLong("clockSkewMs", 0)
+                );
+            }
+        } catch (Exception ignored) {
+            // The backward-compatible top-level session below is still usable.
+        }
+    }
+
+    private void addSession(
+        String id,
+        String secret,
+        String token,
+        String sessionLabel,
+        long sessionWindowMs,
+        int sessionDigits,
+        long sessionSkewMs
+    ) {
+        if (secret.isEmpty() && token.isEmpty()) return;
+        sessions.add(new BeaconSession(
+            id, secret, token, sessionLabel,
+            sessionWindowMs, sessionDigits, sessionSkewMs
+        ));
+    }
+
+    private String joinedLabels() {
+        StringBuilder result = new StringBuilder();
+        for (BeaconSession session : sessions) {
+            if (session.label.isEmpty()) continue;
+            if (result.length() > 0) result.append(", ");
+            result.append(session.label);
+            if (result.length() > 40) break;
+        }
+        return result.toString();
+    }
 
     private void rotate() {
         if (System.currentTimeMillis() > endsAt) {
@@ -189,21 +291,31 @@ public class AttendanceBeaconService extends Service {
             return;
         }
 
-        String token = secret.isEmpty() ? fixedToken : tokenForNow();
-        if (!token.equals(currentToken) || advertiseCallback == null) {
+        if (sessions.isEmpty()) {
+            stopSelf();
+            return;
+        }
+        BeaconSession session = sessions.get(sessionIndex % sessions.size());
+        sessionIndex = (sessionIndex + 1) % sessions.size();
+        String token = session.secret.isEmpty()
+            ? session.fixedToken
+            : tokenForNow(session);
+        if (sessions.size() > 1 || !token.equals(currentToken) || advertiseCallback == null) {
             currentToken = token;
             advertise(token);
         }
 
-        // A fixed token has nothing to rotate to, but the clock still has to be
-        // watched so the session can time out.
-        long delay = secret.isEmpty() ? windowMs : millisUntilNextWindow();
+        // Multiple sessions share the one Android advertiser in short slots.
+        // A lone session can sleep until its next cryptographic window.
+        long delay = sessions.size() > 1
+            ? SESSION_SLOT_MS
+            : session.secret.isEmpty() ? session.windowMs : millisUntilNextWindow(session);
         handler.postDelayed(this::rotate, delay);
     }
 
-    private long millisUntilNextWindow() {
-        long now = System.currentTimeMillis() + skewMs;
-        long next = ((now / windowMs) + 1) * windowMs;
+    private long millisUntilNextWindow(BeaconSession session) {
+        long now = System.currentTimeMillis() + session.skewMs;
+        long next = ((now / session.windowMs) + 1) * session.windowMs;
         return Math.max(250, next - now + ROTATION_GUARD_MS);
     }
 
@@ -212,17 +324,17 @@ public class AttendanceBeaconService extends Service {
      * first few characters, upper case. Both sides key off the wall clock, so
      * neither has to tell the other anything once the secret is handed over.
      */
-    private String tokenForNow() {
-        long window = (System.currentTimeMillis() + skewMs) / windowMs;
+    private String tokenForNow(BeaconSession session) {
+        long window = (System.currentTimeMillis() + session.skewMs) / session.windowMs;
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(
-                (secret + ":" + window).getBytes(StandardCharsets.UTF_8)
+                (session.secret + ":" + window).getBytes(StandardCharsets.UTF_8)
             );
-            StringBuilder hex = new StringBuilder(digits);
-            for (int i = 0; i < hash.length && hex.length() < digits; i += 1) {
+            StringBuilder hex = new StringBuilder(session.digits);
+            for (int i = 0; i < hash.length && hex.length() < session.digits; i += 1) {
                 hex.append(Character.forDigit((hash[i] >> 4) & 0xf, 16));
-                if (hex.length() < digits) {
+                if (hex.length() < session.digits) {
                     hex.append(Character.forDigit(hash[i] & 0xf, 16));
                 }
             }

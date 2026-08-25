@@ -1,4 +1,4 @@
-const APP_VERSION = "1.10.0";
+const APP_VERSION = "1.11.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -171,7 +171,11 @@ const defaultState = {
   selectedCourseId: "",
   stats: {},
   statsByCourse: {},
-  importedSchedule: []
+  importedSchedule: [],
+  // Session IDs only. Rotating secrets stay in memory and are fetched again
+  // after a reload, while this list lets the same teaching device restore all
+  // of the registers it was broadcasting instead of only the visible course.
+  liveAttendanceBroadcasts: []
 };
 
 function loadStoredState() {
@@ -194,6 +198,11 @@ state.importedSchedule = Array.isArray(state.importedSchedule) ? state.importedS
 state.backendSchedule = Array.isArray(state.backendSchedule) ? state.backendSchedule : [];
 state.backendQuizQuestions = Array.isArray(state.backendQuizQuestions) ? state.backendQuizQuestions : [];
 state.teachingAssistants = Array.isArray(state.teachingAssistants) ? state.teachingAssistants : [];
+state.liveAttendanceBroadcasts = Array.isArray(state.liveAttendanceBroadcasts)
+  ? state.liveAttendanceBroadcasts
+      .filter(item => item?.sessionId && item?.courseId)
+      .map(item => ({ sessionId: String(item.sessionId), courseId: String(item.courseId) }))
+  : [];
 state.stats = state.stats && typeof state.stats === "object" ? state.stats : {};
 state.statsByCourse = state.statsByCourse && typeof state.statsByCourse === "object"
   ? state.statsByCourse
@@ -223,6 +232,7 @@ let attendanceHistory = null;
 let attendanceDayId = "";
 let proximityCode = null;
 let beaconToken = "";
+let beaconSessionsSignature = "";
 // Set whenever the native plugin rejects startBeacon, so the UI can show the
 // real reason (e.g. "Turn Bluetooth on") instead of a generic message.
 let beaconError = "";
@@ -237,13 +247,18 @@ let beaconMismatches = 0;
 // token's window from wall-clock time, so the native beacon needs it.
 let proximityClockSkewMs = 0;
 let proximityTimer = null;
-// The session this device is broadcasting for, held apart from
-// `activeAttendance` so that opening another screen, or looking at another
-// course, cannot silently stop the beacon a class is checking in against. The
-// token students scan for rotates every 30 seconds, so a broadcast is only as
-// alive as the ticker that keeps refreshing it.
+// Every open register this device is broadcasting. The secrets and live codes
+// are deliberately memory-only; `state.liveAttendanceBroadcasts` persists just
+// the IDs needed to fetch them again after a reload. Android receives the whole
+// set and cycles the radio between them in its foreground service.
+let attendanceBroadcasts = new Map();
+let proximityRefreshRunning = false;
+// The broadcast whose details belong to the visible register. These aliases
+// keep the UI simple; they no longer imply that only one session owns the radio.
 let broadcastSessionId = "";
 let broadcastCourseId = "";
+let liveBarSessionId = "";
+let liveBarCourseId = "";
 // The professor/TA's list of past attendance days for the selected course,
 // and whichever one is currently open for read-only review (null = today's).
 let pastAttendanceSessions = [];
@@ -558,8 +573,8 @@ async function selectAttendanceCourse(courseId) {
   // the room off the air: an open session picks its beacon back up here rather
   // than waiting for someone to open the register again. A broadcast already
   // running keeps the radio — one device can only advertise one class at once.
-  if (!broadcastSessionId && payload.attendance?.status === "open") {
-    startAttendanceBroadcast(payload.attendance.id, payload.attendance.courseId);
+  if (payload.attendance?.status === "open") {
+    await startAttendanceBroadcast(payload.attendance.id, payload.attendance.courseId);
   }
 }
 
@@ -894,8 +909,12 @@ function clearSensitiveClientState({ clearImportedSchedule = false } = {}) {
   clearInterval(proximityTimer);
   proximityTimer = null;
   proximityCode = null;
+  attendanceBroadcasts.clear();
+  state.liveAttendanceBroadcasts = [];
   broadcastSessionId = "";
   broadcastCourseId = "";
+  liveBarSessionId = "";
+  liveBarCourseId = "";
   stopAttendanceBeacon();
   syncAttendanceLiveBar();
   attendanceHistory = null;
@@ -1343,6 +1362,7 @@ function startOpenAttendancePolling() {
 
 async function syncBackendState() {
   if (!backendConfigured() || !apiToken) return;
+  const rememberedAttendanceBroadcasts = [...state.liveAttendanceBroadcasts];
   const payload = await apiRequest("/api/bootstrap");
   state.userRole = payload.user.role;
   state.accountName = payload.user.name;
@@ -1391,6 +1411,9 @@ async function syncBackendState() {
     courseRefreshes.push(selectQuizCourse(course.id));
   }
   await Promise.allSettled(courseRefreshes);
+  if (state.userRole !== "student") {
+    await restoreAttendanceBroadcasts(rememberedAttendanceBroadcasts);
+  }
   persist();
   await refreshOpenAttendance({ rerender: false });
   await refreshEnrolledStudents();
@@ -2311,27 +2334,51 @@ function activityFeed(course, attendanceMatchesCourse, coursePresentCount, stats
 // room read it off that screen to prove they were there.
 async function refreshProximityCode(sessionId) {
   if (!backendConfigured() || !apiToken || !sessionId) {
-    proximityCode = null;
     return { closed: false };
   }
+  const broadcast = attendanceBroadcasts.get(sessionId);
+  if (!broadcast) return { closed: true };
   try {
-    proximityCode = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}/code`);
-    if (Number.isFinite(proximityCode?.serverTime)) {
+    const code = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}/code`);
+    broadcast.code = code;
+    if (Number.isFinite(code?.serverTime)) {
       // Round-trip latency is in here too, but a few hundred milliseconds
       // does not matter against a thirty-second window.
-      proximityClockSkewMs = proximityCode.serverTime - Date.now();
+      broadcast.clockSkewMs = code.serverTime - Date.now();
     }
+    if (broadcastSessionId === sessionId) syncCurrentBroadcastDetails();
     return { closed: false };
   } catch (error) {
     // Only a session that is gone, closed, or no longer ours retires the code.
     // A dropped connection must not: the beacon is still advertising a token
     // the server will accept, and the class is still in the room.
     if (error?.status === 404 || error?.status === 403) {
-      proximityCode = null;
       return { closed: true };
     }
     return { closed: false, error };
   }
+}
+
+function rememberAttendanceBroadcasts() {
+  state.liveAttendanceBroadcasts = [...attendanceBroadcasts.values()].map(item => ({
+    sessionId: item.sessionId,
+    courseId: item.courseId,
+  }));
+  persist();
+}
+
+function syncCurrentBroadcastDetails() {
+  const current = attendanceBroadcasts.get(broadcastSessionId);
+  broadcastCourseId = current?.courseId || "";
+  proximityCode = current?.code || null;
+  proximityClockSkewMs = current?.clockSkewMs || 0;
+}
+
+function selectAttendanceBroadcast(sessionId) {
+  if (!attendanceBroadcasts.has(sessionId)) return;
+  broadcastSessionId = sessionId;
+  syncCurrentBroadcastDetails();
+  syncAttendanceLiveBar();
 }
 
 // True only while this session's register is the thing on screen, so a token
@@ -2348,53 +2395,89 @@ function showingLiveSession(sessionId) {
 // render that runs on every repaint.
 async function startAttendanceBroadcast(sessionId, courseId = "") {
   if (!sessionId || !backendConfigured() || !apiToken) return;
-  if (broadcastSessionId === sessionId && proximityTimer) return;
-  broadcastSessionId = sessionId;
-  broadcastCourseId = courseId || broadcastCourseId;
-  syncAttendanceLiveBar();
+  const existing = attendanceBroadcasts.get(sessionId);
+  if (existing) {
+    if (courseId) existing.courseId = courseId;
+    selectAttendanceBroadcast(sessionId);
+    if (!proximityTimer) startProximityCodeTicker();
+    return;
+  }
+  attendanceBroadcasts.set(sessionId, {
+    sessionId,
+    courseId: courseId || state.selectedCourseId,
+    code: null,
+    clockSkewMs: 0,
+  });
+  selectAttendanceBroadcast(sessionId);
+  rememberAttendanceBroadcasts();
   const { closed } = await refreshProximityCode(sessionId);
-  // Another broadcast started while this one was in flight; it owns the radio.
-  if (broadcastSessionId !== sessionId) return;
-  if (closed) return stopAttendanceBroadcast();
-  if (proximityCode?.code) await startAttendanceBeacon(proximityCode.code);
-  startProximityCodeTicker(sessionId);
+  if (closed) return stopAttendanceBroadcast(sessionId);
+  await startAttendanceBeacon();
+  startProximityCodeTicker();
   if (showingLiveSession(sessionId)) renderLiveAttendance();
 }
 
-async function stopAttendanceBroadcast() {
-  clearInterval(proximityTimer);
-  proximityTimer = null;
-  broadcastSessionId = "";
-  broadcastCourseId = "";
-  proximityCode = null;
+async function stopAttendanceBroadcast(sessionId = "") {
+  if (sessionId) attendanceBroadcasts.delete(sessionId);
+  else attendanceBroadcasts.clear();
+  rememberAttendanceBroadcasts();
+
+  if (!attendanceBroadcasts.size) {
+    clearInterval(proximityTimer);
+    proximityTimer = null;
+    broadcastSessionId = "";
+    syncCurrentBroadcastDetails();
+    syncAttendanceLiveBar();
+    await stopAttendanceBeacon();
+    return;
+  }
+
+  if (!attendanceBroadcasts.has(broadcastSessionId)) {
+    broadcastSessionId = [...attendanceBroadcasts.keys()].at(-1) || "";
+  }
+  syncCurrentBroadcastDetails();
   syncAttendanceLiveBar();
-  await stopAttendanceBeacon();
+  await startAttendanceBeacon();
+  startProximityCodeTicker();
 }
 
-function startProximityCodeTicker(sessionId) {
+function startProximityCodeTicker() {
   clearInterval(proximityTimer);
-  if (!sessionId) return;
+  if (!attendanceBroadcasts.size) return;
   // A register outlives the screen it was opened from. This keeps rotating the
   // token while the team reads another page or looks at another course, and
   // stops only when the session closes, another session takes the radio, or
   // the account signs out.
   proximityTimer = setInterval(async () => {
-    if (broadcastSessionId !== sessionId) {
-      clearInterval(proximityTimer);
-      return;
-    }
-    const previous = proximityCode?.code;
-    const { closed } = await refreshProximityCode(sessionId);
-    if (broadcastSessionId !== sessionId) return;
-    if (closed) {
-      // Closed from another device, or course access withdrawn.
-      await stopAttendanceBroadcast();
-      if (state.route === "attendance") renderLiveAttendance();
-      return;
-    }
-    await syncBeaconToken();
-    if (proximityCode?.code !== previous && showingLiveSession(sessionId)) {
-      renderLiveAttendance();
+    if (proximityRefreshRunning) return;
+    proximityRefreshRunning = true;
+    try {
+      let visibleCodeChanged = false;
+      const broadcasts = [...attendanceBroadcasts.values()];
+      for (const broadcast of broadcasts) {
+        const previous = broadcast.code?.code;
+        const { closed } = await refreshProximityCode(broadcast.sessionId);
+        if (closed) {
+          attendanceBroadcasts.delete(broadcast.sessionId);
+          continue;
+        }
+        if (showingLiveSession(broadcast.sessionId) && broadcast.code?.code !== previous) {
+          visibleCodeChanged = true;
+        }
+      }
+      if (broadcasts.length !== attendanceBroadcasts.size) {
+        rememberAttendanceBroadcasts();
+        if (!attendanceBroadcasts.has(broadcastSessionId)) {
+          broadcastSessionId = [...attendanceBroadcasts.keys()].at(-1) || "";
+          syncCurrentBroadcastDetails();
+        }
+      }
+      if (!attendanceBroadcasts.size) await stopAttendanceBroadcast();
+      else await syncBeaconToken();
+      syncAttendanceLiveBar();
+      if (visibleCodeChanged) renderLiveAttendance();
+    } finally {
+      proximityRefreshRunning = false;
     }
   }, 5000);
 }
@@ -2404,35 +2487,53 @@ function startProximityCodeTicker(sessionId) {
 // device is picked up again. Catch up at once rather than leave the room
 // failing check-ins for up to another five seconds.
 async function resumeAttendanceBroadcast() {
-  const sessionId = broadcastSessionId;
-  if (!sessionId) return;
-  const { closed } = await refreshProximityCode(sessionId);
-  if (broadcastSessionId !== sessionId) return;
-  if (closed) {
-    await stopAttendanceBroadcast();
-    if (state.route === "attendance") renderLiveAttendance();
-    return;
+  const broadcasts = [...attendanceBroadcasts.values()];
+  if (!broadcasts.length) return;
+  for (const broadcast of broadcasts) {
+    const { closed } = await refreshProximityCode(broadcast.sessionId);
+    if (closed) attendanceBroadcasts.delete(broadcast.sessionId);
   }
-  // On Android the service kept broadcasting through the whole background
-  // spell and there is nothing to catch up; everywhere else this is the
-  // moment the stale token gets replaced.
-  await syncBeaconToken();
-  startProximityCodeTicker(sessionId);
-  if (showingLiveSession(sessionId)) renderLiveAttendance();
+  if (!attendanceBroadcasts.size) return stopAttendanceBroadcast();
+  rememberAttendanceBroadcasts();
+  if (!attendanceBroadcasts.has(broadcastSessionId)) {
+    broadcastSessionId = [...attendanceBroadcasts.keys()].at(-1) || "";
+  }
+  syncCurrentBroadcastDetails();
+  await startAttendanceBeacon();
+  startProximityCodeTicker();
+  if (showingLiveSession(broadcastSessionId)) renderLiveAttendance();
+}
+
+async function restoreAttendanceBroadcasts(remembered = state.liveAttendanceBroadcasts) {
+  for (const item of remembered) {
+    const course = state.courses.find(candidate => candidate.id === item.courseId);
+    if (!course || !canRunAttendance(course)) continue;
+    await startAttendanceBroadcast(item.sessionId, item.courseId);
+  }
 }
 
 // A register left open while the team reads another page has nothing else to
 // show for itself, and a beacon nobody can see is a beacon nobody turns off.
 function syncAttendanceLiveBar() {
   if (!attendanceLiveBar) return;
-  const live = Boolean(broadcastSessionId) && state.authenticated;
-  const showing = live && !showingLiveSession(broadcastSessionId);
-  attendanceLiveBar.hidden = !showing;
-  if (!showing || !attendanceLiveText) return;
-  const course = state.courses.find(item => item.id === broadcastCourseId);
+  const live = state.authenticated ? [...attendanceBroadcasts.values()] : [];
+  const visibleSessionId = showingLiveSession(activeAttendance?.id)
+    ? activeAttendance.id
+    : "";
+  const background = live.filter(item => item.sessionId !== visibleSessionId);
+  const target = background[0];
+  liveBarSessionId = target?.sessionId || "";
+  liveBarCourseId = target?.courseId || "";
+  attendanceLiveBar.hidden = !background.length;
+  if (!background.length || !attendanceLiveText) return;
+  if (background.length > 1) {
+    attendanceLiveText.textContent = `${background.length} other attendance sessions are live`;
+    return;
+  }
+  const course = state.courses.find(item => item.id === target.courseId);
   attendanceLiveText.textContent = course
     ? `Attendance is live for ${course.courseCode}`
-    : "Attendance is live";
+    : "Another attendance session is live";
 }
 
 function proximityPlugin() {
@@ -2471,26 +2572,39 @@ async function beaconFailureReason(fallback) {
 // foreground service and keeps broadcasting through a locked screen; iOS, a
 // browser, or an older native build ignore the extra fields and go on being
 // fed a token from here every window instead.
-async function startAttendanceBeacon(token) {
+async function startAttendanceBeacon() {
   const plugin = proximityPlugin();
-  if (!plugin || !token) return false;
-  const course = state.courses.find(item => item.id === broadcastCourseId);
+  const broadcasts = [...attendanceBroadcasts.values()].filter(item => item.code?.code);
+  if (!plugin || !broadcasts.length) return false;
+  const primary = attendanceBroadcasts.get(broadcastSessionId) || broadcasts[0];
+  const sessions = broadcasts.map(item => {
+    const course = state.courses.find(candidate => candidate.id === item.courseId);
+    return {
+      id: item.sessionId,
+      token: item.code.code,
+      secret: item.code.secret || "",
+      windowMs: item.code.windowMs || 30000,
+      digits: item.code.digits || 6,
+      clockSkewMs: item.clockSkewMs || 0,
+      label: course?.courseCode || "",
+    };
+  });
+  const sessionsSignature = sessions.map(item => `${item.id}:${item.token}`).join("|");
+  const selected = sessions.find(item => item.id === primary.sessionId) || sessions[0];
   try {
     const result = await plugin.startBeacon({
-      token,
-      secret: proximityCode?.secret || "",
-      windowMs: proximityCode?.windowMs || 30000,
-      digits: proximityCode?.digits || 6,
-      clockSkewMs: proximityClockSkewMs,
-      label: course ? course.courseCode : ""
+      ...selected,
+      sessions,
     });
-    beaconToken = token;
+    beaconToken = selected.token;
+    beaconSessionsSignature = sessionsSignature;
     beaconRotating = Boolean(result?.rotating);
     beaconMismatches = 0;
     beaconError = "";
     return true;
   } catch (error) {
     beaconToken = "";
+    beaconSessionsSignature = "";
     beaconRotating = false;
     beaconError = await beaconFailureReason(
       error?.message || "Could not start broadcasting"
@@ -2508,19 +2622,32 @@ async function startAttendanceBeacon(token) {
 // check-in in the room and say nothing about why. Pushing the server's own
 // token repairs the class, at the cost of going stale in the background again.
 async function syncBeaconToken() {
-  const code = proximityCode?.code;
+  const current = attendanceBroadcasts.get(broadcastSessionId);
+  const code = current?.code?.code;
   if (!code) return;
   if (!beaconRotating) {
-    if (code !== beaconToken) await startAttendanceBeacon(code);
+    const signature = [...attendanceBroadcasts.values()]
+      .filter(item => item.code?.code)
+      .map(item => `${item.sessionId}:${item.code.code}`)
+      .join("|");
+    if (signature !== beaconSessionsSignature) await startAttendanceBeacon();
     return;
   }
-  let live = "";
+  let status = null;
   try {
-    live = (await proximityPlugin()?.beaconStatus?.())?.token || "";
+    status = await proximityPlugin()?.beaconStatus?.();
   } catch {
     // An older native build has no status to report; trust the rotation.
     return;
   }
+  // With several sessions the service is expected to be on a different token
+  // whenever this check lands. It derives every token from its own secret, so
+  // comparing the currently selected radio slot would be a false alarm.
+  if (Number(status?.sessionCount) > 1) {
+    beaconMismatches = 0;
+    return;
+  }
+  const live = status?.token || "";
   if (!live || live === code) {
     beaconMismatches = 0;
     return;
@@ -2531,12 +2658,13 @@ async function syncBeaconToken() {
   if (beaconMismatches < 3) return;
   beaconMismatches = 0;
   beaconRotating = false;
-  await startAttendanceBeacon(code);
+  await startAttendanceBeacon();
 }
 
 async function stopAttendanceBeacon() {
   const plugin = proximityPlugin();
   beaconToken = "";
+  beaconSessionsSignature = "";
   beaconRotating = false;
   beaconMismatches = 0;
   if (!plugin) return;
@@ -3331,7 +3459,7 @@ function renderLiveAttendance() {
             viewingPast ? "gray" : complete ? "green" : "purple"
           )}
           ${pastSessionsPicker()}
-          ${!complete ? (beaconToken ? `<div class="proximity-code">
+          ${!complete ? (attendanceBroadcasts.has(activeAttendance?.id) && beaconToken ? `<div class="proximity-code">
             <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
             <p>Installed apps use Bluetooth automatically. iPhone website users see this session too and can verify the same classroom Wi‑Fi plus location.${beaconRotating ? " You can lock this phone or use another app: the broadcast keeps running until you close attendance." : ""}</p>
           </div>` : proximityPlugin() ? (beaconError ? `<div class="proximity-code no-ble">
@@ -4934,8 +5062,10 @@ async function currentLocation({ timeoutMs = 12000 } = {}) {
         };
       }
     } catch {
-      // Permission refused, or the radio gave nothing. Fall through to the
-      // browser API, which may still succeed on a device that has a fix.
+      // The installed app has already used the native location provider. A
+      // second browser-level attempt asks the same phone again and can make a
+      // button look frozen for another full timeout.
+      return null;
     }
   }
 
@@ -6181,7 +6311,7 @@ document.addEventListener("click", async event => {
     if (!proximityCode?.code) return toast("No active session to broadcast", "error");
     beaconError = "";
     renderLiveAttendance();
-    const started = await startAttendanceBeacon(proximityCode.code);
+    const started = await startAttendanceBeacon();
     renderLiveAttendance();
     return toast(
       started ? "Broadcasting to the room" : beaconError || "Still not broadcasting",
@@ -6248,11 +6378,15 @@ document.addEventListener("click", async event => {
   }
   if (action === "end-session") {
     if (!canRunAttendance(attendanceCourse())) return toast("Course-team attendance access required", "error");
+    // Course switching can update the persisted fallback while this register
+    // is still on screen. Always close the snapshot the user is looking at.
+    const closingSessionId = activeAttendance?.id || state.backendAttendanceId;
+    if (!closingSessionId) return toast("No open attendance session to close", "error");
     const total = currentAttendanceRecords().length;
     const present = currentPresentCount();
     if (!window.confirm(`Close attendance with ${present} present and ${total - present} absent? Marks cannot be changed after closing.`)) return;
     try {
-      const result = await apiRequest(`/api/attendance/${state.backendAttendanceId}/close`, {
+      const result = await apiRequest(`/api/attendance/${encodeURIComponent(closingSessionId)}/close`, {
         method: "POST",
         body: {}
       });
@@ -6263,7 +6397,7 @@ document.addEventListener("click", async event => {
     clearInterval(scanTimer);
     // Nothing is listening now, and a beacon left running would keep telling
     // the room that a closed class is still taking marks.
-    await stopAttendanceBroadcast();
+    await stopAttendanceBroadcast(closingSessionId);
     state.attendanceStatus = "complete";
     // The class just closed belongs in the history dropdown straight away.
     await refreshPastSessions(state.selectedCourseId);
@@ -6271,27 +6405,35 @@ document.addEventListener("click", async event => {
   }
   if (action === "reopen-session") {
     if (!canRunAttendance(attendanceCourse())) return toast("Course-team attendance access required", "error");
-    const sessionId = event.target.closest("[data-session-id]")?.dataset.sessionId
+    const reopenButton = event.target.closest("[data-session-id]");
+    const sessionId = reopenButton?.dataset.sessionId
       || viewingPastAttendance?.id
       || state.backendAttendanceId;
     if (!sessionId) return toast("No session to reopen", "error");
-    const classLocation = await currentLocation();
+    if (reopenButton) {
+      reopenButton.disabled = true;
+      reopenButton.textContent = "Reopening attendance…";
+    }
+    toast("Reopening attendance…");
+    const classLocation = await currentLocation({ timeoutMs: 8000 });
     try {
       const result = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}/reopen`, {
         method: "POST",
         body: classLocation ? { location: classLocation } : {},
       });
-      activeAttendance = result.attendance;
-      state.backendAttendanceId = result.attendance.id;
-      state.attendanceStatus = "scanning";
-      viewingPastAttendance = null;
+      applyAttendanceSnapshot(result.attendance);
     } catch (error) {
+      if (reopenButton?.isConnected) {
+        reopenButton.disabled = false;
+        reopenButton.textContent = "Reopen to add students";
+      }
       return toast(error.message || "Could not reopen that session", "error");
     }
     persist();
-    await refreshPastSessions(state.selectedCourseId);
     renderLiveAttendance();
     toast("Attendance reopened — add missed students below");
+    await refreshPastSessions(state.selectedCourseId);
+    if (showingLiveSession(sessionId)) renderLiveAttendance();
   }
   if (action === "add-student-manual") {
     if (!canRunAttendance(attendanceCourse()) || !state.backendAttendanceId) return toast("Course-team attendance session required", "error");
@@ -7128,8 +7270,8 @@ document.addEventListener("click", event => {
 });
 
 attendanceLiveBar?.addEventListener("click", async () => {
-  const courseId = broadcastCourseId;
-  if (!broadcastSessionId) return;
+  const courseId = liveBarCourseId;
+  if (!liveBarSessionId) return;
   try {
     // The register may belong to a course other than the one being browsed, so
     // the tab has to follow before the screen can show it.

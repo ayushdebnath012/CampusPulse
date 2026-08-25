@@ -57,6 +57,9 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
 
     private var advertiseCall: CAPPluginCall?
     private var advertisedToken = ""
+    private var advertisedTokens: [String] = []
+    private var advertisedIndex = 0
+    private var advertiseTimer: Timer?
 
     private var scanCall: CAPPluginCall?
     private var scanSettled = false
@@ -120,7 +123,12 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
     // MARK: - Advertising (teaching device)
 
     @objc func startBeacon(_ call: CAPPluginCall) {
-        guard let token = call.getString("token"), !token.isEmpty else {
+        let sessionTokens = (call.getArray("sessions", JSObject.self) ?? [])
+            .compactMap { $0["token"] as? String }
+            .filter { !$0.isEmpty }
+        let fallbackToken = call.getString("token") ?? ""
+        let tokens = sessionTokens.isEmpty ? [fallbackToken].filter { !$0.isEmpty } : sessionTokens
+        guard let token = tokens.first else {
             call.reject("A session token is required")
             return
         }
@@ -133,6 +141,8 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
 
         stopAdvertising()
         advertisedToken = token
+        advertisedTokens = tokens
+        advertisedIndex = 0
         advertiseCall = call
         peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
     }
@@ -143,10 +153,34 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
     }
 
     private func stopAdvertising() {
+        advertiseTimer?.invalidate()
+        advertiseTimer = nil
         peripheralManager?.stopAdvertising()
         peripheralManager = nil
         advertiseCall = nil
         advertisedToken = ""
+        advertisedTokens = []
+        advertisedIndex = 0
+    }
+
+    private func advertiseCurrentToken() {
+        guard let peripheralManager, peripheralManager.state == .poweredOn else { return }
+        peripheralManager.stopAdvertising()
+        peripheralManager.startAdvertising([
+            CBAdvertisementDataServiceUUIDsKey: [ProximityPlugin.serviceUUID],
+            CBAdvertisementDataLocalNameKey: ProximityPlugin.namePrefix + advertisedToken,
+        ])
+    }
+
+    private func startSessionCycling() {
+        advertiseTimer?.invalidate()
+        guard advertisedTokens.count > 1 else { return }
+        advertiseTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+            guard let self, !self.advertisedTokens.isEmpty else { return }
+            self.advertisedIndex = (self.advertisedIndex + 1) % self.advertisedTokens.count
+            self.advertisedToken = self.advertisedTokens[self.advertisedIndex]
+            self.advertiseCurrentToken()
+        }
     }
 
     public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
@@ -172,11 +206,7 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
             return
         }
 
-        peripheral.startAdvertising([
-            CBAdvertisementDataServiceUUIDsKey: [ProximityPlugin.serviceUUID],
-            // iOS cannot advertise service data, so the token rides here.
-            CBAdvertisementDataLocalNameKey: ProximityPlugin.namePrefix + advertisedToken,
-        ])
+        advertiseCurrentToken()
     }
 
     public func peripheralManagerDidStartAdvertising(
@@ -188,7 +218,12 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
         if let error {
             call.reject("Could not start the Bluetooth beacon: \(error.localizedDescription)")
         } else {
-            call.resolve(["advertising": true])
+            call.resolve([
+                "advertising": true,
+                "rotating": false,
+                "sessionCount": advertisedTokens.count,
+            ])
+            startSessionCycling()
         }
     }
 

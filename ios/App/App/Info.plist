@@ -32,6 +32,7 @@
 	<string>CampusPulse uses Bluetooth to signal the start of attendance to students in the room.</string>
 	<key>UIBackgroundModes</key>
 	<array>
+		<string>bluetooth-peripheral</string>
 		<string>remote-notification</string>
 	</array>
 	<key>UILaunchStoryboardName</key>

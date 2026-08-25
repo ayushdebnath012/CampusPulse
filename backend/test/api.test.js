@@ -195,6 +195,67 @@ function quizSettings(scheduleId, overrides = {}) {
   };
 }
 
+test("different courses keep attendance open simultaneously", async (t) => {
+  const testServer = await createTestServer({ env: { FACULTY_SIGNUP_CODE: "" } });
+  t.after(async () => {
+    await testServer.close();
+    await fs.rm(testServer.directory, { recursive: true, force: true });
+  });
+
+  const professor = await createVerifiedUser(testServer.baseUrl, {
+    role: "faculty",
+    name: "Parallel Professor",
+    email: "parallel-professor@example.com",
+    password: "professor-password",
+  });
+  const firstCourse = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Parallel One",
+    courseCode: "PAR1001",
+  });
+  const secondCourse = await createCourse(testServer.baseUrl, professor.token, {
+    name: "Parallel Two",
+    courseCode: "PAR1002",
+  });
+
+  const first = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: firstCourse.id },
+  });
+  const second = await request(testServer.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professor.token,
+    body: { courseId: secondCourse.id },
+  });
+  assert.equal(first.response.status, 201);
+  assert.equal(second.response.status, 201);
+  assert.notEqual(first.body.attendance.id, second.body.attendance.id);
+
+  for (const [course, opened] of [[firstCourse, first], [secondCourse, second]]) {
+    const current = await request(
+      testServer.baseUrl,
+      `/api/attendance/current?courseId=${encodeURIComponent(course.id)}`,
+      { token: professor.token },
+    );
+    assert.equal(current.response.status, 200);
+    assert.equal(current.body.attendance.id, opened.body.attendance.id);
+    assert.equal(current.body.attendance.status, "open");
+  }
+
+  await request(
+    testServer.baseUrl,
+    `/api/attendance/${encodeURIComponent(first.body.attendance.id)}/close`,
+    { method: "POST", token: professor.token, body: {} },
+  );
+  const secondStillOpen = await request(
+    testServer.baseUrl,
+    `/api/attendance/${encodeURIComponent(second.body.attendance.id)}/code`,
+    { token: professor.token },
+  );
+  assert.equal(secondStillOpen.response.status, 200);
+  assert.match(secondStillOpen.body.code, /^[0-9A-F]{6}$/);
+});
+
 test("CampusPulse API connects professor attendance to the authoritative rosters", async (t) => {
   const testServer = await createTestServer();
   t.after(async () => {

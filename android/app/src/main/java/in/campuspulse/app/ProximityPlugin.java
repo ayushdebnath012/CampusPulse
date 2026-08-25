@@ -21,6 +21,7 @@ import androidx.activity.result.ActivityResult;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSObject;
+import com.getcapacitor.JSArray;
 import com.getcapacitor.PermissionState;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -279,9 +280,11 @@ public class ProximityPlugin extends Plugin {
     private void beginAdvertising(PluginCall call) {
         String token = call.getString("token", "");
         String secret = call.getString("secret", "");
+        JSArray sessions = call.getArray("sessions");
+        boolean hasSessions = sessions != null && sessions.length() > 0;
         // Either is enough: a secret lets the service rotate on its own, and a
         // bare token still covers a server that has not sent one.
-        if ((token == null || token.isEmpty()) && (secret == null || secret.isEmpty())) {
+        if (!hasSessions && (token == null || token.isEmpty()) && (secret == null || secret.isEmpty())) {
             call.reject("A session token is required");
             return;
         }
@@ -308,13 +311,18 @@ public class ProximityPlugin extends Plugin {
         }
 
         String secret = call.getString("secret", "");
-        boolean rotating = secret != null && !secret.isEmpty();
+        JSArray sessions = call.getArray("sessions");
+        boolean hasSessions = sessions != null && sessions.length() > 0;
+        boolean rotating = hasSessions || (secret != null && !secret.isEmpty());
 
         Intent intent = new Intent(getContext(), AttendanceBeaconService.class);
         intent.setAction(AttendanceBeaconService.ACTION_START);
         intent.putExtra(AttendanceBeaconService.EXTRA_TOKEN, call.getString("token", ""));
         intent.putExtra(AttendanceBeaconService.EXTRA_SECRET, secret);
         intent.putExtra(AttendanceBeaconService.EXTRA_LABEL, call.getString("label", ""));
+        if (hasSessions) {
+            intent.putExtra(AttendanceBeaconService.EXTRA_SESSIONS_JSON, sessions.toString());
+        }
         intent.putExtra(
             AttendanceBeaconService.EXTRA_WINDOW_MS, millis(call, "windowMs", 30000)
         );
@@ -339,6 +347,7 @@ public class ProximityPlugin extends Plugin {
                 // Tells the web app it can stop pushing a fresh token every few
                 // seconds: this device now rotates its own.
                 result.put("rotating", rotating);
+                result.put("sessionCount", AttendanceBeaconService.sessionCount());
                 result.put("txPower", txPower);
                 result.put("token", token);
                 call.resolve(result);
@@ -388,6 +397,7 @@ public class ProximityPlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("advertising", AttendanceBeaconService.isRunning());
         result.put("token", AttendanceBeaconService.currentToken());
+        result.put("sessionCount", AttendanceBeaconService.sessionCount());
         call.resolve(result);
     }
 
