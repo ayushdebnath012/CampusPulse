@@ -1,4 +1,4 @@
-const APP_VERSION = "1.11.1";
+const APP_VERSION = "1.11.2";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -574,7 +574,13 @@ async function selectAttendanceCourse(courseId) {
   // than waiting for someone to open the register again. A broadcast already
   // running keeps the radio — one device can only advertise one class at once.
   if (payload.attendance?.status === "open") {
-    await startAttendanceBroadcast(payload.attendance.id, payload.attendance.courseId);
+    // Radio permissions and service startup must never hold the whole app on
+    // its splash screen. The register is already open on the server; restore
+    // its beacon independently after the course snapshot has rendered.
+    startAttendanceBroadcast(
+      payload.attendance.id,
+      payload.attendance.courseId,
+    ).catch(() => {});
   }
 }
 
@@ -1412,7 +1418,7 @@ async function syncBackendState() {
   }
   await Promise.allSettled(courseRefreshes);
   if (state.userRole !== "student") {
-    await restoreAttendanceBroadcasts(rememberedAttendanceBroadcasts);
+    restoreAttendanceBroadcasts(rememberedAttendanceBroadcasts).catch(() => {});
   }
   persist();
   await refreshOpenAttendance({ rerender: false });
@@ -1459,6 +1465,11 @@ async function restoreBackendSession() {
   state.accountName = payload.user.name;
   state.authEmail = payload.user.email;
   state.authenticated = true;
+  // Identity is enough to draw the persisted workspace. Course refreshes,
+  // reminders and native beacon recovery continue after first paint so a slow
+  // peripheral or secondary API request cannot trigger the startup watchdog.
+  clearBootSplash();
+  showApp();
   try {
     await syncBackendState();
   } catch (error) {
@@ -1470,7 +1481,8 @@ async function restoreBackendSession() {
     // last time. Course data that failed to load is a toast, not a dead end —
     // pull-to-refresh will fetch it again.
     clearBootSplash();
-    showApp();
+    render();
+    syncNotificationUi();
     toast(
       error?.message || "Could not load your latest course data. Pull down to refresh.",
       "error"
@@ -1478,7 +1490,8 @@ async function restoreBackendSession() {
     return true;
   }
   clearBootSplash();
-  showApp();
+  render();
+  syncNotificationUi();
   return true;
 }
 

@@ -1290,7 +1290,7 @@ function createApp(options = {}) {
     response.json({
       ok: true,
       service: "campuspulse-api",
-      version: "1.11.1",
+      version: "1.11.2",
       otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
       emailDelivery:
         mailer.provider || (mailer.configured ? "configured" : "disabled"),
