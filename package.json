@@ -1,6 +1,6 @@
 {
   "name": "campuspulse",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "private": true,
   "description": "A lightweight course enrollment, attendance, and quiz prototype for classrooms.",
   "scripts": {

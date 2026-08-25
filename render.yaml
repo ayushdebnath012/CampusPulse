@@ -20,6 +20,10 @@ services:
         value: https://ayushdebnath012.github.io,https://localhost,capacitor://localhost
       - key: ALLOW_DEV_VERIFICATION_CODE
         value: "false"
+      - key: TRUST_PROXY_IP_HEADERS
+        value: "true"
+      - key: WEB_ATTENDANCE_MAX_ACCURACY_METRES
+        value: "100"
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
@@ -64,6 +68,10 @@ services:
       # is open, which is the whole point of this service.
       - key: ALLOW_DEV_VERIFICATION_CODE
         value: "false"
+      - key: TRUST_PROXY_IP_HEADERS
+        value: "true"
+      - key: WEB_ATTENDANCE_MAX_ACCURACY_METRES
+        value: "100"
 
 databases:
   - name: campuspulse-db

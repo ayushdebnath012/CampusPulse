@@ -1,4 +1,5 @@
 const express = require("express");
+const net = require("node:net");
 const path = require("node:path");
 const { createStore } = require("./database");
 const { createPostgresStore } = require("./postgres-database");
@@ -440,9 +441,70 @@ function pastClassDate(value) {
 function publicAttendance(session) {
   if (!session) return session;
   // The exact coordinates of the room are not the class's business; whether a
-  // location was captured is.
-  const { proximitySecret: _secret, location, ...rest } = session;
-  return { ...rest, hasLocation: Boolean(location) };
+  // location was captured is. The network fingerprint is likewise internal:
+  // clients only need to know whether website check-in is available.
+  const {
+    proximitySecret: _secret,
+    networkFingerprint: _networkFingerprint,
+    location,
+    ...rest
+  } = session;
+  return {
+    ...rest,
+    hasLocation: Boolean(location),
+    webCheckInAvailable: Boolean(location && _networkFingerprint),
+  };
+}
+
+/** Normalize an address before using it as a same-network signal. */
+function normalizedNetworkIdentity(value) {
+  let address = String(value || "").split(",")[0].trim().toLowerCase();
+  if (!address) return "";
+  if (address.startsWith("::ffff:")) address = address.slice(7);
+  const version = net.isIP(address);
+  if (version === 4) return `v4:${address}`;
+  if (version !== 6) return "";
+
+  // Devices on one Wi-Fi network normally receive different IPv6 interface
+  // addresses under the same /64. Comparing that prefix avoids rejecting two
+  // phones on the same access network merely because IPv6 privacy addressing
+  // gave each one a different suffix.
+  const [left = "", right = ""] = address.split("::");
+  const before = left ? left.split(":") : [];
+  const after = right ? right.split(":") : [];
+  const missing = Math.max(0, 8 - before.length - after.length);
+  const groups = [...before, ...Array(missing).fill("0"), ...after]
+    .map((group) => (parseInt(group || "0", 16) || 0).toString(16));
+  if (groups.length !== 8) return "";
+  return `v6:${groups.slice(0, 4).join(":")}`;
+}
+
+/**
+ * Return a client address only from a transport the deployment explicitly
+ * trusts. Vercel overwrites its forwarding header; Render is opted in through
+ * TRUST_PROXY_IP_HEADERS. Development uses the direct socket address.
+ */
+function trustedClientNetwork(request, env) {
+  const onVercel = String(env.VERCEL || "").trim() !== "";
+  const trustProxyHeaders =
+    String(env.TRUST_PROXY_IP_HEADERS || "").toLowerCase() === "true";
+  const forwarded = onVercel
+    ? request.headers["x-vercel-forwarded-for"] || request.headers["x-forwarded-for"]
+    : trustProxyHeaders
+      ? request.headers["x-forwarded-for"]
+      : "";
+  const direct =
+    String(env.NODE_ENV || "").toLowerCase() === "production"
+      ? ""
+      : request.socket?.remoteAddress;
+  return normalizedNetworkIdentity(forwarded || direct);
+}
+
+function attendanceNetworkFingerprint(secret, networkIdentity) {
+  if (!secret || !networkIdentity) return "";
+  // Salt the address with this session's private secret. A leaked database
+  // cannot be used as a useful list of students' or professors' public IPs.
+  return sha256(`attendance-network:${secret}:${networkIdentity}`);
 }
 
 /** A geolocation reading from a phone, or null if it is unusable. */
@@ -1016,6 +1078,12 @@ function createApp(options = {}) {
     25,
     Number(env.ATTENDANCE_GEOFENCE_METRES || 150) || 150,
   );
+  // Website attendance has no Bluetooth beacon to fall back on, so an
+  // extremely vague browser fix cannot be accepted as classroom evidence.
+  const webAttendanceMaxAccuracyMetres = Math.max(
+    25,
+    Number(env.WEB_ATTENDANCE_MAX_ACCURACY_METRES || 100) || 100,
+  );
   const allowDevVerificationCode =
     String(env.NODE_ENV || "").toLowerCase() !== "production" &&
     String(env.ALLOW_DEV_VERIFICATION_CODE || "").toLowerCase() === "true";
@@ -1222,7 +1290,7 @@ function createApp(options = {}) {
     response.json({
       ok: true,
       service: "campuspulse-api",
-      version: "1.9.0",
+      version: "1.10.0",
       otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
       emailDelivery:
         mailer.provider || (mailer.configured ? "configured" : "disabled"),
@@ -3112,7 +3180,8 @@ function createApp(options = {}) {
         // unable to supply one, and refusing to open attendance would leave a
         // professor with no way to take the register at all. Without it the
         // session simply falls back to Bluetooth-only proof.
-        const sessionLocation = normalizeLocation(request.body.location);
+        const sessionLocation = normalizeLocation(request.body?.location);
+        const teachingNetwork = trustedClientNetwork(request, env);
         const result = await store.update((database) => {
           const courseId = String(request.body.courseId || "").trim();
           const course = requireCourse(database, request.user, courseId, "run");
@@ -3182,6 +3251,7 @@ function createApp(options = {}) {
               item.closedBy = request.user.id;
             }
           });
+          const proximitySecret = randomToken();
           const created = {
             id: `attendance-${Date.now()}`,
             courseId,
@@ -3192,7 +3262,16 @@ function createApp(options = {}) {
             startedBy: request.user.id,
             startedAt: new Date().toISOString(),
             status: "open",
-            proximitySecret: randomToken(),
+            proximitySecret,
+            // A salted comparison value, never the professor's address. It
+            // lets Safari prove it is reaching the API through the same
+            // classroom network without exposing Wi-Fi details to JavaScript.
+            networkFingerprint: attendanceNetworkFingerprint(
+              proximitySecret,
+              sessionLocation?.accuracy <= webAttendanceMaxAccuracyMetres
+                ? teachingNetwork
+                : "",
+            ),
             records: roster.map(attendanceRecord),
           };
           database.attendanceSessions.push(created);
@@ -3200,7 +3279,7 @@ function createApp(options = {}) {
             courseId,
             kind: "attendance",
             title: "Attendance is open",
-            body: "Mark yourself present with Wi‑Fi and Bluetooth switched on.",
+            body: "Open CampusPulse to mark yourself present from the classroom.",
             authorId: request.user.id,
             authorName: request.user.name,
           });
@@ -3209,7 +3288,7 @@ function createApp(options = {}) {
             actorId: request.user.id,
             type: "attendance",
             title: "Attendance is open",
-            body: "Mark yourself present with Wi-Fi and Bluetooth switched on.",
+            body: "Open CampusPulse to mark yourself present from the classroom.",
             route: "attendance",
             data: {
               attendanceId: created.id,
@@ -3593,6 +3672,9 @@ function createApp(options = {}) {
                 record?.rollNumber || boundRollNumber(data, request.user, session.courseId),
               checkedIn: Boolean(record?.present),
               markedAt: record?.present ? record.markedAt : null,
+              webCheckInAvailable: Boolean(
+                session.location && session.networkFingerprint,
+              ),
             };
           }),
         });
@@ -3628,6 +3710,8 @@ function createApp(options = {}) {
     requireRoles("faculty", "ta"),
     async (request, response, next) => {
       try {
+        const teachingNetwork = trustedClientNetwork(request, env);
+        const sessionLocation = normalizeLocation(request.body?.location);
         const attendance = await store.update((database) => {
           const session = database.attendanceSessions.find(
             (item) => item.id === request.params.id && item.status === "closed",
@@ -3648,6 +3732,14 @@ function createApp(options = {}) {
           });
           session.status = "open";
           session.proximitySecret = session.proximitySecret || randomToken();
+          session.networkFingerprint = attendanceNetworkFingerprint(
+            session.proximitySecret,
+            (sessionLocation || session.location)?.accuracy <=
+              webAttendanceMaxAccuracyMetres
+              ? teachingNetwork
+              : "",
+          );
+          if (sessionLocation) session.location = sessionLocation;
           delete session.closedAt;
           delete session.closedBy;
           return session;
@@ -3718,8 +3810,15 @@ function createApp(options = {}) {
     requireRoles("student", "ta"),
     async (request, response, next) => {
       try {
+        const checkInMode =
+          String(request.body.mode || "").toLowerCase() === "web-wifi"
+            ? "web-wifi"
+            : "bluetooth";
         const signals = request.body.signals || {};
-        if (signals.wifi !== true || signals.bluetooth !== true) {
+        if (
+          checkInMode === "bluetooth" &&
+          (signals.wifi !== true || signals.bluetooth !== true)
+        ) {
           return response.status(400).json({
             error: "Connect Wi‑Fi and turn on Bluetooth before marking attendance",
           });
@@ -3728,6 +3827,7 @@ function createApp(options = {}) {
         // The roll number belongs to the account, so it is never re-entered.
         const submittedRoll = String(request.user.rollNumber || "").trim().toUpperCase();
         const studentLocation = normalizeLocation(request.body.location);
+        const studentNetwork = trustedClientNetwork(request, env);
 
         const result = await store.update((database) => {
           const session = database.attendanceSessions.find(
@@ -3738,7 +3838,29 @@ function createApp(options = {}) {
             error.status = 404;
             throw error;
           }
-          if (session.proximitySecret) {
+          if (checkInMode === "web-wifi") {
+            if (!session.networkFingerprint) {
+              const error = new Error(
+                "Website attendance was not enabled when this class started. Ask the course team to mark you from the roster.",
+              );
+              error.status = 409;
+              throw error;
+            }
+            const submittedNetworkFingerprint = attendanceNetworkFingerprint(
+              session.proximitySecret,
+              studentNetwork,
+            );
+            if (
+              !submittedNetworkFingerprint ||
+              submittedNetworkFingerprint !== session.networkFingerprint
+            ) {
+              const error = new Error(
+                "Connect to the same classroom Wi‑Fi used to start attendance, then try again. On iPhone, turn off Limit IP Address Tracking for that Wi‑Fi if it is enabled.",
+              );
+              error.status = 403;
+              throw error;
+            }
+          } else if (session.proximitySecret) {
             // The previous window is accepted so a code cannot expire mid-tap.
             const accepted = [0, -1].map((offset) =>
               proximityCodeFor(session.proximitySecret, offset),
@@ -3768,14 +3890,42 @@ function createApp(options = {}) {
             studentLocation,
             geofenceMetres,
           );
-          if (agreement.verified && !agreement.within) {
-            const error = new Error(
-              `You appear to be about ${agreement.distance} m from this class. Attendance can only be marked from the classroom.`,
-            );
-            error.status = 403;
-            throw error;
+          if (checkInMode === "web-wifi") {
+            if (!session.location) {
+              const error = new Error(
+                "Website attendance needs the teaching device's classroom location. Ask the course team to mark you from the roster.",
+              );
+              error.status = 409;
+              throw error;
+            }
+            if (!studentLocation) {
+              const error = new Error(
+                "Allow CampusPulse to use your precise location, then try again.",
+              );
+              error.status = 400;
+              throw error;
+            }
+            if (studentLocation.accuracy > webAttendanceMaxAccuracyMetres) {
+              const error = new Error(
+                "Your location is not precise enough yet. Move near a window or turn on Precise Location for Safari, then try again.",
+              );
+              error.status = 403;
+              throw error;
+            }
           }
-
+          if (!agreement.verified || !agreement.within) {
+            if (checkInMode !== "web-wifi" && !agreement.verified) {
+              // A native Bluetooth mark can stand without a location fix.
+            } else {
+              const error = new Error(
+                agreement.verified
+                  ? `You appear to be about ${agreement.distance} m from this class. Attendance can only be marked from the classroom.`
+                  : "CampusPulse could not verify your classroom location.",
+              );
+              error.status = 403;
+              throw error;
+            }
+          }
           const enrollment = database.enrollments.find(
             (item) =>
               item.userId === request.user.id && item.courseId === session.courseId,
@@ -3825,7 +3975,8 @@ function createApp(options = {}) {
           record.present = true;
           record.markedAt = new Date().toISOString();
           record.markedBy = request.user.id;
-          record.markedVia = "student";
+          record.markedVia =
+            checkInMode === "web-wifi" ? "student-web-wifi" : "student";
           // What each signal actually measured, kept so a disputed mark can be
           // examined rather than argued about.
           record.proximity = {
@@ -3837,11 +3988,13 @@ function createApp(options = {}) {
             // False when a fix was unavailable on either side, so a mark resting
             // on Bluetooth alone can be told apart from one both signals agreed on.
             locationVerified: agreement.verified,
+            ...(checkInMode === "web-wifi" ? { networkVerified: true } : {}),
           };
           return {
             courseId: session.courseId,
             rollNumber,
             markedAt: record.markedAt,
+            markedVia: record.markedVia,
             proximity: record.proximity,
           };
         });

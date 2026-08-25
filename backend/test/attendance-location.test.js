@@ -32,10 +32,11 @@ async function startServer(env = {}) {
   };
 }
 
-async function call(baseUrl, route, { method = "GET", token, body } = {}) {
+async function call(baseUrl, route, { method = "GET", token, body, headers = {} } = {}) {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
     headers: {
+      ...headers,
       ...(body ? { "Content-Type": "application/json" } : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
@@ -98,14 +99,22 @@ async function classroom(baseUrl) {
     professorToken: professor.body.token,
     studentToken: student.body.token,
     courseId,
+    taCode: course.body.course.taCode,
   };
 }
 
-async function openAttendance(baseUrl, token, courseId, location = CLASSROOM) {
+async function openAttendance(
+  baseUrl,
+  token,
+  courseId,
+  location = CLASSROOM,
+  headers = {},
+) {
   return call(baseUrl, "/api/attendance/sessions", {
     method: "POST",
     token,
     body: { courseId, location },
+    headers,
   });
 }
 
@@ -274,6 +283,205 @@ test("a wrong beacon token is refused even from inside the room", async (t) => {
   const spoofed = await checkIn(server.baseUrl, studentToken, sessionId, "ZZZZZZ", BACK_ROW);
   assert.equal(spoofed.status, 403);
   assert.match(spoofed.body.error, /code/i);
+});
+
+test("the iPhone website marks a student on the classroom network and location", async (t) => {
+  const server = await startServer({ TRUST_PROXY_IP_HEADERS: "true" });
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const classroomNetwork = { "x-forwarded-for": "2001:db8:abcd:12::1" };
+  const studentClassroomNetwork = { "x-forwarded-for": "2001:db8:abcd:12::99" };
+  const opened = await openAttendance(
+    server.baseUrl,
+    professorToken,
+    courseId,
+    CLASSROOM,
+    classroomNetwork,
+  );
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  assert.equal(opened.body.attendance.webCheckInAvailable, true);
+  assert.equal("networkFingerprint" in opened.body.attendance, false);
+
+  const visible = await call(server.baseUrl, "/api/attendance/open", {
+    token: studentToken,
+  });
+  assert.equal(visible.body.sessions[0].webCheckInAvailable, true);
+
+  const marked = await call(
+    server.baseUrl,
+    `/api/attendance/${opened.body.attendance.id}/check-in`,
+    {
+      method: "POST",
+      token: studentToken,
+      headers: studentClassroomNetwork,
+      body: { mode: "web-wifi", location: BACK_ROW },
+    },
+  );
+  assert.equal(marked.status, 201, JSON.stringify(marked.body));
+  assert.equal(marked.body.markedVia, "student-web-wifi");
+  assert.equal(marked.body.proximity.networkVerified, true);
+  assert.equal(marked.body.proximity.locationVerified, true);
+
+  const session = await call(
+    server.baseUrl,
+    `/api/attendance/${opened.body.attendance.id}`,
+    { token: professorToken },
+  );
+  const record = session.body.attendance.records.find(
+    (item) => item.rollNumber === "24GEO001",
+  );
+  assert.equal("networkFingerprint" in session.body.attendance, false);
+  assert.equal(record.markedVia, "student-web-wifi");
+  assert.equal(record.proximity.bluetoothMetres, null);
+});
+
+test("an enrolled TA can start the same iPhone website attendance flow", async (t) => {
+  const server = await startServer({ TRUST_PROXY_IP_HEADERS: "true" });
+  t.after(() => server.close());
+  const { studentToken, courseId, taCode } = await classroom(server.baseUrl);
+  const ta = await call(server.baseUrl, "/api/auth/signup", {
+    method: "POST",
+    body: {
+      role: "ta",
+      name: "Geo Teaching Assistant",
+      department: "Mechanical Engineering",
+      email: "geo.ta@mech.iitkgp.ac.in",
+      password: "a-good-password",
+      phone: "9876543211",
+      rollNumber: "24GEO099",
+      hall: "Nehru Hall",
+    },
+  });
+  assert.equal(ta.status, 201, JSON.stringify(ta.body));
+  const joined = await call(server.baseUrl, "/api/courses/join", {
+    method: "POST",
+    token: ta.body.token,
+    body: { code: taCode },
+  });
+  assert.equal(joined.status, 201, JSON.stringify(joined.body));
+
+  const classroomNetwork = { "x-forwarded-for": "203.0.113.42" };
+  const opened = await openAttendance(
+    server.baseUrl,
+    ta.body.token,
+    courseId,
+    CLASSROOM,
+    classroomNetwork,
+  );
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  assert.equal(opened.body.attendance.webCheckInAvailable, true);
+
+  const marked = await call(
+    server.baseUrl,
+    `/api/attendance/${opened.body.attendance.id}/check-in`,
+    {
+      method: "POST",
+      token: studentToken,
+      headers: classroomNetwork,
+      body: { mode: "web-wifi", location: BACK_ROW },
+    },
+  );
+  assert.equal(marked.status, 201, JSON.stringify(marked.body));
+  assert.equal(marked.body.markedVia, "student-web-wifi");
+});
+
+test("website attendance rejects another network even at the classroom location", async (t) => {
+  const server = await startServer({ TRUST_PROXY_IP_HEADERS: "true" });
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const opened = await openAttendance(
+    server.baseUrl,
+    professorToken,
+    courseId,
+    CLASSROOM,
+    { "x-forwarded-for": "203.0.113.42" },
+  );
+
+  const refused = await call(
+    server.baseUrl,
+    `/api/attendance/${opened.body.attendance.id}/check-in`,
+    {
+      method: "POST",
+      token: studentToken,
+      headers: { "x-forwarded-for": "198.51.100.25" },
+      body: { mode: "web-wifi", location: BACK_ROW },
+    },
+  );
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.match(refused.body.error, /same classroom Wi‑Fi/i);
+});
+
+test("website attendance requires a precise student and classroom location", async (t) => {
+  const server = await startServer({
+    TRUST_PROXY_IP_HEADERS: "true",
+    WEB_ATTENDANCE_MAX_ACCURACY_METRES: "100",
+  });
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const classroomNetwork = { "x-forwarded-for": "203.0.113.42" };
+  const opened = await openAttendance(
+    server.baseUrl,
+    professorToken,
+    courseId,
+    CLASSROOM,
+    classroomNetwork,
+  );
+  const route = `/api/attendance/${opened.body.attendance.id}/check-in`;
+
+  const missing = await call(server.baseUrl, route, {
+    method: "POST",
+    token: studentToken,
+    headers: classroomNetwork,
+    body: { mode: "web-wifi" },
+  });
+  assert.equal(missing.status, 400, JSON.stringify(missing.body));
+  assert.match(missing.body.error, /precise location/i);
+
+  const vague = await call(server.baseUrl, route, {
+    method: "POST",
+    token: studentToken,
+    headers: classroomNetwork,
+    body: { mode: "web-wifi", location: { ...BACK_ROW, accuracy: 250 } },
+  });
+  assert.equal(vague.status, 403, JSON.stringify(vague.body));
+  assert.match(vague.body.error, /not precise enough/i);
+
+  const far = await call(server.baseUrl, route, {
+    method: "POST",
+    token: studentToken,
+    headers: classroomNetwork,
+    body: { mode: "web-wifi", location: AT_HOME },
+  });
+  assert.equal(far.status, 403, JSON.stringify(far.body));
+  assert.match(far.body.error, /from this class/i);
+});
+
+test("a session without a precise teaching location stays Bluetooth-only", async (t) => {
+  const server = await startServer({ TRUST_PROXY_IP_HEADERS: "true" });
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const classroomNetwork = { "x-forwarded-for": "203.0.113.42" };
+  const opened = await call(server.baseUrl, "/api/attendance/sessions", {
+    method: "POST",
+    token: professorToken,
+    headers: classroomNetwork,
+    body: { courseId },
+  });
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  assert.equal(opened.body.attendance.webCheckInAvailable, false);
+
+  const refused = await call(
+    server.baseUrl,
+    `/api/attendance/${opened.body.attendance.id}/check-in`,
+    {
+      method: "POST",
+      token: studentToken,
+      headers: classroomNetwork,
+      body: { mode: "web-wifi", location: BACK_ROW },
+    },
+  );
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.match(refused.body.error, /not enabled/i);
 });
 
 // The teaching device goes on broadcasting while the app is backgrounded, which

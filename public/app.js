@@ -1,4 +1,4 @@
-const APP_VERSION = "1.9.1";
+const APP_VERSION = "1.10.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -210,7 +210,7 @@ let scanTimer;
 let quizTimer;
 let activeAttendance = null;
 // Open sessions a student may mark themselves present in, polled while signed
-// in so the card appears as soon as the professor starts attendance.
+// in so the card appears as soon as the professor or an enrolled TA starts attendance.
 let openAttendance = [];
 let openAttendanceTimer = null;
 let enrolledStudents = [];
@@ -730,6 +730,16 @@ async function openStudentRecord(courseId, rollNumber) {
   render();
 }
 
+function attendanceMethodLabel(markedVia, { self = false } = {}) {
+  if (markedVia === "student-web-wifi") {
+    return self ? "You, via classroom Wi‑Fi" : "Student (Web Wi‑Fi)";
+  }
+  if (markedVia === "student") {
+    return self ? "You, via Bluetooth" : "Student (Bluetooth)";
+  }
+  return markedVia ? "Course team" : "";
+}
+
 function renderStudentRecord() {
   const { student, summary, sessions } = studentRecord;
   const percentage = summary.percentage;
@@ -806,7 +816,7 @@ function renderStudentRecord() {
             const when = new Date(session.startedAt);
             return `<div class="class-row">
               <div class="time">${escapeHtml(when.toLocaleDateString([], { weekday: "short" }))}<small>${escapeHtml(when.toLocaleDateString([], { day: "numeric", month: "short" }))}</small></div>
-              <div class="course"><strong>${escapeHtml(session.classLabel || (session.importedAt ? "Paper register" : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })))}</strong><span>${escapeHtml(session.room || "Room TBA")}${session.present && session.markedVia === "student" ? " · marked over Bluetooth" : ""}</span></div>
+              <div class="course"><strong>${escapeHtml(session.classLabel || (session.importedAt ? "Paper register" : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })))}</strong><span>${escapeHtml(session.room || "Room TBA")}${session.present && session.markedVia ? ` · ${escapeHtml(attendanceMethodLabel(session.markedVia))}` : ""}</span></div>
               <span class="badge ${session.present ? "green" : "gray"}">${session.present ? "Present" : "Absent"}</span>
             </div>`;
           }).join("")}
@@ -2568,6 +2578,7 @@ async function findAttendanceBeacon() {
 
 function attendanceCallCard(session) {
   const course = state.courses.find(item => item.id === session.courseId);
+  const websiteCheckIn = !proximityPlugin();
   // The card can now appear while a different course is selected, so it has to
   // say which class it belongs to rather than borrow the heading of the page.
   const courseName = course ? `${course.courseCode} · ${course.name}` : "Your course";
@@ -2583,15 +2594,20 @@ function attendanceCallCard(session) {
       <p class="attendance-call-copy">You were marked present${markedAt ? ` at ${escapeHtml(markedAt)}` : ""}. Nothing else to do.</p>
     </article>`;
   }
-  return `<article class="card page-card attendance-call">
+  const webAvailable = websiteCheckIn && session.webCheckInAvailable;
+  return `<article class="card page-card attendance-call${websiteCheckIn && !webAvailable ? " is-idle" : ""}">
     <div class="section-head"><h3>${escapeHtml(courseName)}</h3><span class="badge amber">Attendance open</span></div>
-    <p class="attendance-call-copy">Your professor started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. Stay in the room — your phone connects over Bluetooth.</p>
+    <p class="attendance-call-copy">Your course team started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. ${websiteCheckIn ? "CampusPulse can verify your classroom Wi‑Fi and location from this website." : "Stay in the room — your phone connects over Bluetooth."}</p>
     ${session.rollNumber
       ? `<p class="attendance-call-roll">Roll number <strong>${escapeHtml(session.rollNumber)}</strong></p>`
       : `<label class="attendance-call-label" for="rollNumber-${escapeHtml(session.id)}">Your roll number</label>
          <input class="text-input" id="rollNumber-${escapeHtml(session.id)}" data-roll-for="${escapeHtml(session.id)}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
-    <p class="attendance-call-copy">Wi‑Fi and Bluetooth must both be on. Your phone will find the class automatically when you tap below.</p>
-    <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}">${icon("i-check")} Mark me present</button>
+    <p class="attendance-call-copy">${websiteCheckIn
+      ? webAvailable
+        ? "Connect to the same classroom Wi‑Fi used to start attendance. Safari will ask for Precise Location when you tap below."
+        : "Website check-in is unavailable for this session because the classroom network or location was not captured. Ask the course team to mark you from the roster."
+      : "Wi‑Fi and Bluetooth must both be on. Your phone will find the class automatically when you tap below."}</p>
+    <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}" ${websiteCheckIn && !webAvailable ? "disabled" : ""}>${icon("i-check")} ${websiteCheckIn ? "Verify classroom & mark present" : "Mark me present"}</button>
   </article>`;
 }
 
@@ -2600,7 +2616,7 @@ function renderStudentDashboard() {
   const course = selectedCourse();
   const enrolled = course && state.enrolledCourses.includes(course.id) ? [course] : [];
   // Not just the selected course's: a student sitting on the wrong course tab
-  // when the professor starts attendance would otherwise see nothing.
+  // when the professor or a TA starts attendance would otherwise see nothing.
   const selectedAttendance = selfMarkableSessions(course?.id);
   const todaysClasses = scheduleForToday();
   view.innerHTML = `
@@ -3155,7 +3171,7 @@ function renderAttendanceDay() {
             : `<div class="summary-item"><span>Session opened</span><strong>${escapeHtml(stamp(session.startedAt))}</strong></div>
                <div class="summary-item"><span>Session closed</span><strong>${session.closedAt ? escapeHtml(stamp(session.closedAt)) : "Still open"}</strong></div>
                <div class="summary-item"><span>You were marked</span><strong>${session.present ? escapeHtml(stamp(session.markedAt)) : "Not marked"}</strong></div>
-               ${session.present && session.markedVia ? `<div class="summary-item"><span>Marked by</span><strong>${session.markedVia === "student" ? "You, from your phone" : "The course team"}</strong></div>` : ""}`}
+               ${session.present && session.markedVia ? `<div class="summary-item"><span>Marked by</span><strong>${escapeHtml(attendanceMethodLabel(session.markedVia, { self: true }))}</strong></div>` : ""}`}
         </div>
         ${session.present ? "" : `<div class="security-note" style="margin-top:16px"><span class="lock">⌾</span><span>Nothing was recorded for you in this class. Speak to your professor or TA if that looks wrong.</span></div>`}
       </article>
@@ -3317,17 +3333,17 @@ function renderLiveAttendance() {
           ${pastSessionsPicker()}
           ${!complete ? (beaconToken ? `<div class="proximity-code">
             <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
-            <p>Students nearby pick this up over Bluetooth automatically — nothing to read out. Only phones within range can mark themselves present.${beaconRotating ? " You can lock this phone or use another app: the broadcast keeps running until you close attendance." : ""}</p>
+            <p>Installed apps use Bluetooth automatically. iPhone website users see this session too and can verify the same classroom Wi‑Fi plus location.${beaconRotating ? " You can lock this phone or use another app: the broadcast keeps running until you close attendance." : ""}</p>
           </div>` : proximityPlugin() ? (beaconError ? `<div class="proximity-code no-ble">
             <div><span>Bluetooth not available</span><strong>${icon("i-close")} Not broadcasting</strong></div>
-            <p>${escapeHtml(beaconError)}</p>
+            <p>${escapeHtml(beaconError)}${activeAttendance?.webCheckInAvailable ? " iPhone website users can still check in through the classroom Wi‑Fi and location fallback." : ""}</p>
             <button class="btn btn-soft" type="button" data-action="retry-beacon">Try broadcasting again</button>
           </div>` : `<div class="proximity-code no-ble">
             <div><span>Connecting</span><strong>${icon("i-clock")} Starting broadcast…</strong></div>
             <p>Turn Bluetooth on if you're asked to, then wait a moment — broadcasting starts automatically.</p>
           </div>`) : `<div class="proximity-code no-ble">
-            <div><span>Web browser</span><strong>${icon("i-close")} Not broadcasting</strong></div>
-            <p>Bluetooth broadcasting needs the installed app. Students can still be marked present from the list below.</p>
+            <div><span>Web browser</span><strong>${icon(activeAttendance?.webCheckInAvailable ? "i-check" : "i-close")} ${activeAttendance?.webCheckInAvailable ? "Wi‑Fi website check-in active" : "Manual marking only"}</strong></div>
+            <p>${activeAttendance?.webCheckInAvailable ? "Students on the same classroom Wi‑Fi can verify their location and mark themselves present from the website." : "Bluetooth broadcasting needs the installed app, and this session did not capture the network and precise location needed for website check-in. Students can still be marked from the list below."}</p>
           </div>`) : ""}
           ${stepper(complete ? 3 : 2)}
           <div class="roster-toolbar">
@@ -4661,6 +4677,9 @@ pushManager?.configure?.({
   onForeground: (item) => {
     const message = [item.title, item.body].filter(Boolean).join(" · ");
     toast(message || "New course activity", "notification");
+    if (item.route === "attendance" || String(item.type).includes("attendance")) {
+      refreshOpenAttendance().catch(() => {});
+    }
   },
   onOpen: (item) => {
     openNotificationDestination(item).catch((error) => {
@@ -6007,15 +6026,16 @@ document.addEventListener("click", async event => {
     const present = records.filter(record => record.present).length;
     downloadXlsx(
       `CampusPulse-${course.courseCode}-attendance-${stamp}-${clock}.xlsx`,
-      ["Sl.No.", "Roll No", "Name", "Status", "Marked at", "Marked by", "Bluetooth (m)", "Location checked"],
+      ["Sl.No.", "Roll No", "Name", "Status", "Marked at", "Marked by", "Bluetooth (m)", "Network checked", "Location checked"],
       records.map((record, index) => [
         record.serial || index + 1,
         record.rollNumber || "",
         record.name || "",
         record.present ? "Present" : "Absent",
         record.markedAt && !session?.importedAt ? new Date(record.markedAt).toLocaleString() : "",
-        session?.importedAt && record.present ? "Paper register" : record.markedVia === "student" ? "Student (Bluetooth)" : record.markedAt ? "Course team" : "",
+        session?.importedAt && record.present ? "Paper register" : record.markedAt ? attendanceMethodLabel(record.markedVia) || "Course team" : "",
         record.proximity?.bluetoothMetres ?? "",
+        record.proximity ? (record.proximity.networkVerified ? "Yes" : "No") : "",
         record.proximity ? (record.proximity.locationVerified ? "Yes" : "No") : ""
       ]),
       `${stamp} attendance`
@@ -6145,7 +6165,7 @@ document.addEventListener("click", async event => {
           session.room || "",
           session.present ? "Present" : "Absent",
           session.markedAt && !session.importedAt ? new Date(session.markedAt).toLocaleString() : "",
-          session.importedAt && session.present ? "Paper register" : session.markedVia === "student" ? "Student (Bluetooth)" : session.markedAt ? "Course team" : ""
+          session.importedAt && session.present ? "Paper register" : session.markedAt ? attendanceMethodLabel(session.markedVia) || "Course team" : ""
         ]),
         [],
         ["Held", summary.held, "Attended", summary.attended, "Missed", summary.missed],
@@ -6255,10 +6275,11 @@ document.addEventListener("click", async event => {
       || viewingPastAttendance?.id
       || state.backendAttendanceId;
     if (!sessionId) return toast("No session to reopen", "error");
+    const classLocation = await currentLocation();
     try {
       const result = await apiRequest(`/api/attendance/${encodeURIComponent(sessionId)}/reopen`, {
         method: "POST",
-        body: {}
+        body: classLocation ? { location: classLocation } : {},
       });
       activeAttendance = result.attendance;
       state.backendAttendanceId = result.attendance.id;
@@ -6442,43 +6463,66 @@ document.addEventListener("click", async event => {
     if (!rollNumber) return toast("Enter your roll number", "error");
     button.disabled = true;
     try {
-      const signals = await attendanceSignals({ requestWebBluetooth: true });
-      if (!signals.wifi || !signals.bluetooth) {
-        const missing = [!signals.wifi && "Wi‑Fi", !signals.bluetooth && "Bluetooth"]
-          .filter(Boolean)
-          .join(" and ");
-        return toast(`Turn on ${missing}, then mark attendance again`, "error");
-      }
-      toast("Looking for the class over Bluetooth…");
-      const beacon = await findAttendanceBeacon();
-      const code = String(beacon.token || "").trim().toUpperCase();
-      // Hearing the beacon at all means being inside Bluetooth radio range.
-      // A token that read as too far is still submitted, because the distance
-      // estimate is the noisier of the two signals at that point and location
-      // can settle it — a student in the back row should not be turned away.
-      if (!code) {
-        return toast(
-          beacon.unsupported
-            ? "Bluetooth proximity requires the CampusPulse app. Install it to mark attendance."
-            : beacon.error || "The class was not found nearby. Move closer and try again.",
-          "error"
-        );
-      }
-      // Bluetooth has already proved the room. A fix strengthens that, but a
-      // phone whose installed app cannot ask for the location permission must
-      // still be able to mark itself present.
-      const location = await currentLocation();
-      await apiRequest(`/api/attendance/${sessionId}/check-in`, {
-        method: "POST",
-        body: {
-          rollNumber,
-          signals,
-          code,
-          ...(location ? { location } : {}),
-          bluetoothDistanceMeters: beacon.distanceMeters,
+      if (!proximityPlugin()) {
+        if (!session.webCheckInAvailable) {
+          return toast(
+            "Website attendance was not enabled for this class. Ask the course team to mark you from the roster.",
+            "error",
+          );
         }
-      });
-      state.checks = { wifi: true, bluetooth: true };
+        if (!navigator.onLine) {
+          return toast("Connect to the classroom Wi‑Fi, then try again", "error");
+        }
+        toast("Verifying classroom Wi‑Fi and location…");
+        const location = await currentLocation();
+        if (!location) {
+          return toast(
+            "Allow Precise Location for CampusPulse in Safari, then try again",
+            "error",
+          );
+        }
+        await apiRequest(`/api/attendance/${sessionId}/check-in`, {
+          method: "POST",
+          body: { rollNumber, mode: "web-wifi", location },
+        });
+        state.checks = { wifi: true, bluetooth: false };
+      } else {
+        const signals = await attendanceSignals({ requestWebBluetooth: true });
+        if (!signals.wifi || !signals.bluetooth) {
+          const missing = [!signals.wifi && "Wi‑Fi", !signals.bluetooth && "Bluetooth"]
+            .filter(Boolean)
+            .join(" and ");
+          return toast(`Turn on ${missing}, then mark attendance again`, "error");
+        }
+        toast("Looking for the class over Bluetooth…");
+        const beacon = await findAttendanceBeacon();
+        const code = String(beacon.token || "").trim().toUpperCase();
+        // Hearing the beacon at all means being inside Bluetooth radio range.
+        // A token that read as too far is still submitted, because the distance
+        // estimate is the noisier of the two signals at that point and location
+        // can settle it — a student in the back row should not be turned away.
+        if (!code) {
+          return toast(
+            beacon.error || "The class was not found nearby. Move closer and try again.",
+            "error",
+          );
+        }
+        // Bluetooth has already proved the room. A fix strengthens that, but a
+        // phone whose installed app cannot ask for the location permission must
+        // still be able to mark itself present.
+        const location = await currentLocation();
+        await apiRequest(`/api/attendance/${sessionId}/check-in`, {
+          method: "POST",
+          body: {
+            rollNumber,
+            signals,
+            code,
+            ...(location ? { location } : {}),
+            bluetoothDistanceMeters: beacon.distanceMeters,
+          },
+        });
+        state.checks = { wifi: true, bluetooth: true };
+      }
       persist();
       toast("You are marked present");
     } catch (error) {

@@ -171,7 +171,7 @@ Bluetooth does not work in the iOS Simulator. Proximity attendance has to be tes
 
 ### Getting it onto students' iPhones
 
-Attendance needs Bluetooth, and Safari has no Web Bluetooth, so an iPhone student cannot mark themselves present from the website — they need the installed app. Apple only allows that through a paid developer account. There is no way around this.
+The installed iOS app is still the strongest attendance path because it can hear the classroom Bluetooth beacon. Safari has no Web Bluetooth, so the website uses a separate same-network fallback: when the professor or an enrolled TA starts attendance, enrolled iPhone users automatically see the open session and can prove that their request came through the same classroom network while Safari verifies their precise location.
 
 **TestFlight is the route for a class.** It takes up to 10,000 testers from a single public link, so students install Apple's TestFlight app, open the link, and get CampusPulse. Builds stay valid for 90 days.
 
@@ -184,7 +184,7 @@ Attendance needs Bluetooth, and Safari has no Web Bluetooth, so an iPhone studen
    - `APP_STORE_CONNECT_ISSUER_ID`
 5. Push to `main`. The workflow signs the build and uploads it to TestFlight, where you enable public link testing and share the link.
 
-Until that account exists, iPhone users can sign in on the website and use everything except marking their own attendance — a professor or TA marks them from the roster. That works today and costs nothing.
+Until that account exists, iPhone users can sign in and mark attendance from the website as long as they are on the same classroom Wi-Fi used to open the register and both phones provide a sufficiently precise location. If either signal is unavailable, a professor or TA can still mark them from the roster.
 
 **iOS push notifications need one more piece.** The push plugin returns an Apple APNs token, but the backend delivers through Firebase, which will not accept it. To make alerts work on iPhone you also need the Firebase iOS SDK added to the Xcode project, a `GoogleService-Info.plist`, and an APNs auth key uploaded to Firebase. Android push is unaffected.
 
@@ -196,7 +196,20 @@ The browser version is the same app, built from the same `public/` directory and
 https://ayushdebnath012.github.io/CampusPulse/
 ```
 
-It is the fallback for anyone who cannot install the app — including iPhone users, while a signed build is not yet distributed. Everything works there except Bluetooth proximity, which needs the native plugin: on the website a student cannot mark themselves present from the beacon, so use the app for attendance and the website for everything else.
+It is the fallback for anyone who cannot install the app — including iPhone users, while a signed build is not yet distributed. The website cannot use Bluetooth proximity, but it can self-mark attendance through the classroom Wi-Fi and precise-location fallback described below.
+
+## iPhone website attendance
+
+Starting attendance once opens the same shared session for native apps and the website. Enrolled students already poll the API for an open register, so an iPhone user sees the attendance card automatically on the dashboard or Attendance page. No second register or iPhone-specific action is required from the professor or TA who opened it.
+
+Website check-in is enabled only when the start request captures both a trustworthy client network and a sufficiently precise classroom location. The API stores a salted, session-specific fingerprint of the teaching device's network rather than the IP address itself. An iPhone check-in must then satisfy all of these checks:
+
+- the student is signed in, enrolled, and bound to a roll-list entry;
+- the request reaches the API through the same IPv4 address or IPv6 `/64` network used to start attendance;
+- Safari supplies a location close enough to the professor's or TA's classroom fix; and
+- the student's reported accuracy is at most `WEB_ATTENDANCE_MAX_ACCURACY_METRES` (100 m by default).
+
+The mark is recorded as `student-web-wifi`, with separate network and location verification fields, so an export never presents it as Bluetooth evidence. If iCloud Private Relay changes Safari's public address, the student may need to turn off **Limit IP Address Tracking** for that classroom Wi-Fi. A campus-wide NAT can cover more than one room, so location remains mandatory; an institution with an Aruba, Cisco, or UniFi controller should eventually replace public-address comparison with access-point identity for stronger room-level proof.
 
 ## Attendance is per class, not per day
 
@@ -233,17 +246,19 @@ Students see their own marks on their attendance screen, and only their own. The
 
 Both the register and the student list have a search box that matches on name or roll number. It ignores case, surrounding spaces, and punctuation inside a roll number, so `22-me-31034` and `22ME31034` find the same student. Searching filters what is shown without changing the present count, which still describes the whole class.
 
-## Bluetooth and location together
+## Proximity and location together
 
-Two signals decide whether a mark is genuine, and each covers the other's weakness.
+Native and website check-ins use different proximity signals, and every record says which path was used.
 
 **Bluetooth proves the room.** A phone has to hear the beacon over the air, which nothing outside the building can fake. Its distance estimate is honest but noisy — RSSI swings by 10 dB or more as people move.
 
-**Location proves the venue.** The professor's position is recorded when attendance opens, and every student's own fix is compared against it. This is the check that stops a mark being sent from a hostel room.
+**Location proves the venue.** The professor's or TA's position is recorded when attendance opens, and every student's own fix is compared against it. This is the check that stops a mark being sent from a hostel room.
 
-Location is asked for on both sides and used whenever it is available. It is not allowed to block a register, though: an app already installed on a phone may have no way to request the permission, and shutting those students — or their professor — out of attendance is a worse failure than a mark resting on Bluetooth alone. Every record stores which signals actually verified it, so a Bluetooth-only mark can be told apart from one both signals agreed on.
+**The website network check proves a shared access path.** Safari cannot reveal the SSID, BSSID, or Wi-Fi signal strength, so the API compares a salted fingerprint of the network path instead. This is weaker than Bluetooth on a campus-wide network, which is why website marks always require a precise location as well.
 
-Because indoor GPS is only accurate to tens of metres, each reading's own error bar is subtracted before judging, and the radius is deliberately wider than a room — `ATTENDANCE_GEOFENCE_METRES`, 150 m by default. That is not sloppiness: wrongly rejecting a student who is genuinely sitting in the lecture is a worse failure than admitting someone in the corridor, and Bluetooth is what excludes the corridor. A student whose Bluetooth reading looks marginal but whose location agrees is still marked present, which is how the back row gets counted.
+Location is asked for on both sides and used whenever it is available. It is not allowed to block the professor from opening a register or a native Bluetooth check-in, because an installed app may be unable to request permission. It is mandatory for website self-marking, where there is no beacon to fall back on. Every record stores which signals actually verified it.
+
+Because indoor GPS is only accurate to tens of metres, each reading's own error bar is subtracted before judging, and the radius is deliberately wider than a room — `ATTENDANCE_GEOFENCE_METRES`, 150 m by default. Native attendance relies on Bluetooth to exclude the corridor. Website attendance instead rejects a student fix whose accuracy is worse than `WEB_ATTENDANCE_MAX_ACCURACY_METRES`, 100 m by default, and also requires the classroom network match.
 
 Both measurements are stored on the record, so a disputed mark can be examined instead of argued about.
 
