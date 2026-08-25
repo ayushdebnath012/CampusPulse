@@ -1,4 +1,4 @@
-const APP_VERSION = "1.11.0";
+const APP_VERSION = "1.11.1";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -2385,7 +2385,8 @@ function selectAttendanceBroadcast(sessionId) {
 // refresh running in the background never repaints some other page out from
 // under the person reading it.
 function showingLiveSession(sessionId) {
-  return state.route === "attendance"
+  return Boolean(sessionId)
+    && state.route === "attendance"
     && !viewingPastAttendance
     && activeAttendance?.id === sessionId;
 }
@@ -2517,7 +2518,7 @@ async function restoreAttendanceBroadcasts(remembered = state.liveAttendanceBroa
 function syncAttendanceLiveBar() {
   if (!attendanceLiveBar) return;
   const live = state.authenticated ? [...attendanceBroadcasts.values()] : [];
-  const visibleSessionId = showingLiveSession(activeAttendance?.id)
+  const visibleSessionId = activeAttendance?.id && showingLiveSession(activeAttendance.id)
     ? activeAttendance.id
     : "";
   const background = live.filter(item => item.sessionId !== visibleSessionId);
