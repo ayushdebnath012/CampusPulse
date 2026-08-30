@@ -1,0 +1,53 @@
+# CampusPulse backend in Docker.
+#
+# Default (JSON store, no database needed):
+#   docker compose up --build
+#   -> API on http://localhost:8787, data persisted in the campuspulse-data volume.
+#
+# Against a managed Postgres (RDS, CockroachDB, …):
+#   DATABASE_URL='postgresql://user:pass@host:5432/campuspulse' DATABASE_SSL=true \
+#     docker compose up --build
+#
+# Against a throwaway local Postgres, to exercise the DB path before RDS exists:
+#   DATABASE_URL='postgresql://campuspulse:campuspulse@db:5432/campuspulse' DATABASE_SSL=false \
+#     docker compose --profile local up --build
+#
+# Every value below falls back to a working default, so an empty environment
+# still boots the app on the JSON store.
+services:
+  api:
+    build: ./backend
+    image: campuspulse-api
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      - NODE_ENV=production
+      - PORT=8787
+      - DATABASE_URL=${DATABASE_URL:-}
+      - DATABASE_SSL=${DATABASE_SSL:-false}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-https://ayushdebnath012.github.io,capacitor://localhost,http://localhost,http://localhost:8787}
+      - ALLOW_DEV_VERIFICATION_CODE=${ALLOW_DEV_VERIFICATION_CODE:-false}
+      # Pass email/push/roster secrets through the same way when you need them:
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - EMAIL_FROM=${EMAIL_FROM:-}
+    volumes:
+      - campuspulse-data:/data
+
+  # Only started with `--profile local`; RDS replaces this in production.
+  db:
+    image: postgres:16-alpine
+    profiles: ["local"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: campuspulse
+      POSTGRES_PASSWORD: campuspulse
+      POSTGRES_DB: campuspulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - campuspulse-db:/var/lib/postgresql/data
+
+volumes:
+  campuspulse-data:
+  campuspulse-db:
