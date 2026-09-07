@@ -1,5 +1,5 @@
 (() => {
-  const defaultApiBase = "https://campuspulse.duckdns.org";
+  const defaultApiBase = "https://campuspulse-api-ayush.vercel.app";
   const savedApiBase = String(
     localStorage.getItem("campusPulseApiBase") || "",
   ).trim().replace(/\/+$/, "");

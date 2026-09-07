@@ -33,11 +33,19 @@ window where the apps point at a dead host:
 4. **HTTPS** — point a domain at the instance and run
    [`enable-https.sh`](./enable-https.sh) (see "Put it on HTTPS"). The apps
    require `https://`, so this is what makes the new host usable by them.
-5. **Repoint the apps** — `defaultApiBase` in `public/config.js` is already set
-   to `https://campuspulse.duckdns.org`; register that exact DuckDNS name (or
-   change the one line to the name you get). Then `npm run android:sync`,
-   `npm run ios:sync`, and redeploy GitHub Pages. Until this ships, installed
-   apps still call Vercel.
+5. **Repoint the apps** — set `defaultApiBase` in `public/config.js` to
+   `https://campuspulse.duckdns.org`, register that exact DuckDNS name (or use
+   the name you get), bump the `config.js?v=` cache-buster in
+   `public/index.html`, then `npm run android:sync`, `npm run ios:sync`, and
+   redeploy GitHub Pages.
+
+   **Do this step last, and only once step 4 answers on HTTPS.** It was shipped
+   early once (650bf22, 31 Aug 2026) while the EC2 box was not yet serving TLS.
+   The web app and the Android web-update bundle then pointed at a host that
+   never answered: sign-in hung, no attendance could be marked, and no register
+   was opened for any class between 31 Aug and 7 Sep. It was reverted to Vercel
+   on 7 Sep. Verify with `curl https://<name>/api/health` *before* editing this
+   line, not after.
 6. **Decommission** — only after step 5 is live and verified: remove the
    `TARGET_DATABASE_URL`/other secrets from the Vercel project (or delete the
    project), and let the CockroachDB trial lapse. Keep the Cockroach connection
@@ -65,7 +73,7 @@ The rest of this file details each piece.
    ```bash
    curl http://<EC2_PUBLIC_IP>:8787/api/health
    ```
-   `{"status":"ok"}` means you are live.
+   A JSON body starting `{"ok":true,"service":"campuspulse-api",...}` means you are live.
 
 ## Launch it (AWS CLI)
 
