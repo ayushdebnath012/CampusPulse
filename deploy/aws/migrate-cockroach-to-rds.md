@@ -122,7 +122,7 @@ there is no ambiguity:
 ## 4. Verify, then decommission Cockroach
 
 ```bash
-curl https://<your-domain-or-ec2>/api/health     # {"status":"ok"}
+curl https://<your-domain-or-ec2>/api/health     # {"ok":true,"service":"campuspulse-api",...}
 ```
 
 Then sign in and spot-check real data — a course roster, a past attendance
