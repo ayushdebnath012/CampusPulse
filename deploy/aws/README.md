@@ -46,6 +46,13 @@ window where the apps point at a dead host:
    was opened for any class between 31 Aug and 7 Sep. It was reverted to Vercel
    on 7 Sep. Verify with `curl https://<name>/api/health` *before* editing this
    line, not after.
+
+   Repointed again on 10 Sep 2026 after checking the DuckDNS host from outside:
+   `/api/health` 200 in ~0.15 s, valid Let's Encrypt chain, HTTP→HTTPS 301, and
+   CORS preflight 204 for the github.io, capacitor and localhost origins. The
+   week on Vercel left 32 phone check-ins (all MF41601: 8 Sep, 7 Sep, 25 Aug)
+   that existed only in Cockroach; they were merged into RDS through the API
+   before the repoint, so RDS is a superset of Cockroach for attendance.
 6. **Decommission** — only after step 5 is live and verified: remove the
    `TARGET_DATABASE_URL`/other secrets from the Vercel project (or delete the
    project), and let the CockroachDB trial lapse. Keep the Cockroach connection
