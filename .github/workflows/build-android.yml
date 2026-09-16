@@ -34,6 +34,11 @@ jobs:
 
       - name: Install Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default list is "tools platform-tools", but Google has
+          # removed the legacy "tools" package from the SDK repository, so
+          # sdkmanager now fails on it. Gradle installs everything else it needs.
+          packages: platform-tools
 
       - name: Install app dependencies
         run: npm ci
