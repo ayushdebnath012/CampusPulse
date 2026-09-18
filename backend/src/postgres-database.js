@@ -62,6 +62,19 @@ function createPostgresStore(connectionString, options = {}) {
   let cache = null;
   let cacheValidatedAt = 0;
   let inFlightRead = null;
+  // How heavy the shared document is and what a write cycle costs, surfaced on
+  // /api/health so a slow class hour can be diagnosed from outside the box.
+  const stats = {
+    revision: null,
+    documentBytes: null,
+    loads: 0,
+    writes: 0,
+    lastLoadMs: null,
+    lastWriteMs: null,
+    maxWriteMs: 0,
+    lastWriteAt: null,
+    lastWriteBatch: 0,
+  };
 
   function ensureTable() {
     if (!ready) {
@@ -94,7 +107,10 @@ function createPostgresStore(connectionString, options = {}) {
   }
 
   async function loadFresh() {
+    const startedAt = Date.now();
     const result = await pool.query(READ_PROJECTION);
+    stats.loads += 1;
+    stats.lastLoadMs = Date.now() - startedAt;
     const row = result.rows[0];
     const source = row?.data || initialData(env);
     const data = normalizeData(source, env);
@@ -157,9 +173,10 @@ function createPostgresStore(connectionString, options = {}) {
     return latest.data;
   }
 
-  const runUpdates = createBatchingUpdater(async (apply) => {
+  const runUpdates = createBatchingUpdater(async (apply, batchSize = 1) => {
     await ensureTable();
     for (let attempt = 0; attempt < transactionAttempts; attempt += 1) {
+      const startedAt = Date.now();
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -174,12 +191,13 @@ function createPostgresStore(connectionString, options = {}) {
         );
         const data = normalizeData(result.rows[0].data, env);
         const outcome = await apply(data);
+        const serialized = JSON.stringify(data);
         const saved = await client.query(
           `UPDATE campuspulse_store
            SET data = $1::jsonb, revision = revision + 1, updated_at = NOW()
            WHERE id = 1
            RETURNING revision`,
-          [JSON.stringify(data)],
+          [serialized],
         );
         await client.query("COMMIT");
         cache = {
@@ -187,6 +205,13 @@ function createPostgresStore(connectionString, options = {}) {
           revision: Number(saved.rows[0].revision),
         };
         cacheValidatedAt = Date.now();
+        stats.writes += 1;
+        stats.revision = cache.revision;
+        stats.documentBytes = serialized.length;
+        stats.lastWriteMs = Date.now() - startedAt;
+        stats.maxWriteMs = Math.max(stats.maxWriteMs, stats.lastWriteMs);
+        stats.lastWriteAt = new Date().toISOString();
+        stats.lastWriteBatch = batchSize;
         return outcome;
       } catch (error) {
         await client.query("ROLLBACK").catch(() => {});
@@ -222,6 +247,9 @@ function createPostgresStore(connectionString, options = {}) {
     },
     update(mutator) {
       return runUpdates(mutator);
+    },
+    stats() {
+      return { ...stats, cachedRevision: cache?.revision ?? null };
     },
     async readMaterialBlob(materialId) {
       await ensureTable();

@@ -1,4 +1,4 @@
-const APP_VERSION = "1.11.2";
+const APP_VERSION = "1.12.0";
 const API_BASE = String(window.CAMPUSPULSE_CONFIG?.apiBase || "").replace(/\/+$/, "");
 let apiToken = localStorage.getItem("campusPulseApiToken") || "";
 
@@ -13,7 +13,10 @@ const UNSERVED_STATUSES = new Set([502, 503, 504]);
 // Safe to replay only for reads, where a repeat cannot change anything even if
 // the first attempt did reach a handler.
 const BUSY_STATUSES = new Set([429, 500, 522, 524]);
-const RETRY_DELAYS_MS = [800, 2000, 4500];
+// Spread out enough that three hundred phones retrying a restart do not land
+// their second and third attempts inside the same few seconds. An overloaded
+// server is cleared by patience, not by asking again sooner.
+const RETRY_DELAYS_MS = [1500, 4000, 9000];
 
 function isOffline() {
   return typeof navigator !== "undefined" && navigator.onLine === false;
@@ -22,7 +25,10 @@ function isOffline() {
 async function fetchOnce(path, options, headers) {
   // `AbortSignal.timeout` is missing on some older in-app webviews.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => controller.abort(),
+    Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : REQUEST_TIMEOUT_MS,
+  );
   try {
     return await fetch(`${API_BASE}${path}`, {
       method: options.method || "GET",
@@ -762,6 +768,9 @@ async function openStudentRecord(courseId, rollNumber) {
 }
 
 function attendanceMethodLabel(markedVia, { self = false } = {}) {
+  if (markedVia === "student-class-code") {
+    return self ? "You, with the class code" : "Student (Class code)";
+  }
   if (markedVia === "student-web-wifi") {
     return self ? "You, via classroom Wi‑Fi" : "Student (Web Wi‑Fi)";
   }
@@ -1459,14 +1468,17 @@ function signOutLocally() {
   persist();
 }
 
-async function restoreBackendSession() {
+async function restoreBackendSession({ alreadyShown = false } = {}) {
   if (!backendConfigured() || !apiToken) return false;
-  const payload = await apiRequest("/api/me").catch((error) => {
-    if (!isAuthFailure(error)) throw error;
-    return null;
-  });
+  const payload = await apiRequest("/api/me", alreadyShown ? { timeoutMs: 20000 } : {}).catch(
+    (error) => {
+      if (!isAuthFailure(error)) throw error;
+      return null;
+    },
+  );
   if (!payload) {
     signOutLocally();
+    if (alreadyShown) render();
     return false;
   }
   state.userRole = payload.user.role;
@@ -1477,12 +1489,13 @@ async function restoreBackendSession() {
   // reminders and native beacon recovery continue after first paint so a slow
   // peripheral or secondary API request cannot trigger the startup watchdog.
   clearBootSplash();
-  showApp();
+  if (!alreadyShown) showApp();
   try {
     await syncBackendState();
   } catch (error) {
     if (isAuthFailure(error)) {
       signOutLocally();
+      render();
       return false;
     }
     // Identity is confirmed and the shell can be drawn from what was persisted
@@ -2395,6 +2408,28 @@ function syncCurrentBroadcastDetails() {
   proximityClockSkewMs = current?.clockSkewMs || 0;
 }
 
+// The typed code for the register on screen, large enough to read from the
+// back or off a projector. It comes from the same poll that keeps the beacon
+// token fresh, so it needs no request of its own.
+function classCodePanel() {
+  const sessionId = activeAttendance?.id;
+  if (!sessionId) return "";
+  const broadcast = attendanceBroadcasts.get(sessionId);
+  const code = broadcast?.code;
+  if (!code?.supported) return "";
+  if (!code.classCodeAvailable) {
+    return `<div class="class-code-panel is-unavailable">
+      <div><span>Class code</span><strong>Not available</strong></div>
+      <p>This session opened without a precise classroom location, and a typed code is only accepted together with one. Students who cannot hear the beacon can be marked from the list below.</p>
+    </div>`;
+  }
+  const minutesLeft = Math.max(1, Math.ceil(Number(code.classCodeExpiresInMs || 0) / 60000));
+  return `<div class="class-code-panel">
+    <div><span>Class code</span><strong class="class-code-value">${escapeHtml(String(code.classCode || "").replace(/(.{3})(.{3})/, "$1 $2"))}</strong></div>
+    <p>For anyone who cannot hear the Bluetooth beacon — the back rows, iPhones on the website, a phone whose scan keeps failing. They type it under <em>Mark with code</em>, and their location is checked against this room. Changes in about ${minutesLeft} min; the previous code stays valid for five more.</p>
+  </div>`;
+}
+
 function selectAttendanceBroadcast(sessionId) {
   if (!attendanceBroadcasts.has(sessionId)) return;
   broadcastSessionId = sessionId;
@@ -2478,12 +2513,16 @@ function startProximityCodeTicker() {
       const broadcasts = [...attendanceBroadcasts.values()];
       for (const broadcast of broadcasts) {
         const previous = broadcast.code?.code;
+        const previousClassCode = broadcast.code?.classCode;
         const { closed } = await refreshProximityCode(broadcast.sessionId);
         if (closed) {
           attendanceBroadcasts.delete(broadcast.sessionId);
           continue;
         }
-        if (showingLiveSession(broadcast.sessionId) && broadcast.code?.code !== previous) {
+        if (
+          showingLiveSession(broadcast.sessionId) &&
+          (broadcast.code?.code !== previous || broadcast.code?.classCode !== previousClassCode)
+        ) {
           visibleCodeChanged = true;
         }
       }
@@ -2698,10 +2737,16 @@ async function stopAttendanceBeacon() {
 }
 
 // How far the beacon is allowed to be and still count as "in this class".
-// Sized for a full lecture theatre rather than a small room: a student in the
-// back row belongs in the register, and the walls exclude the corridor far more
-// reliably than a tighter number would.
-const ATTENDANCE_RANGE_METRES = 30;
+//
+// Deliberately far beyond any room. The estimate comes from a free-space path
+// loss model, and a hall packed with three hundred bodies attenuates 2.4 GHz
+// two or three times harder than that model assumes, so a phone eight rows
+// back read as forty metres away and was refused — "only the first two or
+// three benches work" in the feedback. Hearing the beacon at all already puts
+// a phone within Bluetooth range of the teaching device, which walls limit far
+// more reliably than an inflated number does; the distance is still reported
+// and stored on the record for anyone examining a disputed mark.
+const ATTENDANCE_RANGE_METRES = 150;
 
 // Students listen for the class beacon. The plugin samples the signal for a
 // couple of seconds and reports an estimated distance, so a single unlucky
@@ -2726,6 +2771,11 @@ async function findAttendanceBeacon() {
   }
 }
 
+// Whether a session can accept the code typed from the class screen.
+function codeAvailable(session) {
+  return Boolean(session?.classCodeAvailable);
+}
+
 function attendanceCallCard(session) {
   const course = state.courses.find(item => item.id === session.courseId);
   const websiteCheckIn = !proximityPlugin();
@@ -2745,19 +2795,38 @@ function attendanceCallCard(session) {
     </article>`;
   }
   const webAvailable = websiteCheckIn && session.webCheckInAvailable;
-  return `<article class="card page-card attendance-call${websiteCheckIn && !webAvailable ? " is-idle" : ""}">
+  const codeAvailable = Boolean(session.classCodeAvailable);
+  // On the website the typed code is the path that works from mobile data,
+  // so it leads when the same-network check is unavailable; otherwise it is
+  // the fallback for a phone that cannot hear the beacon.
+  const codeLeads = websiteCheckIn && !webAvailable && codeAvailable;
+  const primaryDisabled = websiteCheckIn && !webAvailable;
+  const sessionId = escapeHtml(session.id);
+  return `<article class="card page-card attendance-call${primaryDisabled && !codeAvailable ? " is-idle" : ""}">
     <div class="section-head"><h3>${escapeHtml(courseName)}</h3><span class="badge amber">Attendance open</span></div>
-    <p class="attendance-call-copy">Your course team started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. ${websiteCheckIn ? "CampusPulse can verify your classroom Wi‑Fi and location from this website." : "Stay in the room — your phone connects over Bluetooth."}</p>
+    <p class="attendance-call-copy">Your course team started attendance${startedAt ? ` at ${escapeHtml(startedAt)}` : ""}. ${websiteCheckIn ? "CampusPulse can verify your classroom location from this website." : "Stay in the room — your phone connects over Bluetooth."}</p>
     ${session.rollNumber
       ? `<p class="attendance-call-roll">Roll number <strong>${escapeHtml(session.rollNumber)}</strong></p>`
-      : `<label class="attendance-call-label" for="rollNumber-${escapeHtml(session.id)}">Your roll number</label>
-         <input class="text-input" id="rollNumber-${escapeHtml(session.id)}" data-roll-for="${escapeHtml(session.id)}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
-    <p class="attendance-call-copy">${websiteCheckIn
+      : `<label class="attendance-call-label" for="rollNumber-${sessionId}">Your roll number</label>
+         <input class="text-input" id="rollNumber-${sessionId}" data-roll-for="${sessionId}" type="text" placeholder="e.g. 21ME10001" autocomplete="off" />`}
+    ${codeLeads ? "" : `<p class="attendance-call-copy">${websiteCheckIn
       ? webAvailable
-        ? "Connect to the same classroom Wi‑Fi used to start attendance. Safari will ask for Precise Location when you tap below."
+        ? "Connect to the same classroom Wi‑Fi used to start attendance, or use the class code below. Safari will ask for Precise Location when you tap."
         : "Website check-in is unavailable for this session because the classroom network or location was not captured. Ask the course team to mark you from the roster."
-      : "Wi‑Fi and Bluetooth must both be on. Your phone will find the class automatically when you tap below."}</p>
-    <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${escapeHtml(session.id)}" ${websiteCheckIn && !webAvailable ? "disabled" : ""}>${icon("i-check")} ${websiteCheckIn ? "Verify classroom & mark present" : "Mark me present"}</button>
+      : "Turn Bluetooth on — any internet connection is fine, mobile data included. Your phone finds the class automatically when you tap below."}</p>
+    <button class="btn btn-primary attendance-call-submit" type="button" data-action="student-check-in" data-session-id="${sessionId}" ${primaryDisabled ? "disabled" : ""}>${icon("i-check")} ${websiteCheckIn ? "Verify classroom & mark present" : "Mark me present"}</button>`}
+    ${codeAvailable ? `<div class="attendance-call-code">
+      <p class="attendance-call-copy">${codeLeads
+        ? "Type the class code shown on the class screen. Your location is checked against the classroom, so this works on mobile data too."
+        : websiteCheckIn
+          ? "On mobile data or a different Wi‑Fi? Type the code from the class screen instead. Your location is checked against the classroom."
+          : "Can't find the class over Bluetooth? Type the code from the class screen instead. Your location is checked against the classroom."}</p>
+      <label class="attendance-call-label" for="classCode-${sessionId}">Class code</label>
+      <div class="attendance-call-code-row">
+        <input class="text-input" id="classCode-${sessionId}" data-class-code-for="${sessionId}" type="text" inputmode="latin" autocapitalize="characters" autocomplete="one-time-code" maxlength="6" placeholder="e.g. 3F9A1C" />
+        <button class="btn ${codeLeads ? "btn-primary" : "btn-soft"} attendance-call-submit" type="button" data-action="student-check-in-code" data-session-id="${sessionId}">${icon("i-check")} Mark with code</button>
+      </div>
+    </div>` : ""}
   </article>`;
 }
 
@@ -3481,6 +3550,7 @@ function renderLiveAttendance() {
             viewingPast ? "gray" : complete ? "green" : "purple"
           )}
           ${pastSessionsPicker()}
+          ${!complete ? classCodePanel() : ""}
           ${!complete ? (attendanceBroadcasts.has(activeAttendance?.id) && beaconToken ? `<div class="proximity-code">
             <div><span>Broadcasting to the room</span><strong>${icon("i-check")} Bluetooth active</strong></div>
             <p>Installed apps use Bluetooth automatically. iPhone website users see this session too and can verify the same classroom Wi‑Fi plus location.${beaconRotating ? " You can lock this phone or use another app: the broadcast keeps running until you close attendance." : ""}</p>
@@ -6652,41 +6722,90 @@ document.addEventListener("click", async event => {
         state.checks = { wifi: true, bluetooth: false };
       } else {
         const signals = await attendanceSignals({ requestWebBluetooth: true });
-        if (!signals.wifi || !signals.bluetooth) {
-          const missing = [!signals.wifi && "Wi‑Fi", !signals.bluetooth && "Bluetooth"]
-            .filter(Boolean)
-            .join(" and ");
-          return toast(`Turn on ${missing}, then mark attendance again`, "error");
-        }
-        toast("Looking for the class over Bluetooth…");
-        const beacon = await findAttendanceBeacon();
-        const code = String(beacon.token || "").trim().toUpperCase();
-        // Hearing the beacon at all means being inside Bluetooth radio range.
-        // A token that read as too far is still submitted, because the distance
-        // estimate is the noisier of the two signals at that point and location
-        // can settle it — a student in the back row should not be turned away.
-        if (!code) {
-          return toast(
-            beacon.error || "The class was not found nearby. Move closer and try again.",
-            "error",
-          );
+        // Bluetooth is what hears the class. Which network the phone is on no
+        // longer matters — mobile data is as good as the classroom Wi‑Fi, and
+        // often better with three hundred phones on one access point.
+        if (!signals.bluetooth) {
+          return toast("Turn on Bluetooth, then mark attendance again", "error");
         }
         // Bluetooth has already proved the room. A fix strengthens that, but a
         // phone whose installed app cannot ask for the location permission must
         // still be able to mark itself present.
         const location = await currentLocation();
-        await apiRequest(`/api/attendance/${sessionId}/check-in`, {
-          method: "POST",
-          body: {
-            rollNumber,
-            signals,
-            code,
-            ...(location ? { location } : {}),
-            bluetoothDistanceMeters: beacon.distanceMeters,
-          },
-        });
-        state.checks = { wifi: true, bluetooth: true };
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          toast(attempt ? "Reading the class again…" : "Looking for the class over Bluetooth…");
+          const beacon = await findAttendanceBeacon();
+          const code = String(beacon.token || "").trim().toUpperCase();
+          // Hearing the beacon at all means being inside Bluetooth radio range.
+          if (!code) {
+            return toast(
+              beacon.error ||
+                (codeAvailable(session)
+                  ? "The class was not found over Bluetooth. Move closer and try again, or type the class code below."
+                  : "The class was not found nearby. Move closer and try again."),
+              "error",
+            );
+          }
+          try {
+            await apiRequest(`/api/attendance/${sessionId}/check-in`, {
+              method: "POST",
+              body: {
+                rollNumber,
+                signals,
+                code,
+                ...(location ? { location } : {}),
+                bluetoothDistanceMeters: beacon.distanceMeters,
+              },
+            });
+            break;
+          } catch (error) {
+            // The token rotates every half minute and a busy server can take
+            // most of that to answer. Rather than bounce the student back to
+            // the button, read a fresh one and send it straight away.
+            const stale = error?.status === 403 && /expired/i.test(error?.message || "");
+            if (!stale || attempt) throw error;
+          }
+        }
+        state.checks = { wifi: signals.wifi, bluetooth: true };
       }
+      persist();
+      toast("You are marked present");
+    } catch (error) {
+      return toast(error.message || "Could not mark attendance", "error");
+    } finally {
+      button.disabled = false;
+    }
+    await refreshOpenAttendance({ rerender: false });
+    if (state.route === "attendance") await refreshAttendanceHistory(state.selectedCourseId);
+    return render();
+  }
+  if (action === "student-check-in-code") {
+    const button = event.target.closest("[data-action]");
+    const sessionId = button.dataset.sessionId;
+    const session = openAttendance.find(item => item.id === sessionId);
+    if (!session) return toast("That attendance session has closed", "error");
+    if (!codeAvailable(session)) {
+      return toast("This session has no class code. Ask the course team to mark you from the roster.", "error");
+    }
+    const rollInput = document.querySelector(`[data-roll-for="${sessionId}"]`);
+    const rollNumber = session.rollNumber || rollInput?.value.trim().toUpperCase() || "";
+    if (!rollNumber) return toast("Enter your roll number", "error");
+    const codeInput = document.querySelector(`[data-class-code-for="${sessionId}"]`);
+    const code = String(codeInput?.value || "").replace(/\s+/g, "").toUpperCase();
+    if (code.length !== 6) return toast("Enter the six-character code from the class screen", "error");
+    button.disabled = true;
+    try {
+      toast("Checking your classroom location…");
+      // A typed code can travel; the location is what ties it to the room, so
+      // unlike the Bluetooth path a fix is required here.
+      const location = await currentLocation();
+      if (!location) {
+        return toast("Allow CampusPulse to use your precise location, then try again", "error");
+      }
+      await apiRequest(`/api/attendance/${sessionId}/check-in`, {
+        method: "POST",
+        body: { rollNumber, mode: "class-code", code, location },
+      });
       persist();
       toast("You are marked present");
     } catch (error) {
@@ -7306,8 +7425,29 @@ attendanceLiveBar?.addEventListener("click", async () => {
   }
 });
 
+// One submission at a time per form. Every form here sends a request, and a
+// second tap while the first is in flight was never harmless: a repeated
+// "email me a code" replaced the code already on its way, and a repeated
+// sign-in queued a second password check behind the first on a busy server.
 document.addEventListener("submit", async event => {
   event.preventDefault();
+  const form = event.target;
+  if (form.dataset.busy === "1") return;
+  form.dataset.busy = "1";
+  const controls = [...form.querySelectorAll("button, input[type='submit']")];
+  const wasDisabled = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  try {
+    await handleFormSubmit(event);
+  } finally {
+    delete form.dataset.busy;
+    if (form.isConnected) {
+      controls.forEach((control, index) => { control.disabled = wasDisabled[index]; });
+    }
+  }
+});
+
+async function handleFormSubmit(event) {
   if (event.target.id === "reminderForm") {
     const data = new FormData(event.target);
     try {
@@ -7684,7 +7824,7 @@ document.addEventListener("submit", async event => {
     renderStudentQuizAccess();
     toast("Quiz response saved on this device");
   }
-});
+}
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
@@ -7833,6 +7973,23 @@ async function bootstrapApp() {
   if (!backendConfigured() || !apiToken) {
     if (state.authenticated) startNavigationHistory();
     render();
+    return;
+  }
+  // A phone that was signed in last time already holds its workspace. Draw it
+  // at once and confirm the session behind it: holding the whole class on
+  // "Signing you in…" until a busy server answered — which during a lecture
+  // could be minutes — is what students described as the app never opening.
+  // Only the server saying the token is dead signs anyone out.
+  if (state.authenticated && state.accountName) {
+    showApp();
+    try {
+      await restoreBackendSession({ alreadyShown: true });
+    } catch (error) {
+      toast(
+        "Could not reach CampusPulse yet. Showing what this phone saved — pull down to refresh.",
+        "error",
+      );
+    }
     return;
   }
   // Paint before the first request, never after it.

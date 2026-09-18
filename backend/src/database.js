@@ -3,6 +3,12 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { buildCourseData } = require("./course-data");
 
+// Inbox retention. Every "attendance is open" alert fans out to a whole class,
+// and a term of them made the shared document — which every write moves to
+// the database and back in full — grow by megabytes.
+const NOTIFICATION_RETENTION_MS = 45 * 24 * 60 * 60 * 1000;
+const MAX_NOTIFICATIONS_PER_USER = 60;
+
 function cleanJoinCode(value) {
   return String(value || "").trim().toUpperCase().slice(0, 64);
 }
@@ -117,13 +123,39 @@ function normalizeData(value, env = process.env) {
     })
     .filter(Boolean);
   const userIds = new Set(usersById.keys());
+  // Every write ships the whole document to the database and back, so what is
+  // no longer needed is dropped here, on the one path every load takes.
+  // Expired sessions and codes can never be used again; a notification older
+  // than the retention window, or beyond the newest few dozen for its owner,
+  // is off the bottom of an inbox nobody scrolls that far.
+  const now = Date.now();
+  normalized.sessions = normalized.sessions.filter(
+    (session) => session && Date.parse(session.expiresAt) > now,
+  );
+  normalized.verificationCodes = normalized.verificationCodes.filter(
+    (code) => code && Date.parse(code.expiresAt) > now,
+  );
+  const notificationCutoff = now - NOTIFICATION_RETENTION_MS;
+  const keptPerUser = new Map();
+  // An undated record cannot be judged stale, so it is kept.
+  const notificationTime = (notification) => Date.parse(notification.createdAt) || now;
   normalized.notifications = normalized.notifications
     .filter(
       (notification) =>
         notification &&
         userIds.has(notification.userId) &&
-        String(notification.id || "").trim(),
+        String(notification.id || "").trim() &&
+        notificationTime(notification) > notificationCutoff,
     )
+    // Newest first, so the cap keeps the recent ones.
+    .sort((left, right) => notificationTime(right) - notificationTime(left))
+    .filter((notification) => {
+      const userId = String(notification.userId);
+      const kept = (keptPerUser.get(userId) || 0) + 1;
+      keptPerUser.set(userId, kept);
+      return kept <= MAX_NOTIFICATIONS_PER_USER;
+    })
+    .reverse()
     .map((notification) => ({
       ...notification,
       id: String(notification.id),
@@ -261,7 +293,7 @@ function createBatchingUpdater(runCycle, options = {}) {
         results[index] = await batch[index].mutator(data);
       }
       return null;
-    });
+    }, batch.length);
     batch.forEach((entry, index) => entry.resolve(clone(results[index])));
   }
 

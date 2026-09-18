@@ -1324,8 +1324,9 @@ test("students mark their own attendance only while the professor's session is o
   assert.equal(visible.body.sessions[0].id, sessionId);
   assert.equal(visible.body.sessions[0].checkedIn, false);
 
-  // Wi-Fi and Bluetooth must both be reported before the roll number is read.
-  for (const signals of [{ wifi: false, bluetooth: true }, { wifi: true, bluetooth: false }, {}]) {
+  // Bluetooth must be reported before the roll number is read. Which network
+  // the phone is on is not: mobile data is as good as the classroom Wi-Fi.
+  for (const signals of [{ wifi: true, bluetooth: false }, {}]) {
     const blocked = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
       method: "POST",
       token: student.token,
@@ -1333,6 +1334,19 @@ test("students mark their own attendance only while the professor's session is o
     });
     assert.equal(blocked.response.status, 400);
   }
+  const onMobileData = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token: student.token,
+    body: {
+      rollNumber: "MFTEST0001",
+      signals: { wifi: false, bluetooth: true },
+      location: goodLocation,
+      code: "ZZZZZZ",
+    },
+  });
+  // Past the signal check; refused only because the beacon token is wrong.
+  assert.equal(onMobileData.response.status, 403);
+  assert.match(onMobileData.body.error, /code is wrong/i);
 
   const checkedIn = await request(testServer.baseUrl, `/api/attendance/${sessionId}/check-in`, {
     method: "POST",
@@ -2832,6 +2846,16 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
   assert.equal("code" in requested.body, false);
   assert.match(sentCode, /^\d{6}$/);
 
+  // Tapping the button again straight away must not replace the code that is
+  // already in the student's inbox with one they will never see.
+  const firstCode = sentCode;
+  const tappedAgain = await request(testServer.baseUrl, "/api/auth/password/forgot", {
+    method: "POST",
+    body: { email: "password-student@kgpian.iitkgp.ac.in" },
+  });
+  assert.equal(tappedAgain.response.status, 202);
+  assert.equal(sentCode, firstCode);
+
   const wrongCode = await request(testServer.baseUrl, "/api/auth/password/reset", {
     method: "POST",
     body: {
@@ -2872,6 +2896,8 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     token: signedIn.body.token,
     body: { token: "new-session-phone", platform: "android" },
   });
+  // Signing in on a second device — the website while the app is open, say —
+  // leaves the first one signed in and still reachable by phone alerts.
   const signedInAgain = await request(testServer.baseUrl, "/api/auth/login", {
     method: "POST",
     body: {
@@ -2881,12 +2907,40 @@ test("passwords can be changed while signed in and reset by email", async (t) =>
     },
   });
   assert.equal(signedInAgain.response.status, 200);
+  assert.notEqual(signedInAgain.body.token, signedIn.body.token);
+  const firstDeviceStillIn = await request(testServer.baseUrl, "/api/me", {
+    token: signedIn.body.token,
+  });
+  assert.equal(firstDeviceStillIn.response.status, 200);
   assert.equal(
     (await testServer.store.read()).pushDevices.some(
       (device) => device.token === "new-session-phone",
     ),
-    false,
+    true,
   );
+
+  // Only an implausible pile of sessions retires the oldest of them.
+  const tokens = [signedIn.body.token, signedInAgain.body.token];
+  for (let extra = 0; extra < 6; extra += 1) {
+    const another = await request(testServer.baseUrl, "/api/auth/login", {
+      method: "POST",
+      body: {
+        email: "password-student@kgpian.iitkgp.ac.in",
+        password: "third-password",
+        role: "student",
+      },
+    });
+    assert.equal(another.response.status, 200);
+    tokens.push(another.body.token);
+  }
+  const oldestGone = await request(testServer.baseUrl, "/api/me", { token: tokens[0] });
+  assert.equal(oldestGone.response.status, 401);
+  const newestFine = await request(testServer.baseUrl, "/api/me", { token: tokens.at(-1) });
+  assert.equal(newestFine.response.status, 200);
+  const liveSessions = (await testServer.store.read()).sessions.filter(
+    (session) => session.userId === signedInAgain.body.user.id,
+  );
+  assert.equal(liveSessions.length, 6);
 
   // The reset code is single use and every old session is gone.
   const reused = await request(testServer.baseUrl, "/api/auth/password/reset", {

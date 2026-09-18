@@ -575,22 +575,25 @@ public class ProximityPlugin extends Plugin {
                 }
             }
 
-            if (best != null
-                && inRange(best, explicitMinRssi, txPowerAt1m, pathLoss, maxDistance)) {
-                resolveFound(call, best, bestDistance, minSamples);
+            if (best != null) {
+                // Heard. Whether it read as in range or not, the token goes
+                // back: hearing the beacon at all puts this phone within radio
+                // range of the teaching device, and the distance estimate is
+                // the noisier of the two signals — a packed hall attenuates
+                // far harder than the free-space model assumes, which is how
+                // the back rows came to be refused. The caller is told it read
+                // as far, and the server records the estimate on the mark.
+                JSObject found = foundPayload(best, bestDistance, minSamples);
+                if (!inRange(best, explicitMinRssi, txPowerAt1m, pathLoss, maxDistance)) {
+                    found.put("outOfRange", true);
+                    found.put("maxDistanceMeters", maxDistance);
+                }
+                call.resolve(found);
                 return;
             }
 
             JSObject missed = new JSObject();
             missed.put("found", false);
-            if (best != null) {
-                // Heard, but too far: the difference matters to a student
-                // deciding whether to move closer or report a problem.
-                missed.put("outOfRange", true);
-                missed.put("distanceMeters", round1(bestDistance));
-                missed.put("rssi", strongest(best.samples));
-                missed.put("maxDistanceMeters", maxDistance);
-            }
             call.resolve(missed);
         }, timeoutMs);
     }
@@ -607,6 +610,10 @@ public class ProximityPlugin extends Plugin {
     }
 
     private void resolveFound(PluginCall call, Beacon beacon, double distance, int minSamples) {
+        call.resolve(foundPayload(beacon, distance, minSamples));
+    }
+
+    private static JSObject foundPayload(Beacon beacon, double distance, int minSamples) {
         JSObject found = new JSObject();
         found.put("found", true);
         found.put("token", beacon.token);
@@ -614,7 +621,7 @@ public class ProximityPlugin extends Plugin {
         found.put("distanceMeters", round1(distance));
         found.put("samples", beacon.samples.size());
         found.put("confident", beacon.samples.size() >= minSamples);
-        call.resolve(found);
+        return found;
     }
 
     private String scanFailureMessage(int errorCode) {

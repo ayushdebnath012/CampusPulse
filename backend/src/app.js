@@ -75,6 +75,16 @@ const TEN_MINUTES = 10 * 60 * 1000;
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 const ONE_YEAR = 365 * 24 * 60 * 60 * 1000;
 const MAX_PUSH_DEVICES_PER_USER = 5;
+// A student is routinely signed in on the installed app and on the website at
+// once, and signs in again when the app looks stuck. Each sign-in used to
+// revoke every other session for the account, so the phone in their pocket was
+// silently logged out — "the app keeps logging me out" in the feedback. Only
+// the oldest sessions beyond this many are retired now.
+const MAX_SESSIONS_PER_USER = 6;
+// A reset code requested twice in quick succession replaced the first one, so
+// the email a student was already reading held a dead code. Within this window
+// a repeat request re-sends nothing and leaves the issued code valid.
+const RESET_CODE_REISSUE_AFTER_MS = 60 * 1000;
 const PUSH_DELIVERY_CONCURRENCY = 20;
 // How long a request will wait for phone delivery before answering and
 // letting the rest finish in the background.
@@ -388,6 +398,18 @@ function proximityCodeFor(secret, offset = 0) {
   return sha256(`${secret}:${window}`).slice(0, PROXIMITY_CODE_LENGTH).toUpperCase();
 }
 
+// A second code, cut from the same secret on a slower clock, for students who
+// cannot hear the beacon: the back of a packed hall, an iPhone on the website,
+// a phone whose Bluetooth scan keeps failing. It is read off the class screen
+// and typed, so it has to hold still long enough to be read, and a mark made
+// with it is always checked against the classroom location as well.
+const CLASS_CODE_WINDOW_MS = 5 * 60 * 1000;
+
+function classCodeFor(secret, offset = 0) {
+  const window = Math.floor(Date.now() / CLASS_CODE_WINDOW_MS) + offset;
+  return sha256(`class:${secret}:${window}`).slice(0, PROXIMITY_CODE_LENGTH).toUpperCase();
+}
+
 function attendanceRecord(student) {
   return {
     serial: student.serial,
@@ -453,6 +475,7 @@ function publicAttendance(session) {
     ...rest,
     hasLocation: Boolean(location),
     webCheckInAvailable: Boolean(location && _networkFingerprint),
+    classCodeAvailable: Boolean(location && _secret),
   };
 }
 
@@ -1127,8 +1150,52 @@ function createApp(options = {}) {
       /^\/api\/courses\/[^/]+\/materials$/.test(request.path);
     return materialUpload ? next() : jsonParser(request, response, next);
   });
-  app.use("/api", (_request, response, next) => {
+  // What the process is doing right now, for /api/health. A class reporting
+  // "the app crashes under traffic" needs numbers, not guesses: whether the
+  // event loop is stalling, how many requests are waiting, and what the slow
+  // ones are.
+  const runtime = {
+    startedAt: new Date().toISOString(),
+    inFlight: 0,
+    served: 0,
+    failed: 0,
+    slow: 0,
+    eventLoopLagMs: 0,
+    maxEventLoopLagMs: 0,
+    slowest: [],
+  };
+  const SLOW_REQUEST_MS = 2000;
+  let lagTick = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const lag = Math.max(0, now - lagTick - 500);
+    lagTick = now;
+    runtime.eventLoopLagMs = lag;
+    runtime.maxEventLoopLagMs = Math.max(runtime.maxEventLoopLagMs, lag);
+  }, 500).unref();
+
+  app.use("/api", (request, response, next) => {
     response.setHeader("Cache-Control", "no-store");
+    if (request.path === "/health") return next();
+    const startedAt = Date.now();
+    runtime.inFlight += 1;
+    response.once("finish", () => {
+      runtime.inFlight -= 1;
+      runtime.served += 1;
+      if (response.statusCode >= 500) runtime.failed += 1;
+      const took = Date.now() - startedAt;
+      if (took < SLOW_REQUEST_MS) return;
+      runtime.slow += 1;
+      // The route shape, never the id: a student's session or roll number has
+      // no place in a health page.
+      const route = `${request.method} ${request.path.replace(/\/[^/]*\d[^/]*/g, "/:id")}`;
+      runtime.slowest = [...runtime.slowest, { route, ms: took, status: response.statusCode, at: new Date().toISOString() }]
+        .sort((left, right) => right.ms - left.ms)
+        .slice(0, 8);
+    });
+    response.once("close", () => {
+      if (!response.writableFinished) runtime.inFlight -= 1;
+    });
     next();
   });
 
@@ -1290,7 +1357,7 @@ function createApp(options = {}) {
     response.json({
       ok: true,
       service: "campuspulse-api",
-      version: "1.11.2",
+      version: "1.12.0",
       otpRequired: Boolean(mailer.configured || allowDevVerificationCode),
       emailDelivery:
         mailer.provider || (mailer.configured ? "configured" : "disabled"),
@@ -1300,6 +1367,17 @@ function createApp(options = {}) {
         : pushNotifier.status || "disabled",
       pushConfigured: Boolean(pushNotifier.configured),
       pushRuntime: { ...pushDeliveryState },
+      runtime: {
+        ...runtime,
+        uptimeSeconds: Math.round(process.uptime()),
+        memoryMb: Object.fromEntries(
+          Object.entries(process.memoryUsage()).map(([key, bytes]) => [
+            key,
+            Math.round(bytes / 1048576),
+          ]),
+        ),
+        store: typeof store.stats === "function" ? store.stats() : null,
+      },
       ...(warnings.length ? { configurationWarnings: warnings } : {}),
     });
   });
@@ -1591,21 +1669,37 @@ function createApp(options = {}) {
         return response.status(401).json({ error: "Incorrect email, password, or role" });
       }
       const token = randomToken();
-      await store.update((database) => {
+      const retired = await store.update((database) => {
         database.sessions = database.sessions.filter(
-          (item) => Date.parse(item.expiresAt) > Date.now() && item.userId !== user.id,
+          (item) => Date.parse(item.expiresAt) > Date.now(),
         );
-        database.pushDevices = database.pushDevices.filter(
-          (item) => item.userId !== user.id,
-        );
+        // Other devices stay signed in. Only when the account has more live
+        // sessions than anyone plausibly uses are the oldest retired, together
+        // with the phone alerts that were tied to them.
+        const own = database.sessions
+          .filter((item) => item.userId === user.id)
+          .sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt));
+        const surplus = own
+          .slice(0, Math.max(0, own.length - (MAX_SESSIONS_PER_USER - 1)))
+          .map((item) => item.tokenHash);
+        if (surplus.length) {
+          const gone = new Set(surplus);
+          database.sessions = database.sessions.filter(
+            (item) => !gone.has(item.tokenHash),
+          );
+          database.pushDevices = database.pushDevices.filter(
+            (item) => !gone.has(item.sessionTokenHash),
+          );
+        }
         database.sessions.push({
           tokenHash: sha256(token),
           userId: user.id,
           createdAt: new Date().toISOString(),
           expiresAt: new Date(Date.now() + THIRTY_DAYS).toISOString(),
         });
-        return null;
+        return surplus;
       });
+      retired.forEach((tokenHash) => sessionCache.delete(tokenHash));
       response.json({ token, user: publicUser(user) });
     } catch (error) {
       next(error);
@@ -1663,22 +1757,34 @@ function createApp(options = {}) {
       if (!user) return response.status(202).json({ sent: true });
 
       const code = randomCode();
-      await store.update((database) => {
+      const issued = await store.update((database) => {
+        const now = Date.now();
+        const current = database.verificationCodes.find(
+          (item) =>
+            item.email === email &&
+            item.purpose === "password-reset" &&
+            Date.parse(item.expiresAt) > now,
+        );
+        // A double-tap, or a second tap because the first mail felt slow. The
+        // code already on its way is still good; replacing it would make the
+        // email that arrives a moment later useless.
+        const issuedAt = current ? Date.parse(current.expiresAt) - TEN_MINUTES : 0;
+        if (current && now - issuedAt < RESET_CODE_REISSUE_AFTER_MS) return false;
         database.verificationCodes = database.verificationCodes.filter(
           (item) =>
             !(item.email === email && item.purpose === "password-reset") &&
-            Date.parse(item.expiresAt) > Date.now(),
+            Date.parse(item.expiresAt) > now,
         );
         database.verificationCodes.push({
           email,
           purpose: "password-reset",
           codeHash: sha256(code),
-          expiresAt: new Date(Date.now() + TEN_MINUTES).toISOString(),
+          expiresAt: new Date(now + TEN_MINUTES).toISOString(),
           attempts: 0,
         });
-        return null;
+        return true;
       });
-      await mailer.sendPasswordReset({ email, name: user.name, code });
+      if (issued) await mailer.sendPasswordReset({ email, name: user.name, code });
       response.status(202).json({ sent: true });
     } catch (error) {
       next(error);
@@ -3560,6 +3666,14 @@ function createApp(options = {}) {
           code: proximityCodeFor(session.proximitySecret),
           expiresInMs: PROXIMITY_WINDOW_MS - (Date.now() % PROXIMITY_WINDOW_MS),
           supported: true,
+          // Shown on the class screen for anyone who cannot hear the beacon.
+          classCode: classCodeFor(session.proximitySecret),
+          classCodeExpiresInMs:
+            CLASS_CODE_WINDOW_MS - (Date.now() % CLASS_CODE_WINDOW_MS),
+          classCodeWindowMs: CLASS_CODE_WINDOW_MS,
+          // Whether a typed code can be accepted at all: it is only ever
+          // checked together with the classroom location.
+          classCodeAvailable: Boolean(session.location),
           // The teaching device derives the token itself while the app is
           // backgrounded, so it is given the secret and the shape of the
           // window the codes are cut from. This route is already restricted
@@ -3674,6 +3788,9 @@ function createApp(options = {}) {
               markedAt: record?.present ? record.markedAt : null,
               webCheckInAvailable: Boolean(
                 session.location && session.networkFingerprint,
+              ),
+              classCodeAvailable: Boolean(
+                session.location && session.proximitySecret,
               ),
             };
           }),
@@ -3810,17 +3927,18 @@ function createApp(options = {}) {
     requireRoles("student", "ta"),
     async (request, response, next) => {
       try {
-        const checkInMode =
-          String(request.body.mode || "").toLowerCase() === "web-wifi"
-            ? "web-wifi"
-            : "bluetooth";
+        const requestedMode = String(request.body.mode || "").toLowerCase();
+        const checkInMode = ["web-wifi", "class-code"].includes(requestedMode)
+          ? requestedMode
+          : "bluetooth";
         const signals = request.body.signals || {};
-        if (
-          checkInMode === "bluetooth" &&
-          (signals.wifi !== true || signals.bluetooth !== true)
-        ) {
+        // Bluetooth is what hears the beacon, so it has to be on. Which network
+        // the phone is on is not asked any more: the beacon token proves the
+        // room, and insisting on Wi‑Fi pushed three hundred phones onto one
+        // classroom access point while mobile data sat unused.
+        if (checkInMode === "bluetooth" && signals.bluetooth !== true) {
           return response.status(400).json({
-            error: "Connect Wi‑Fi and turn on Bluetooth before marking attendance",
+            error: "Turn on Bluetooth before marking attendance",
           });
         }
         const submittedCode = String(request.body.code || "").trim().toUpperCase();
@@ -3860,9 +3978,32 @@ function createApp(options = {}) {
               error.status = 403;
               throw error;
             }
-          } else if (session.proximitySecret) {
-            // The previous window is accepted so a code cannot expire mid-tap.
+          } else if (checkInMode === "class-code") {
+            if (!session.proximitySecret) {
+              const error = new Error(
+                "This session has no class code. Ask the course team to mark you from the roster.",
+              );
+              error.status = 409;
+              throw error;
+            }
             const accepted = [0, -1].map((offset) =>
+              classCodeFor(session.proximitySecret, offset),
+            );
+            if (!submittedCode || !accepted.includes(submittedCode)) {
+              const error = new Error(
+                submittedCode
+                  ? "That class code is wrong or has expired — read the current one from the class screen"
+                  : "Enter the class code shown on the class screen",
+              );
+              error.status = 403;
+              throw error;
+            }
+          } else if (session.proximitySecret) {
+            // Earlier windows are accepted too: the token was read off the air
+            // before the request was sent, and a busy server can take most of
+            // a minute to answer during a class, which used to expire it in
+            // flight and send the student back to scan again.
+            const accepted = [0, -1, -2].map((offset) =>
               proximityCodeFor(session.proximitySecret, offset),
             );
             if (!accepted.includes(submittedCode)) {
@@ -3890,10 +4031,16 @@ function createApp(options = {}) {
             studentLocation,
             geofenceMetres,
           );
-          if (checkInMode === "web-wifi") {
+          // A typed code can be sent from anywhere, and the website has no
+          // beacon behind it, so for both the location is the proof of being
+          // in the room and cannot be waived.
+          const locationRequired = checkInMode !== "bluetooth";
+          if (locationRequired) {
             if (!session.location) {
               const error = new Error(
-                "Website attendance needs the teaching device's classroom location. Ask the course team to mark you from the roster.",
+                checkInMode === "web-wifi"
+                  ? "Website attendance needs the teaching device's classroom location. Ask the course team to mark you from the roster."
+                  : "The class code needs the teaching device's classroom location, which this session did not capture. Ask the course team to mark you from the roster.",
               );
               error.status = 409;
               throw error;
@@ -3907,14 +4054,14 @@ function createApp(options = {}) {
             }
             if (studentLocation.accuracy > webAttendanceMaxAccuracyMetres) {
               const error = new Error(
-                "Your location is not precise enough yet. Move near a window or turn on Precise Location for Safari, then try again.",
+                "Your location is not precise enough yet. Move near a window or turn on Precise Location, then try again.",
               );
               error.status = 403;
               throw error;
             }
           }
           if (!agreement.verified || !agreement.within) {
-            if (checkInMode !== "web-wifi" && !agreement.verified) {
+            if (!locationRequired && !agreement.verified) {
               // A native Bluetooth mark can stand without a location fix.
             } else {
               const error = new Error(
@@ -3976,7 +4123,11 @@ function createApp(options = {}) {
           record.markedAt = new Date().toISOString();
           record.markedBy = request.user.id;
           record.markedVia =
-            checkInMode === "web-wifi" ? "student-web-wifi" : "student";
+            checkInMode === "web-wifi"
+              ? "student-web-wifi"
+              : checkInMode === "class-code"
+                ? "student-class-code"
+                : "student";
           // What each signal actually measured, kept so a disputed mark can be
           // examined rather than argued about.
           record.proximity = {

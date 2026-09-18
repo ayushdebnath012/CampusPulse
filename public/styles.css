@@ -702,6 +702,15 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 .attendance-call-roll strong { color:var(--ink); letter-spacing:.04em; }
 .attendance-call-label { display:block; margin:14px 0 6px; font-size:10px; font-weight:750; }
 .attendance-call-submit { width:100%; margin-top:14px; }
+.attendance-call-code { margin-top:16px; padding-top:14px; border-top:1px dashed var(--line); }
+.attendance-call-code .attendance-call-copy { margin-top:0; }
+.attendance-call-code-row { display:flex; gap:10px; align-items:stretch; }
+.attendance-call-code-row .text-input { flex:1 1 auto; min-width:0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:16px; letter-spacing:.18em; text-transform:uppercase; }
+.attendance-call-code-row .attendance-call-submit { width:auto; margin-top:0; flex:0 0 auto; white-space:nowrap; }
+@media (max-width: 420px) {
+  .attendance-call-code-row { flex-direction:column; }
+  .attendance-call-code-row .attendance-call-submit { width:100%; }
+}
 .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .field { display:flex; flex-direction:column; gap:7px; margin-bottom:13px; }
 .field.full { grid-column:1/-1; }
@@ -1034,6 +1043,21 @@ button.student-row-info:focus-visible { outline:2px solid var(--primary); outlin
 .proximity-code p { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .proximity-code.no-ble { border-color: #f0dac9; background: #fdf6f0; }
 .proximity-code.no-ble strong { color: var(--amber, #b45309); }
+
+/* The typed fallback code, sized to be read from the back of the hall. */
+.class-code-panel {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin: 16px 0 4px; padding: 16px 20px;
+  border: 1px solid #cfe9d8; border-radius: var(--radius); background: #f2fbf5;
+}
+.class-code-panel > div { display: flex; flex-direction: column; }
+.class-code-panel span { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.class-code-panel strong { color: var(--ink); font-size: 16px; font-weight: 800; line-height: 1.4; }
+.class-code-panel .class-code-value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 34px; letter-spacing: .12em; color: #1f7a3f; }
+.class-code-panel p { flex: 1 1 220px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.class-code-panel p em { font-style: normal; font-weight: 700; color: var(--ink); }
+.class-code-panel.is-unavailable { border-color: var(--line); background: #fafafa; }
+.class-code-panel.is-unavailable strong { color: var(--muted); }
 
 .review-option.is-wrong { color: #a33; border-color: #f0c9c9; background: var(--red-soft); }
 .review-option.is-wrong .review-mark svg { color: var(--red); }

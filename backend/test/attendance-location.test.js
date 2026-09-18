@@ -543,3 +543,75 @@ test("the course team is given what it needs to derive the token itself", async 
   });
   assert.equal(peeked.status, 403);
 });
+
+async function classCodeCheckIn(baseUrl, token, sessionId, code, location) {
+  return call(baseUrl, `/api/attendance/${sessionId}/check-in`, {
+    method: "POST",
+    token,
+    body: {
+      rollNumber: "24GEO001",
+      mode: "class-code",
+      code,
+      ...(location ? { location } : {}),
+    },
+  });
+}
+
+test("a student who cannot hear the beacon types the class code, and location decides", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const opened = await openAttendance(server.baseUrl, professorToken, courseId);
+  const sessionId = opened.body.attendance.id;
+  assert.equal(opened.body.attendance.classCodeAvailable, true);
+
+  const shown = await call(server.baseUrl, `/api/attendance/${sessionId}/code`, {
+    token: professorToken,
+  });
+  assert.equal(shown.status, 200);
+  assert.match(shown.body.classCode, /^[0-9A-F]{6}$/);
+  assert.notEqual(shown.body.classCode, shown.body.code, "the typed code is not the beacon token");
+  assert.equal(shown.body.classCodeAvailable, true);
+  assert.ok(shown.body.classCodeExpiresInMs > 0);
+
+  const visible = await call(server.baseUrl, "/api/attendance/open", { token: studentToken });
+  assert.equal(visible.body.sessions[0].classCodeAvailable, true);
+
+  // The beacon token is not accepted as a class code, and vice versa.
+  const beaconToken = await currentCode(server.baseUrl, professorToken, sessionId);
+  const wrongKind = await classCodeCheckIn(server.baseUrl, studentToken, sessionId, beaconToken, BACK_ROW);
+  assert.equal(wrongKind.status, 403, JSON.stringify(wrongKind.body));
+  assert.match(wrongKind.body.error, /class code is wrong/i);
+
+  // A code relayed to someone at home is no use without the room's location.
+  const relayed = await classCodeCheckIn(server.baseUrl, studentToken, sessionId, shown.body.classCode, AT_HOME);
+  assert.equal(relayed.status, 403, JSON.stringify(relayed.body));
+  assert.match(relayed.body.error, /from this class/i);
+
+  // Nor without any location at all: unlike Bluetooth, the code proves nothing on its own.
+  const noFix = await classCodeCheckIn(server.baseUrl, studentToken, sessionId, shown.body.classCode, null);
+  assert.equal(noFix.status, 400, JSON.stringify(noFix.body));
+
+  const inRoom = await classCodeCheckIn(server.baseUrl, studentToken, sessionId, shown.body.classCode, BACK_ROW);
+  assert.equal(inRoom.status, 201, JSON.stringify(inRoom.body));
+  assert.equal(inRoom.body.checkedIn, true);
+  assert.equal(inRoom.body.markedVia, "student-class-code");
+  assert.equal(inRoom.body.proximity.locationVerified, true);
+});
+
+test("the class code is refused when the session has no classroom location", async (t) => {
+  const server = await startServer();
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  const opened = await openAttendance(server.baseUrl, professorToken, courseId, null);
+  const sessionId = opened.body.attendance.id;
+  assert.equal(opened.body.attendance.classCodeAvailable, false);
+
+  const shown = await call(server.baseUrl, `/api/attendance/${sessionId}/code`, {
+    token: professorToken,
+  });
+  assert.equal(shown.body.classCodeAvailable, false);
+
+  const typed = await classCodeCheckIn(server.baseUrl, studentToken, sessionId, shown.body.classCode, BACK_ROW);
+  assert.equal(typed.status, 409, JSON.stringify(typed.body));
+});

@@ -211,6 +211,12 @@ Website check-in is enabled only when the start request captures both a trustwor
 
 The mark is recorded as `student-web-wifi`, with separate network and location verification fields, so an export never presents it as Bluetooth evidence. If iCloud Private Relay changes Safari's public address, the student may need to turn off **Limit IP Address Tracking** for that classroom Wi-Fi. A campus-wide NAT can cover more than one room, so location remains mandatory; an institution with an Aruba, Cisco, or UniFi controller should eventually replace public-address comparison with access-point identity for stronger room-level proof.
 
+## The class code
+
+Some phones cannot hear the beacon: an iPhone on the website, an Android whose scan keeps failing, or the far corner of a hall. For them the live register shows a **class code** — six characters, large enough to read from the back or off a projector, cut from the same secret as the beacon token but on a five-minute clock so it holds still long enough to type. The previous code stays valid for a further five minutes.
+
+A student types it under **Mark with code** on the attendance card. Unlike a Bluetooth mark, a typed code proves nothing on its own — it can be sent on to someone at home — so the student's precise location is mandatory and is checked against the classroom fix, exactly as the website's check-in is. That also means the code works from mobile data, which the website's same-network check cannot. It is only offered when the session captured a classroom location; otherwise the course team marks from the roster as before. The mark is recorded as `student-class-code`.
+
 ## Attendance is per class, not per day
 
 A register belongs to one class, so a course that meets twice on a Tuesday takes attendance twice and each starts from a blank roll. Every new day likewise opens on a fresh register rather than showing the previous one.
@@ -268,7 +274,9 @@ When a professor opens attendance, their device advertises a rotating session to
 
 Different courses can remain open at the same time. Opening another course adds its register to the teaching device's live set instead of replacing the first one, and closing one register leaves the others running. The Android foreground service cycles the BLE advertiser across every live course and keeps deriving fresh tokens while the phone is locked or another app is open. The in-app live bar shows any other registers still running. iOS can cycle multiple tokens while CampusPulse is active, but iOS may suspend third-party BLE advertising in the background; students using the iPhone website are unaffected because their shared Wi-Fi and location check-in is served by the open backend session.
 
-Range is judged by **estimated distance**, not by a raw signal reading. A scan samples the beacon for a couple of seconds and takes the median of the strongest readings, because a single packet's RSSI swings by 10 dB or more as someone shifts in a seat. The default limit is 30 m, chosen to reach the back row of a large lecture theatre: wrongly excluding a student who is actually in the class is worse than including someone just outside it, and walls cost a further 10–20 dB, so the corridor mostly falls outside the limit on its own. Adjust `ATTENDANCE_RANGE_METRES` in `public/app.js` to change it.
+Distance is **estimated**, not measured: a scan samples the beacon for a couple of seconds and takes the median of the strongest readings, because a single packet's RSSI swings by 10 dB or more as someone shifts in a seat. That estimate is recorded on every mark but it no longer decides one. The first term showed why: the free-space model behind it assumes far less attenuation than a hall of three hundred bodies actually produces, so a phone eight rows back read as forty metres away and was refused — "only the first two or three benches work". Hearing the beacon at all already puts a phone within Bluetooth range of the teaching device, and walls limit that far more reliably than an inflated number. `ATTENDANCE_RANGE_METRES` in `public/app.js` is therefore set well beyond any room, and the native plugins return the token for any beacon they hear, flagging `outOfRange` for information only.
+
+Which network the phone is on is not checked either. It used to insist on Wi‑Fi, which pushed the whole class onto one classroom access point while their mobile data sat unused; the beacon token is the room proof, and any connection that reaches the API will do.
 
 Android and iOS interoperate in both directions, which takes some care because iOS refuses to put service data in an advertisement:
 
@@ -288,6 +296,10 @@ The API was rewritten to survive a whole hall signing in at once, which previous
 - Uploaded files are no longer shipped on every request. Material bytes are projected out of the shared document and fetched only by the download route.
 - Password hashing gets a wider thread pool, since libuv's default of four threads serialised sign-ins.
 - The client retries with backoff and a timeout, so a free-tier instance waking from sleep no longer surfaces as a bare failure.
+- A phone that was signed in last time opens straight into its saved workspace and confirms the session behind it, instead of holding on "Signing you in…" until a busy server answers. Only the server rejecting the token signs anyone out.
+- Signing in on a second device no longer revokes the first. An account keeps up to six live sessions; before this, opening the website while the app was open silently logged the app out, which students reported as "it keeps logging me out".
+- Expired sessions and codes are dropped on every load, and each inbox keeps its newest sixty notifications for forty-five days. Every write moves the whole document to the database and back, and a term of "attendance is open" alerts to a class of 310 had grown it by megabytes.
+- `GET /api/health` reports `runtime`: requests in flight, event-loop lag, the slowest recent routes, process memory, and on PostgreSQL the document size and last write-cycle time — enough to tell a starved instance from a slow network without shell access.
 
 Measured locally with 310 students taking a class end to end — sign-ups, sign-ins, the whole room marking attendance, then closing the register:
 

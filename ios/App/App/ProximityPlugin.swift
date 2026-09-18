@@ -339,19 +339,18 @@ public class ProximityPlugin: CAPPlugin, CAPBridgedPlugin, CBPeripheralManagerDe
                 return
             }
             let distance = self.estimateDistance(closest)
-            if self.inRange(closest) {
-                call.resolve(self.foundPayload(closest, distance: distance))
-                return
+            var payload = self.foundPayload(closest, distance: distance)
+            // Heard. The token goes back whether or not it read as in range:
+            // hearing the beacon at all puts this phone within radio range of
+            // the teaching device, and the distance estimate is the noisier
+            // signal — a packed hall attenuates far harder than the free-space
+            // model assumes, which is how the back rows came to be refused.
+            // The caller is told it read as far, and the server records it.
+            if !self.inRange(closest) {
+                payload["outOfRange"] = true
+                payload["maxDistanceMeters"] = self.scanLimits.maxDistanceMeters
             }
-            // Heard, but too far: the difference matters to a student deciding
-            // whether to move closer or report a problem.
-            call.resolve([
-                "found": false,
-                "outOfRange": true,
-                "distanceMeters": (distance * 10).rounded() / 10,
-                "rssi": closest.samples.max() ?? 0,
-                "maxDistanceMeters": self.scanLimits.maxDistanceMeters,
-            ])
+            call.resolve(payload)
         }
     }
 
