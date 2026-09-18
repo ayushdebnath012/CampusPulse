@@ -137,6 +137,54 @@ test("liveness probes do not load the shared database document", async (t) => {
   assert.equal(loads, 0, "liveness probes must not load the application document");
 });
 
+test("a batch with refused mutators costs one cycle per refusal, not one per writer", async () => {
+  // A class checking in: most are accepted, some are refused for a wrong code
+  // or a far location, and a refusal throws from inside its mutator. The
+  // whole batch used to be discarded and replayed one writer at a time on the
+  // first refusal, which during a lecture turned one round trip of the
+  // multi-megabyte document into sixty.
+  let cycles = 0;
+  let document = { present: [] };
+  const update = createBatchingUpdater(async (apply) => {
+    cycles += 1;
+    const working = structuredClone(document);
+    const outcome = await apply(working);
+    document = working;
+    return outcome;
+  });
+
+  const writers = 60;
+  const refused = new Set([3, 17, 41]);
+  const results = await Promise.allSettled(
+    Array.from({ length: writers }, (_unused, index) =>
+      update((data) => {
+        if (refused.has(index)) {
+          const error = new Error(`refused ${index}`);
+          error.status = 403;
+          throw error;
+        }
+        data.present.push(index);
+        return index;
+      }),
+    ),
+  );
+
+  results.forEach((entry, index) => {
+    if (refused.has(index)) {
+      assert.equal(entry.status, "rejected");
+      assert.match(entry.reason.message, new RegExp(`refused ${index}`));
+    } else {
+      assert.equal(entry.status, "fulfilled");
+      assert.equal(entry.value, index);
+    }
+  });
+  assert.equal(document.present.length, writers - refused.size, "every accepted mark lands");
+  assert.ok(
+    cycles <= refused.size + 2,
+    `${writers} writers with ${refused.size} refusals should take a few cycles, took ${cycles}`,
+  );
+});
+
 test("batched writes replay individually when one mutator throws", async () => {
   let cycles = 0;
   let document = { value: [] };
@@ -171,7 +219,7 @@ test("batched writes replay individually when one mutator throws", async () => {
   // The failing mutator must not have committed anything, and must not have
   // discarded the work of the two it was batched with.
   assert.deepEqual(document.value, ["a", "c"]);
-  assert.ok(cycles > 1, "a failed batch is replayed one mutator at a time");
+  assert.ok(cycles > 1, "the refused mutator's cycle is abandoned and the rest rerun");
 });
 
 test("a burst of writes costs a handful of database cycles, not one each", async () => {

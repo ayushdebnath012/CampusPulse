@@ -177,6 +177,7 @@ function createPostgresStore(connectionString, options = {}) {
     await ensureTable();
     for (let attempt = 0; attempt < transactionAttempts; attempt += 1) {
       const startedAt = Date.now();
+      let mutatorFailed = false;
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -190,7 +191,13 @@ function createPostgresStore(connectionString, options = {}) {
           "SELECT data FROM campuspulse_store WHERE id = 1 FOR UPDATE",
         );
         const data = normalizeData(result.rows[0].data, env);
-        const outcome = await apply(data);
+        let outcome;
+        try {
+          outcome = await apply(data);
+        } catch (error) {
+          mutatorFailed = true;
+          throw error;
+        }
         const serialized = JSON.stringify(data);
         const saved = await client.query(
           `UPDATE campuspulse_store
@@ -215,6 +222,12 @@ function createPostgresStore(connectionString, options = {}) {
         return outcome;
       } catch (error) {
         await client.query("ROLLBACK").catch(() => {});
+        // A mutator that threw was rolled back with nothing written, so the
+        // stored document is exactly what was cached. Dropping the cache here
+        // made every refused check-in cost the next reader a full reload of
+        // the multi-megabyte document. Only a database failure leaves the
+        // cache in doubt.
+        if (mutatorFailed) throw error;
         const retryable = error?.code === "40001";
         if (!retryable || attempt + 1 >= transactionAttempts) {
           cache = null;

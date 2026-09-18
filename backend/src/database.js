@@ -4,10 +4,11 @@ const crypto = require("node:crypto");
 const { buildCourseData } = require("./course-data");
 
 // Inbox retention. Every "attendance is open" alert fans out to a whole class,
-// and a term of them made the shared document — which every write moves to
-// the database and back in full — grow by megabytes.
-const NOTIFICATION_RETENTION_MS = 45 * 24 * 60 * 60 * 1000;
-const MAX_NOTIFICATIONS_PER_USER = 60;
+// and seven weeks of them — nine thousand records, all of the same alert — were
+// 3.7 MB of a 5.2 MB document that every write moves to the database and back.
+// A student needs the last few classes' alerts, not the term's.
+const NOTIFICATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_NOTIFICATIONS_PER_USER = 15;
 
 function cleanJoinCode(value) {
   return String(value || "").trim().toUpperCase().slice(0, 64);
@@ -277,24 +278,57 @@ function clone(value) {
  * now applied to one loaded copy and persisted once.
  *
  * `runCycle(apply)` loads the document, awaits `apply(data)`, and persists it.
- * If any mutator in a batch throws, the whole cycle is discarded and the batch
- * is replayed one at a time, so a failing mutator still cannot commit a partial
- * change or take its neighbours down with it.
+ * A mutator that throws aborts the cycle, so nothing it half-did can be
+ * persisted; it is rejected on the spot and the cycle is rerun for the rest of
+ * the batch without it. Only a failure of the cycle itself — the database, not
+ * a mutator — falls back to replaying the batch one at a time.
+ *
+ * That distinction matters more than it looks. A check-in refused for a wrong
+ * code or a far location throws from inside its mutator, and during a class
+ * that is most of them. Discarding the whole batch and replaying it one at a
+ * time on every such refusal turned one round-trip of the multi-megabyte
+ * document into sixty, serialised, while the rest of the room waited — which
+ * is what "the server can't handle the traffic" was.
  */
 function createBatchingUpdater(runCycle, options = {}) {
   const maxBatch = Number(options.maxBatch || 64);
   let pending = [];
   let running = false;
 
+  // Marks an error as coming from a mutator rather than from the cycle.
+  class MutatorFailure extends Error {
+    constructor(index, cause) {
+      super("mutator failed");
+      this.index = index;
+      this.cause = cause;
+    }
+  }
+
   async function runBatch(batch) {
-    const results = new Array(batch.length);
-    await runCycle(async (data) => {
-      for (let index = 0; index < batch.length; index += 1) {
-        results[index] = await batch[index].mutator(data);
+    let remaining = batch;
+    while (remaining.length) {
+      const entries = remaining;
+      const results = new Array(entries.length);
+      try {
+        await runCycle(async (data) => {
+          for (let index = 0; index < entries.length; index += 1) {
+            try {
+              results[index] = await entries[index].mutator(data);
+            } catch (error) {
+              throw new MutatorFailure(index, error);
+            }
+          }
+          return null;
+        }, entries.length);
+      } catch (error) {
+        if (!(error instanceof MutatorFailure)) throw error;
+        entries[error.index].reject(error.cause);
+        remaining = entries.filter((_, index) => index !== error.index);
+        continue;
       }
-      return null;
-    }, batch.length);
-    batch.forEach((entry, index) => entry.resolve(clone(results[index])));
+      entries.forEach((entry, index) => entry.resolve(clone(results[index])));
+      return;
+    }
   }
 
   async function runIndividually(batch) {
@@ -414,13 +448,17 @@ function createStore(filePath, options = {}) {
 
   const runUpdates = createBatchingUpdater(async (apply) => {
     const { data } = await load();
+    let applied = false;
     try {
       const outcome = await apply(data);
+      applied = true;
       await save(data);
       cache = { data, stamp: await fileStamp() };
       return outcome;
     } catch (error) {
-      cache = null;
+      // A mutator that threw changed nothing on disk, so what was cached is
+      // still what is stored. Only a failed save leaves that in doubt.
+      if (applied) cache = null;
       throw error;
     }
   });
