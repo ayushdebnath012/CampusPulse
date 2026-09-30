@@ -506,6 +506,10 @@ function normalizedNetworkIdentity(value) {
  * Return a client address only from a transport the deployment explicitly
  * trusts. Vercel overwrites its forwarding header; Render is opted in through
  * TRUST_PROXY_IP_HEADERS. Development uses the direct socket address.
+ *
+ * The API Gateway front (campus Wi-Fi blocks the duckdns host) reaches nginx
+ * from its own addresses, so X-Forwarded-For would name the gateway. It
+ * overwrites X-CampusPulse-Client-IP with the viewer's address instead.
  */
 function trustedClientNetwork(request, env) {
   const onVercel = String(env.VERCEL || "").trim() !== "";
@@ -514,7 +518,7 @@ function trustedClientNetwork(request, env) {
   const forwarded = onVercel
     ? request.headers["x-vercel-forwarded-for"] || request.headers["x-forwarded-for"]
     : trustProxyHeaders
-      ? request.headers["x-forwarded-for"]
+      ? request.headers["x-campuspulse-client-ip"] || request.headers["x-forwarded-for"]
       : "";
   const direct =
     String(env.NODE_ENV || "").toLowerCase() === "production"

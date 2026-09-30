@@ -13,7 +13,7 @@
 #   ./scripts/mark-present-batch.sh --email prof@example.edu --course MF41601 \
 #     --date 2026-08-31 --roll 23ME31053 --roll 23MF10041 --roll 23MF10026
 #
-#   --api <url>            API base (default: https://campuspulse.duckdns.org)
+#   --api <url>            API base (default: the API Gateway front, as in config.js)
 #   --email <address>      Professor or TA login for the course
 #   --role <faculty|ta>    Login role (default: faculty)
 #   --course <code|name>   Course code, name, or id — punctuation and case ignored
@@ -32,10 +32,10 @@
 # it stays out of your shell history and the process list.
 set -euo pipefail
 
-# The apps read public/config.js, which serves the duckdns host since the AWS
-# cutover. A correction filed against the retired Vercel host would land in a
-# database no student is reading.
-API="https://campuspulse.duckdns.org"
+# The apps read public/config.js, which points at the API Gateway front for
+# the AWS host (campus Wi-Fi blocks the duckdns name). A correction filed
+# against the retired Vercel host would land in a database no student is reading.
+API="https://1jz5vennqh.execute-api.ap-south-1.amazonaws.com"
 EMAIL=""; ROLE="faculty"; COURSE_WANTED=""; DATE=""; SESSION_WANTED=""
 DRY_RUN=0; ASSUME_YES=0
 ROLLS=""   # newline separated; bash 3.2 arrays under `set -u` are more trouble

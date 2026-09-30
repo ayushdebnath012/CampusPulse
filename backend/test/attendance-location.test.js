@@ -411,6 +411,42 @@ test("website attendance rejects another network even at the classroom location"
   assert.match(refused.body.error, /same classroom Wi‑Fi/i);
 });
 
+test("behind the API Gateway front, the viewer address decides the network", async (t) => {
+  const server = await startServer({ TRUST_PROXY_IP_HEADERS: "true" });
+  t.after(() => server.close());
+  const { professorToken, studentToken, courseId } = await classroom(server.baseUrl);
+  // Every request arrives from some gateway address; only the header the
+  // gateway stamps says which network the phone is really on.
+  const viaGateway = (viewer, gateway) => ({
+    "x-forwarded-for": gateway,
+    "x-campuspulse-client-ip": viewer,
+  });
+  const opened = await openAttendance(
+    server.baseUrl,
+    professorToken,
+    courseId,
+    CLASSROOM,
+    viaGateway("203.0.113.42", "13.232.0.10"),
+  );
+  assert.equal(opened.status, 201, JSON.stringify(opened.body));
+  assert.equal(opened.body.attendance.webCheckInAvailable, true);
+  const checkIn = (headers) =>
+    call(server.baseUrl, `/api/attendance/${opened.body.attendance.id}/check-in`, {
+      method: "POST",
+      token: studentToken,
+      headers,
+      body: { mode: "web-wifi", location: BACK_ROW },
+    });
+
+  const elsewhere = await checkIn(viaGateway("198.51.100.25", "13.232.0.10"));
+  assert.equal(elsewhere.status, 403, JSON.stringify(elsewhere.body));
+  assert.match(elsewhere.body.error, /same classroom Wi‑Fi/i);
+
+  const inRoom = await checkIn(viaGateway("203.0.113.42", "13.232.0.77"));
+  assert.equal(inRoom.status, 201, JSON.stringify(inRoom.body));
+  assert.equal(inRoom.body.markedVia, "student-web-wifi");
+});
+
 test("website attendance requires a precise student and classroom location", async (t) => {
   const server = await startServer({
     TRUST_PROXY_IP_HEADERS: "true",

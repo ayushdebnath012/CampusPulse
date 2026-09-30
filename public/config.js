@@ -1,5 +1,11 @@
 (() => {
-  const defaultApiBase = "https://campuspulse.duckdns.org";
+  // The IIT KGP firewall blocks Dynamic DNS hosts, so phones on campus Wi-Fi
+  // cannot reach campuspulse.duckdns.org at all. This API Gateway front
+  // forwards every path to it and is reachable from campus.
+  const defaultApiBase = "https://1jz5vennqh.execute-api.ap-south-1.amazonaws.com";
+  // The EC2 host still serves this site itself; a page loaded from there keeps
+  // calling its own origin, which the API's CORS allowlist does not include.
+  const originHost = "campuspulse.duckdns.org";
   const savedApiBase = String(
     localStorage.getItem("campusPulseApiBase") || "",
   ).trim().replace(/\/+$/, "");
@@ -21,7 +27,9 @@
     ? savedApiBase === "offline"
       ? ""
       : validSavedApi || location.origin
-    : defaultApiBase;
+    : location.hostname === originHost
+      ? location.origin
+      : defaultApiBase;
   if (!localDevelopment && savedApiBase !== defaultApiBase) {
     localStorage.setItem("campusPulseApiBase", defaultApiBase);
   }
